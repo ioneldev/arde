@@ -76,7 +76,8 @@ def run_agent(spec: AgentSpec, deps: AgentDeps) -> AgentResult:
         if response.assistant_content:
             messages.append({"role": "assistant", "content": list(response.assistant_content)})
 
-        if response.stop_reason == "tool_use":
+        # Keyed on the calls, not stop_reason: each tool_use echoed above must get a result next.
+        if response.tool_calls:
             tool_turn = _run_tools(response.tool_calls, spec=spec, deps=deps)
             if tool_turn.accepted is not None:
                 return _submitted(tool_turn.accepted, turn)

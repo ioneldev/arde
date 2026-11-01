@@ -352,15 +352,30 @@ def test_max_tokens_stops_with_reason(stop_reason: str) -> None:
     assert spy.inputs == []
 
 
-@pytest.mark.parametrize("stop_reason", ["end_turn", "stop_sequence", "pause_turn"])
-def test_tool_calls_run_only_on_a_tool_use_stop(stop_reason: str) -> None:
-    spy = ToolSpy()
-    run_script(
-        [calling(call(READ), stop_reason=stop_reason), calling(submit())],
-        tools=(tool_named(READ, spy), SUBMIT_TOOL),
+@pytest.mark.parametrize("stop_reason", ["tool_use", "end_turn", "stop_sequence"])
+def test_every_tool_use_gets_a_result_in_the_next_message(stop_reason: str) -> None:
+    two_calls = calling(
+        call(READ, call_id="toolu_a"), call(READ, call_id="toolu_b"), stop_reason=stop_reason
+    )
+    run = run_script(
+        [two_calls, calling(submit())],
+        tools=(tool_named(READ, ToolSpy()), SUBMIT_TOOL),
     )
 
-    assert spy.inputs == []
+    _, assistant_turn, next_message = run.llm.requests[1].messages
+    tool_use_ids = [block["id"] for block in assistant_turn["content"]]
+    assert tool_use_ids == ["toolu_a", "toolu_b"]
+    assert next_message["content"] == [
+        tool_result(tool_use_id, "tool output") for tool_use_id in tool_use_ids
+    ]
+
+
+@pytest.mark.parametrize("stop_reason", ["tool_use", "end_turn", "stop_sequence"])
+def test_zero_call_turns_reach_no_progress(stop_reason: str) -> None:
+    run = run_script([reply(stop_reason), reply(stop_reason), reply(stop_reason)])
+
+    assert run.result == stopped("no_progress", turns=3)
+    assert all(message["content"] for message in run.llm.requests[-1].messages)
 
 
 def test_turn_limit_stops() -> None:
