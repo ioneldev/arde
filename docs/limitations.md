@@ -11,6 +11,7 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 ## What it understands
 
 - **Go `net/http` only.** Other frameworks and other languages are not supported. Go idioms sit behind one interface so a second language can be added.
+- **Names in facts are ASCII and plain.** A struct, field, type or error code with a non-ASCII letter, a generic type such as `Page[Product]`, or a `map` or `interface{}` response type fails validation instead of being written into a comment or tag. A service that uses them cannot be documented until the shape is allowed in the domain models.
 - **Router groups are not resolved.** Patterns cannot see a group prefix. In a Gin-style sample the matcher reported `/ping` for `/v1/ping`. A live check should get a 404 and stop the run, but that is untested.
 - **The call graph is static.** It misses calls through interfaces and function values. Stored requests are the backstop.
 - **Hand-edited `@` lines are overwritten** from the wiki on the next run.

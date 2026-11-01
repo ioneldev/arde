@@ -5,7 +5,15 @@ from typing import Annotated, Literal, Self
 
 from pydantic import Field, model_validator
 
-from arde.domain.base import Frozen, SingleLine
+from arde.domain.base import (
+    CodeIdentifier,
+    ErrorCodeName,
+    Frozen,
+    ParamName,
+    QualifiedTypeName,
+    RoutePattern,
+    SingleLine,
+)
 
 Topic = Literal[
     "overview",
@@ -49,7 +57,7 @@ class FactBase(Frozen):
 
 
 class ParamFact(Frozen):
-    name: str
+    name: ParamName
     location: Literal["path", "query"]
     go_type: Literal["int", "string"]
     required: bool
@@ -62,14 +70,14 @@ class ParamFact(Frozen):
 
 class ResponseFact(Frozen):
     status: int
-    go_type: str
+    go_type: QualifiedTypeName
     description: SingleLine
-    error_codes: tuple[str, ...]
+    error_codes: tuple[ErrorCodeName, ...]
 
 
 class EndpointFact(FactBase):
     kind: Literal["endpoint"]
-    route: str
+    route: RoutePattern
     summary: SingleLine
     params: tuple[ParamFact, ...]
     responses: tuple[ResponseFact, ...]
@@ -77,16 +85,16 @@ class EndpointFact(FactBase):
 
 class FieldFact(FactBase):
     kind: Literal["field"]
-    struct: str
-    field: str
+    struct: CodeIdentifier
+    field: CodeIdentifier
     description: SingleLine
 
 
 class PolymorphicFact(FactBase):
     kind: Literal["polymorphic"]
-    struct: str
-    field: str
-    variants: tuple[str, ...]
+    struct: CodeIdentifier
+    field: CodeIdentifier
+    variants: tuple[QualifiedTypeName, ...]
 
 
 class RuleFact(FactBase):

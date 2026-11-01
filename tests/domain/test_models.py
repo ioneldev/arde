@@ -94,11 +94,11 @@ def a_field(**overrides: Any) -> FieldFact:
     return FieldFact(**{**fields, **overrides})
 
 
-def a_polymorphic() -> PolymorphicFact:
+def a_polymorphic(**overrides: Any) -> PolymorphicFact:
     fields = fact_fields(
         "polymorphic", struct="Product", field="Specs", variants=("LaptopSpecs", "BookSpecs")
     )
-    return PolymorphicFact(**fields)
+    return PolymorphicFact(**{**fields, **overrides})
 
 
 def a_rule() -> RuleFact:
@@ -207,6 +207,121 @@ def test_every_domain_model_is_frozen_and_closed() -> None:
 def test_description_must_be_single_line(build: Callable[[str], object], line_break: str) -> None:
     with pytest.raises(ValidationError, match="single line"):
         build(f"ok{line_break}//go:debug x=1")
+
+
+# Every field the renderer writes into a comment or a struct tag. Each builder takes the whole
+# value of that field and fills the rest of the fact with valid data.
+RENDERED_FIELDS: dict[str, Callable[[str], object]] = {
+    "param name": lambda value: a_param(name=value),
+    "response go_type": lambda value: a_response(go_type=value),
+    "response error code": lambda value: a_response(error_codes=("bad_qty", value)),
+    "endpoint route": lambda value: an_endpoint(route=value),
+    "field struct": lambda value: a_field(struct=value),
+    "field field": lambda value: a_field(field=value),
+    "polymorphic struct": lambda value: a_polymorphic(struct=value),
+    "polymorphic field": lambda value: a_polymorphic(field=value),
+    "polymorphic variant": lambda value: a_polymorphic(variants=("LaptopSpecs", value)),
+}
+
+# A route needs its method and slash around the suspect text, or it fails for the wrong reason.
+INJECTION_TARGETS: dict[str, Callable[[str], object]] = {
+    **RENDERED_FIELDS,
+    "endpoint route": lambda text: an_endpoint(route=f"GET /{text}"),
+}
+
+INJECTIONS = {
+    "line feed": "ok\n//go:debug x=1",
+    "carriage return": "ok\r//go:debug x=1",
+    "trailing line feed": "ok\n",
+    "double quote": 'ok"x',
+    "single quote": "ok'x",
+    "backtick": "ok`x",
+}
+
+
+@pytest.mark.parametrize("injection", INJECTIONS.values(), ids=INJECTIONS.keys())
+@pytest.mark.parametrize("build", INJECTION_TARGETS.values(), ids=INJECTION_TARGETS.keys())
+def test_names_that_reach_source_reject_line_breaks_quotes_and_backticks(
+    build: Callable[[str], object], injection: str
+) -> None:
+    with pytest.raises(ValidationError, match="must be"):
+        build(injection)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("param name", "qty"),
+        ("param name", "page-size"),
+        ("response go_type", "ProductResponse"),
+        ("response go_type", "catalog.LaptopSpecs"),
+        ("response go_type", "[]ProductSummary"),
+        ("response go_type", "[]*ProductSummary"),
+        ("response error code", "invalid_qty"),
+        ("response error code", "rate-limit.exceeded"),
+        ("endpoint route", "GET /{id}"),
+        ("endpoint route", "GET /"),
+        ("endpoint route", "POST /products/{id}/price"),
+        ("field struct", "Product"),
+        ("field struct", "_internal2"),
+        ("field field", "name"),
+        ("polymorphic struct", "Product"),
+        ("polymorphic field", "Specs"),
+        ("polymorphic variant", "catalog.LaptopSpecs"),
+    ],
+)
+def test_real_names_are_accepted(field: str, value: str) -> None:
+    RENDERED_FIELDS[field](value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("field struct", ""),
+        ("field struct", "1Product"),
+        ("field struct", "catalog.Product"),
+        ("field field", "first name"),
+        ("polymorphic field", "a-b"),
+        ("response go_type", ""),
+        ("response go_type", "map[string]int"),
+        ("response go_type", "catalog."),
+        ("response go_type", "[]"),
+        ("response go_type", "a b"),
+        ("response go_type", "a,b"),
+        ("polymorphic variant", "a,b"),
+        ("polymorphic variant", "a b"),
+        ("response error code", ""),
+        ("response error code", "bad code"),
+        ("response error code", "a/b"),
+        ("endpoint route", ""),
+        ("endpoint route", "GET"),
+        ("endpoint route", "GET x"),
+        ("endpoint route", "/x"),
+        ("endpoint route", "get /x"),
+        ("endpoint route", "GET  /x"),
+        ("endpoint route", "GET /a b"),
+        ("param name", ""),
+        ("param name", "a b"),
+    ],
+)
+def test_names_with_the_wrong_shape_are_rejected(field: str, value: str) -> None:
+    with pytest.raises(ValidationError, match="must be"):
+        RENDERED_FIELDS[field](value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "instruction"),
+    [
+        ("field struct", "1Product", "letters, digits and underscore"),
+        ("response go_type", "map[string]int", "identifiers joined by dots"),
+        ("response error code", "bad code", "letters, digits, underscore, hyphen and dot"),
+        ("endpoint route", "get /x", "upper-case method"),
+        ("param name", "a b", "no whitespace, quotes or backticks"),
+    ],
+)
+def test_a_rejected_name_says_what_to_use_instead(field: str, value: str, instruction: str) -> None:
+    with pytest.raises(ValidationError, match=instruction):
+        RENDERED_FIELDS[field](value)
 
 
 def test_a_stored_wiki_edited_to_hold_a_line_break_is_rejected_on_load() -> None:
