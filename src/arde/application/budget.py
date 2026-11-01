@@ -1,5 +1,7 @@
 """The cost cap for one run, and the totals per role that the report prints."""
 
+import math
+
 from arde.domain.errors import ArdeError
 from arde.domain.pricing import cost_usd
 from arde.domain.report import ExitCode
@@ -25,8 +27,21 @@ class BudgetExceeded(ArdeError):
         )
 
 
+class InvalidBudgetCap(ArdeError):
+    def __init__(self, max_usd: float) -> None:
+        super().__init__(
+            f"The cost cap must be a positive number of dollars, not {max_usd}",
+            next_action="Set max_usd to a positive number of dollars, for example 10",
+            exit_code=ExitCode.BAD_USAGE,
+        )
+
+
 class Budget:
     def __init__(self, max_usd: float) -> None:
+        # Every comparison with nan is false, so a nan cap would never trip. An infinite cap
+        # never trips either, and a cap of zero or less trips on the first call.
+        if not (math.isfinite(max_usd) and max_usd > 0):
+            raise InvalidBudgetCap(max_usd)
         self._max_usd = max_usd
         self._totals: dict[str, RoleTotals] = {}
 

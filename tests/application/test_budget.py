@@ -2,7 +2,7 @@
 
 import pytest
 
-from arde.application.budget import Budget, BudgetExceeded
+from arde.application.budget import Budget, BudgetExceeded, InvalidBudgetCap
 from arde.domain.errors import ArdeError
 from arde.domain.pricing import UnknownModelPrice
 from arde.domain.report import ExitCode
@@ -130,3 +130,27 @@ def test_a_call_to_an_unpriced_model_is_refused_and_not_recorded() -> None:
         budget.charge(call_by("docs", model="claude-opus-9", input_tokens=1))
 
     assert budget.totals() == {}
+
+
+@pytest.mark.parametrize(
+    "max_usd", [float("nan"), float("inf"), float("-inf"), 0.0, 0, -1.0, -0.01]
+)
+def test_a_cap_that_is_not_a_positive_number_of_dollars_is_refused(max_usd: float) -> None:
+    with pytest.raises(InvalidBudgetCap) as caught:
+        Budget(max_usd=max_usd)
+
+    assert isinstance(caught.value, ArdeError)
+    assert caught.value.exit_code is ExitCode.BAD_USAGE
+    assert "max_usd" in caught.value.next_action
+
+
+def test_a_tiny_positive_cap_is_accepted() -> None:
+    budget = Budget(max_usd=0.000001)
+
+    with pytest.raises(BudgetExceeded):
+        budget.charge(call_by("docs", input_tokens=ONE_MILLION))
+
+
+def test_a_ten_million_token_call_cannot_pass_through_a_nan_cap() -> None:
+    with pytest.raises(InvalidBudgetCap):
+        Budget(max_usd=float("nan")).charge(call_by("docs", input_tokens=10_000_000))
