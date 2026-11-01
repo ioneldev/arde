@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.superpowers/
+.worktrees/
+debug.log
+tools/goinspect/goinspect
+.DS_Store

@@ -1,0 +1,246 @@
+[
+ {
+  "id": "change-01",
+  "label": "qty limit raised to 20",
+  "expected": [
+   "contract-additive"
+  ],
+  "code": [
+   "behaviour"
+  ],
+  "hard": true
+ },
+ {
+  "id": "change-02",
+  "label": "discount dropped",
+  "expected": [
+   "behaviour"
+  ],
+  "code": [
+   "behaviour"
+  ],
+  "hard": false
+ },
+ {
+  "id": "change-03",
+  "label": "qty param removed",
+  "expected": [
+   "contract-breaking"
+  ],
+  "code": [
+   "contract-breaking"
+  ],
+  "hard": false
+ },
+ {
+  "id": "change-04",
+  "label": "panic recovery removed",
+  "expected": [
+   "operational",
+   "contract-breaking"
+  ],
+  "code": [
+   "internal"
+  ],
+  "hard": true
+ },
+ {
+  "id": "change-05",
+  "label": "access log records query",
+  "expected": [
+   "security-compliance"
+  ],
+  "code": [
+   "internal"
+  ],
+  "hard": false
+ },
+ {
+  "id": "change-06",
+  "label": "qty limit lowered to 5",
+  "expected": [
+   "contract-breaking"
+  ],
+  "code": [
+   "behaviour"
+  ],
+  "hard": true
+ },
+ {
+  "id": "change-07",
+  "label": "error code renamed",
+  "expected": [
+   "contract-breaking"
+  ],
+  "code": [
+   "contract-breaking",
+   "contract-additive"
+  ],
+  "hard": true
+ },
+ {
+  "id": "change-08",
+  "label": "helper extracted, same logic",
+  "expected": [
+   "internal"
+  ],
+  "code": [
+   "internal"
+  ],
+  "hard": true
+ },
+ {
+  "id": "change-09",
+  "label": "rounding changed in Convert",
+  "expected": [
+   "behaviour"
+  ],
+  "code": [
+   "behaviour"
+  ],
+  "hard": false
+ },
+ {
+  "id": "change-10",
+  "label": "default qty changed to 2",
+  "expected": [
+   "contract-breaking"
+  ],
+  "code": [
+   "behaviour"
+  ],
+  "hard": true
+ },
+ {
+  "id": "change-11",
+  "label": "fourth product added",
+  "expected": [
+   "data"
+  ],
+  "code": [
+   "behaviour"
+  ],
+  "hard": true
+ },
+ {
+  "id": "change-12",
+  "label": "read timeout lowered to 1s",
+  "expected": [
+   "operational"
+  ],
+  "code": [
+   "internal"
+  ],
+  "hard": true
+ },
+ {
+  "id": "change-13",
+  "label": "Makefile target added",
+  "expected": [
+   "pipeline"
+  ],
+  "code": [
+   "pipeline"
+  ],
+  "hard": false
+ },
+ {
+  "id": "change-14",
+  "label": "route removed",
+  "expected": [
+   "contract-breaking"
+  ],
+  "code": [
+   "contract-breaking"
+  ],
+  "hard": false
+ },
+ {
+  "id": "change-15",
+  "label": "test added",
+  "expected": [
+   "testing"
+  ],
+  "code": [
+   "testing"
+  ],
+  "hard": false
+ },
+ {
+  "id": "change-16",
+  "label": "new response field",
+  "expected": [
+   "contract-additive"
+  ],
+  "code": [
+   "contract-additive"
+  ],
+  "hard": false
+ },
+ {
+  "id": "change-17",
+  "label": "EUR rate changed",
+  "expected": [
+   "data"
+  ],
+  "code": [
+   "behaviour"
+  ],
+  "hard": true
+ },
+ {
+  "id": "change-18",
+  "label": "available uses >",
+  "expected": [
+   "behaviour"
+  ],
+  "code": [
+   "behaviour"
+  ],
+  "hard": false
+ },
+ {
+  "id": "change-19",
+  "label": "local variable renamed",
+  "expected": [
+   "internal"
+  ],
+  "code": [
+   "internal"
+  ],
+  "hard": false
+ },
+ {
+  "id": "change-20",
+  "label": "comment reworded",
+  "expected": [
+   "comments-only"
+  ],
+  "code": [
+   "comments-only"
+  ],
+  "hard": false
+ },
+ {
+  "id": "change-21",
+  "label": "new param read",
+  "expected": [
+   "contract-additive"
+  ],
+  "code": [
+   "contract-additive"
+  ],
+  "hard": false
+ },
+ {
+  "id": "change-22",
+  "label": "Dockerfile base image bumped",
+  "expected": [
+   "pipeline"
+  ],
+  "code": [
+   "pipeline"
+  ],
+  "hard": true
+ }
+]

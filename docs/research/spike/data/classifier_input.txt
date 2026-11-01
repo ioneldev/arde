@@ -1,0 +1,292 @@
+=== change-01 ===
+--- a/internal/httpapi/handlers.go
++++ b/internal/httpapi/handlers.go
+@@ -11,7 +11,7 @@
+ 
+ const (
+ 	defaultQty = 1
+-	maxQty     = 10
++	maxQty     = 20
+ )
+ 
+ type handlers struct {
+
+=== change-02 ===
+--- a/internal/httpapi/handlers.go
++++ b/internal/httpapi/handlers.go
+@@ -95,7 +95,7 @@
+ 		return
+ 	}
+ 
+-	unit := p.UnitPrice()
++	unit := p.PriceMinor
+ 	resp := ProductResponse{
+ 		ID:          p.ID,
+ 		Slug:        p.Slug,
+
+=== change-03 ===
+--- a/internal/httpapi/handlers.go
++++ b/internal/httpapi/handlers.go
+@@ -78,12 +78,6 @@
+ 	}
+ 
+ 	qty := defaultQty
+-	if raw := query.Get("qty"); raw != "" {
+-		if qty, err = strconv.Atoi(raw); err != nil || qty < 1 || qty > maxQty {
+-			writeError(w, http.StatusBadRequest, "invalid_qty", fmt.Sprintf("qty must be an integer between 1 and %d", maxQty))
+-			return
+-		}
+-	}
+ 
+ 	p, err := h.store.Get(id)
+ 	if errors.Is(err, catalog.ErrNotFound) {
+
+=== change-04 ===
+--- a/internal/httpapi/router.go
++++ b/internal/httpapi/router.go
+@@ -16,5 +16,5 @@
+ 	mux.HandleFunc("GET /products/{id}", h.product)
+ 	mux.HandleFunc("GET /healthz", h.healthz)
+ 
+-	return logRequests(logger, recoverPanics(logger, mux))
++	return logRequests(logger, mux)
+ }
+
+=== change-05 ===
+--- a/internal/httpapi/middleware.go
++++ b/internal/httpapi/middleware.go
+@@ -32,6 +32,7 @@
+ 		logger.Info("request",
+ 			"method", r.Method,
+ 			"path", r.URL.Path,
++			"query", r.URL.RawQuery,
+ 			"status", rec.status,
+ 			"duration_ms", time.Since(start).Milliseconds(),
+ 		)
+
+=== change-06 ===
+--- a/internal/httpapi/handlers.go
++++ b/internal/httpapi/handlers.go
+@@ -11,7 +11,7 @@
+ 
+ const (
+ 	defaultQty = 1
+-	maxQty     = 10
++	maxQty     = 5
+ )
+ 
+ type handlers struct {
+
+=== change-07 ===
+--- a/internal/httpapi/handlers.go
++++ b/internal/httpapi/handlers.go
+@@ -80,7 +80,7 @@
+ 	qty := defaultQty
+ 	if raw := query.Get("qty"); raw != "" {
+ 		if qty, err = strconv.Atoi(raw); err != nil || qty < 1 || qty > maxQty {
+-			writeError(w, http.StatusBadRequest, "invalid_qty", fmt.Sprintf("qty must be an integer between 1 and %d", maxQty))
++			writeError(w, http.StatusBadRequest, "bad_qty", fmt.Sprintf("qty must be an integer between 1 and %d", maxQty))
+ 			return
+ 		}
+ 	}
+
+=== change-08 ===
+--- a/internal/httpapi/handlers.go
++++ b/internal/httpapi/handlers.go
+@@ -106,7 +106,7 @@
+ 		Quantity:    qty,
+ 		Total:       money(unit*int64(qty), currency),
+ 		Stock:       p.Stock,
+-		Available:   p.Stock >= qty,
++		Available:   isAvailable(p, qty),
+ 		Rating:      p.Rating,
+ 		Specs:       p.Specs,
+ 	}
+@@ -127,3 +127,7 @@
+ func (h *handlers) healthz(w http.ResponseWriter, _ *http.Request) {
+ 	writeJSON(w, http.StatusOK, HealthResponse{Status: "ok"})
+ }
++
++func isAvailable(p catalog.Product, qty int) bool {
++	return p.Stock >= qty
++}
+
+=== change-09 ===
+--- a/internal/catalog/pricing.go
++++ b/internal/catalog/pricing.go
+@@ -42,5 +42,5 @@
+ // away from zero to the currency's display precision.
+ func Convert(bani int64, to Currency) float64 {
+ 	scale := math.Pow10(fractionDigits[to])
+-	return math.Round(float64(bani)/100*fxRates[to]*scale) / scale
++	return math.Floor(float64(bani)/100*fxRates[to]*scale) / scale
+ }
+
+=== change-10 ===
+--- a/internal/httpapi/handlers.go
++++ b/internal/httpapi/handlers.go
+@@ -10,7 +10,7 @@
+ )
+ 
+ const (
+-	defaultQty = 1
++	defaultQty = 2
+ 	maxQty     = 10
+ )
+ 
+
+=== change-11 ===
+--- a/internal/catalog/store.go
++++ b/internal/catalog/store.go
+@@ -37,6 +37,7 @@
+ // SeedProducts is the fixed catalog the PoC serves.
+ func SeedProducts() []Product {
+ 	return []Product{
++		{ID: 4, Slug: "gopher-mug", Name: "Gopher Mug", Description: "Ceramic mug.", Category: CategoryFashion, PriceMinor: 3500, Stock: 7, Rating: 4.3, Specs: ApparelSpecs{Color: "white", Material: "ceramic"}},
+ 		{
+ 			ID:          1,
+ 			Slug:        "nimbus-14-laptop",
+
+=== change-12 ===
+--- a/cmd/server/main.go
++++ b/cmd/server/main.go
+@@ -32,7 +32,7 @@
+ 		Addr:              addr,
+ 		Handler:           httpapi.NewRouter(store, logger),
+ 		ReadHeaderTimeout: 5 * time.Second,
+-		ReadTimeout:       10 * time.Second,
++		ReadTimeout:       1 * time.Second,
+ 		WriteTimeout:      10 * time.Second,
+ 		IdleTimeout:       60 * time.Second,
+ 	}
+
+=== change-13 ===
+--- a/Makefile
++++ b/Makefile
+@@ -26,3 +26,6 @@
+ 
+ clean:
+ 	rm -rf bin
++
++lint:
++	go vet ./...
+
+=== change-14 ===
+--- a/internal/httpapi/router.go
++++ b/internal/httpapi/router.go
+@@ -14,7 +14,6 @@
+ 	mux := http.NewServeMux()
+ 	mux.HandleFunc("GET /{$}", h.index)
+ 	mux.HandleFunc("GET /products/{id}", h.product)
+-	mux.HandleFunc("GET /healthz", h.healthz)
+ 
+ 	return logRequests(logger, recoverPanics(logger, mux))
+ }
+
+=== change-15 ===
+--- a/internal/catalog/extra_test.go
++++ b/internal/catalog/extra_test.go
+@@ -0,0 +1,5 @@
++package catalog
++
++import "testing"
++
++func TestExtra(t *testing.T) {}
+
+=== change-16 ===
+--- a/internal/httpapi/responses.go
++++ b/internal/httpapi/responses.go
+@@ -39,6 +39,7 @@
+ 	Stock           int     `json:"stock"`
+ 	Available       bool    `json:"available"`
+ 	Rating          float64 `json:"rating"`
++	Brand           string  `json:"brand"`
+ 	Specs           any     `json:"specs"`
+ }
+ 
+
+=== change-17 ===
+--- a/internal/catalog/pricing.go
++++ b/internal/catalog/pricing.go
+@@ -18,7 +18,7 @@
+ // They are fixed for the PoC.
+ var fxRates = map[Currency]float64{
+ 	RON: 1,
+-	EUR: 0.2012,
++	EUR: 0.2100,
+ 	HUF: 79.45,
+ }
+ 
+
+=== change-18 ===
+--- a/internal/httpapi/handlers.go
++++ b/internal/httpapi/handlers.go
+@@ -106,7 +106,7 @@
+ 		Quantity:    qty,
+ 		Total:       money(unit*int64(qty), currency),
+ 		Stock:       p.Stock,
+-		Available:   p.Stock >= qty,
++		Available:   p.Stock > qty,
+ 		Rating:      p.Rating,
+ 		Specs:       p.Specs,
+ 	}
+
+=== change-19 ===
+--- a/internal/httpapi/handlers.go
++++ b/internal/httpapi/handlers.go
+@@ -95,16 +95,16 @@
+ 		return
+ 	}
+ 
+-	unit := p.UnitPrice()
++	unitPrice := p.UnitPrice()
+ 	resp := ProductResponse{
+ 		ID:          p.ID,
+ 		Slug:        p.Slug,
+ 		Name:        p.Name,
+ 		Description: p.Description,
+ 		Category:    string(p.Category),
+-		UnitPrice:   money(unit, currency),
++		UnitPrice:   money(unitPrice, currency),
+ 		Quantity:    qty,
+-		Total:       money(unit*int64(qty), currency),
++		Total:       money(unitPrice*int64(qty), currency),
+ 		Stock:       p.Stock,
+ 		Available:   p.Stock >= qty,
+ 		Rating:      p.Rating,
+
+=== change-20 ===
+--- a/internal/httpapi/handlers.go
++++ b/internal/httpapi/handlers.go
+@@ -48,7 +48,7 @@
+ 	writeJSON(w, http.StatusOK, resp)
+ }
+ 
+-// product returns one product.
++// product returns a single product.
+ //
+ // @Summary Get product
+ // @Produce json
+
+=== change-21 ===
+--- a/internal/httpapi/handlers.go
++++ b/internal/httpapi/handlers.go
+@@ -68,6 +68,7 @@
+ 	}
+ 
+ 	query := r.URL.Query()
++	_ = query.Get("lang")
+ 
+ 	currency := catalog.RON
+ 	if raw := query.Get("currency"); raw != "" {
+
+=== change-22 ===
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -1,4 +1,4 @@
+-FROM golang:1.26-alpine AS build
++FROM golang:1.27-alpine AS build
+ WORKDIR /src
+ COPY go.mod ./
+ COPY cmd ./cmd
+

@@ -1,0 +1,14 @@
+services:
+  arde:
+    build: .
+    user: "${ARDE_UID:-1000}:${ARDE_GID:-1000}"
+    env_file: [.env]
+    environment:
+      HOME: /data
+      GOCACHE: /data/gocache
+      GOPATH: /data/gopath
+    volumes:
+      - ${REPO_PATH}:/repo
+      - arde-home:/data
+volumes:
+  arde-home: {}

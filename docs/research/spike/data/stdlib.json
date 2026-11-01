@@ -1,0 +1,3 @@
+[{"kind":"route","call":"^mux\\.HandleFunc$","args":{"path":0,"handler":1}},
+ {"kind":"param","call":"^r\\.PathValue$|^query\\.Get$","args":{"name":0}},
+ {"kind":"error","call":"^writeError$","args":{"status":1,"code":2}}]
