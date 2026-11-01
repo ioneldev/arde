@@ -92,7 +92,7 @@ The first command documents the local repo at `REPO_PATH`, and the second uses a
 - `pytest`, `ruff`, `jsonschema`, `openapi-spec-validator`.
 - Models are configured per role: `claude-opus-5-5` for discovery, explore, docs and judge, and `claude-haiku-5-5` for the classifier. The trace records cost and speed per role, so the config can be adapted later as cost, speed and quality are tracked.
 
-Before writing API code, the builder must read the Python docs in the `claude-api` skill rather than rely on memory. Known constraints to respect: forced `tool_choice` returns a 400 on `claude-opus-5-5`, so use `auto` with `strict: true` tools and a prompt instruction. Thinking cannot be disabled on Opus 5.5, so set `effort` explicitly. Check `stop_reason` before reading content.
+Before writing API code, the builder must read the Python docs in the `claude-api` skill rather than rely on memory. Known constraints to respect: forced `tool_choice` returns a 400 on `claude-opus-5-5`, so use `auto` with a prompt instruction. Measured: the API refuses `strict: true` for `RepoProfile` (open dict) and the `Wiki` union (`oneOf`), so each tool states its own `strict` setting, and code validation holds the guarantee either way. Streaming is required, because non-streaming calls stop at about 21,333 `max_tokens`. Thinking cannot be disabled on Opus 5.5, so set `effort` explicitly. Check `stop_reason` before reading content.
 
 ## 5. Architecture
 
@@ -541,7 +541,7 @@ Not yet tested: Linux, Windows or amd64 hosts, anything using a real API call, a
 ## Deviations
 
 - **One-implementation interface.** `LanguageAdapter` has only `GoAdapter`. Ionel asked for it, and it gives fast tests through a fake. The cost is an abstraction with one real use.
-- **Large interface.** `LanguageAdapter` has nine methods, more than interface segregation prefers. It can split once a second language shows the right seams.
+- **Large interface.** `LanguageAdapter` has eleven methods, more than interface segregation prefers. It can split once a second language shows the right seams.
 - **Library in the domain.** Domain models use Pydantic, where strict clean architecture would keep the domain library-free. This avoids two parallel type systems, and the cost is a dependency in the inner layer.
 - **Two languages.** The Go helper adds a language and a top-level `tools/` directory, because the AST and call-graph libraries exist only in Go.
 - **Pre-release tool.** `swag` v2.0.0-rc6 is a pre-release, but it's the only option found that can describe `specs`. It's pinned, and the run's checks would surface a bad spec.
