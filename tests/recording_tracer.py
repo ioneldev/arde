@@ -11,3 +11,6 @@ class RecordingTracer:
 
     def debug(self, text: str) -> None:
         self.debug_lines.append(text)
+
+    def events_of(self, kind: str) -> list[dict[str, object]]:
+        return [fields for event_kind, fields in self.events if event_kind == kind]

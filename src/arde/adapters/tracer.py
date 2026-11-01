@@ -1,21 +1,26 @@
 """Writes trace.jsonl and debug.log for one run, with every secret replaced by a marker."""
 
 import json
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pydantic import SecretStr
+
 from arde.application.ports import Tracer
 
 REDACTED = "[REDACTED]"
+_MATCHES_NOTHING = r"(?!)"
 
 
 class JsonlTracer(Tracer):
-    def __init__(self, run_dir: Path, secrets: tuple[str, ...]) -> None:
+    # SecretStr, because a traceback prints the arguments of every frame it passes through.
+    def __init__(self, run_dir: Path, secrets: tuple[SecretStr, ...]) -> None:
         run_dir.mkdir(parents=True, exist_ok=True)
         self._trace_path = run_dir / "trace.jsonl"
         self._debug_path = run_dir / "debug.log"
-        self._secrets = _secrets_to_redact(secrets)
+        self._secret_pattern = _pattern_matching(secrets)
 
     def event(self, kind: str, **fields: object) -> None:
         if "ts" in fields:
@@ -43,18 +48,28 @@ class JsonlTracer(Tracer):
         return self._redact_text(str(value))
 
     def _redact_text(self, text: str) -> str:
-        for secret in self._secrets:
-            text = text.replace(secret, REDACTED)
-        return text
+        return self._secret_pattern.sub(REDACTED, text)
 
 
+# Built in one expression and kept compiled, so no frame holds a plain secret for --showlocals.
 # A key read from a file often ends in a newline, which is never part of the key. Stripping makes
-# the secret match the text that really appears. An empty secret is dropped, because
-# replacing "" would insert the marker between every character. The longest secret goes first,
-# so a secret that contains another is replaced whole and leaves no tail behind.
-def _secrets_to_redact(secrets: tuple[str, ...]) -> tuple[str, ...]:
-    stripped = {secret.strip() for secret in secrets}
-    return tuple(sorted(stripped - {""}, key=len, reverse=True))
+# the secret match the text that really appears. An empty secret is dropped, because it would
+# match between every character. With none left, the pattern must match nothing. The longest
+# secret goes first, so a secret that contains another is replaced whole and leaves no tail behind.
+def _pattern_matching(secrets: tuple[SecretStr, ...]) -> re.Pattern[str]:
+    return re.compile(
+        "|".join(
+            map(
+                re.escape,
+                sorted(
+                    {secret.get_secret_value().strip() for secret in secrets} - {""},
+                    key=len,
+                    reverse=True,
+                ),
+            )
+        )
+        or _MATCHES_NOTHING
+    )
 
 
 def _now() -> str:

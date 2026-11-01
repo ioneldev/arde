@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import pytest
+from recording_tracer import RecordingTracer
 
 from arde.adapters.llm.fake import FakeLLM
 from arde.application.agent_loop import (
@@ -32,21 +33,6 @@ EXPENSIVE = Usage(input_tokens=1_000_000, output_tokens=0, cache_read=0, cache_w
 LATENCY_S = 1.5
 
 ToolInput = dict[str, object]
-
-
-class RecordingTracer:
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict[str, object]]] = []
-        self.debug_lines: list[str] = []
-
-    def event(self, kind: str, **fields: object) -> None:
-        self.events.append((kind, fields))
-
-    def debug(self, text: str) -> None:
-        self.debug_lines.append(text)
-
-    def events_of(self, kind: str) -> list[dict[str, object]]:
-        return [fields for event_kind, fields in self.events if event_kind == kind]
 
 
 @dataclass

@@ -6,7 +6,17 @@ from pathlib import Path
 
 import pytest
 
-SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = REPO_ROOT / "src"
+
+# The only files allowed to hold the plain key. Anywhere else, one failing assertion prints it.
+KEY_READERS = (
+    "src/arde/adapters/llm/anthropic_client.py",
+    "src/arde/adapters/tracer.py",
+    "tests/conftest.py",
+)
+KEY_VARIABLE = "ANTHROPIC_API_KEY"
+ENVIRONMENT_READS = ("get", "getenv", "pop", "setdefault")
 
 DOMAIN_MAY_NOT_IMPORT = ("arde.adapters", "arde.application")
 APPLICATION_MAY_NOT_IMPORT = ("arde.adapters",)
@@ -39,7 +49,49 @@ def test_go_specifics_stay_in_go_adapter() -> None:
     assert go_specific_leaks(SOURCE_ROOT) == []
 
 
+def test_the_plain_key_is_read_only_by_the_adapter_and_conftest() -> None:
+    assert key_reads(REPO_ROOT) == []
+
+
 # The checks below prove each rule fires on a violation, so a green run above means something.
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "plain = secret.get_secret_value()",
+        'plain = os.environ["ANTHROPIC_API_KEY"]',
+        'plain = os.environ.get("ANTHROPIC_API_KEY")',
+        'plain = os.environ.pop("ANTHROPIC_API_KEY", "")',
+        'plain = os.getenv("ANTHROPIC_API_KEY")',
+    ],
+)
+@pytest.mark.parametrize("file", ["tests/test_new_eval.py", "src/arde/application/pipeline.py"])
+def test_reading_the_plain_key_is_reported(tmp_path: Path, file: str, source: str) -> None:
+    write(tmp_path, file, f"{source}\n")
+
+    assert key_reads(tmp_path) == [f"{file}: reads the API key"]
+
+
+@pytest.mark.parametrize("file", KEY_READERS)
+def test_a_listed_file_may_read_the_plain_key(tmp_path: Path, file: str) -> None:
+    write(tmp_path, file, "plain = secret.get_secret_value()\n")
+
+    assert key_reads(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'next_action = "Set ANTHROPIC_API_KEY to a valid key"',
+        'assert "ANTHROPIC_API_KEY" in next_action',
+        'monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")',
+    ],
+)
+def test_naming_the_variable_without_reading_it_is_accepted(tmp_path: Path, source: str) -> None:
+    write(tmp_path, "tests/test_new.py", f"{source}\n")
+
+    assert key_reads(tmp_path) == []
 
 
 @pytest.mark.parametrize(
@@ -210,6 +262,34 @@ def go_specific_leaks(source_root: Path) -> list[str]:
 
 def go_specific_names(source: str) -> list[str]:
     return [name for name, pattern in GO_SPECIFIC_PATTERNS.items() if pattern.search(source)]
+
+
+def key_reads(repo_root: Path) -> list[str]:
+    sources = [*(repo_root / "src").rglob("*.py"), *(repo_root / "tests").rglob("*.py")]
+    return [
+        f"{label(path, repo_root)}: reads the API key"
+        for path in sorted(sources)
+        if label(path, repo_root) not in KEY_READERS and reads_the_key(path)
+    ]
+
+
+def reads_the_key(path: Path) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return any(is_key_read(node) for node in ast.walk(tree))
+
+
+def is_key_read(node: ast.AST) -> bool:
+    if isinstance(node, ast.Attribute):
+        return node.attr == "get_secret_value"
+    if isinstance(node, ast.Subscript):
+        return is_key_variable(node.slice)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        return node.func.attr in ENVIRONMENT_READS and any(map(is_key_variable, node.args))
+    return False
+
+
+def is_key_variable(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value == KEY_VARIABLE
 
 
 def label(path: Path, source_root: Path) -> str:

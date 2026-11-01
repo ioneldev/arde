@@ -1,7 +1,6 @@
 """Calls the real Anthropic API. Run with make eval, which loads the key from .env. Costs money."""
 
-import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 
 import pytest
@@ -72,6 +71,7 @@ def _block_type(block: object) -> str:
 class Live:
     # A SecretStr, because pytest prints the arguments of every frame of a failure with their repr.
     api_key: SecretStr
+    holds_api_key: Callable[[str], bool]
     tracer: RecordingTracer = field(default_factory=RecordingTracer)
     budget: Budget = field(default_factory=lambda: Budget(max_usd=SPEND_CAP_USD))
 
@@ -92,21 +92,24 @@ class Live:
             )
         print(f"[turns] {label}: {self.client.block_types_per_turn()}")
 
-    # Compared as booleans, because a failed comparison of the key itself would print it.
+    # A verdict, not a comparison, because a failed comparison of the key itself would print it.
     def assert_key_never_logged(self) -> None:
-        key = self.api_key.get_secret_value()
-        key_was_logged = any(key in line for line in self.tracer.debug_lines)
-        assert not key_was_logged, "the API key reached the debug log"
-        logged_a_request_id = any("request id req_" in line for line in self.tracer.debug_lines)
-        assert logged_a_request_id, "the adapter should log the request id"
+        everything_recorded = [str(self.tracer.events), *self.tracer.debug_lines]
+        key_was_logged = any(map(self.holds_api_key, everything_recorded))
+        assert not key_was_logged, "the API key reached the trace or the debug log"
 
 
+# Checked after the test, not by it, so a test that fails on its own assertion is checked too.
 @pytest.fixture
-def live() -> Live:
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        pytest.fail("ANTHROPIC_API_KEY is not set: run these tests with make eval, not pytest")
-    return Live(api_key=SecretStr(api_key))
+def live(api_key: SecretStr, holds_api_key: Callable[[str], bool]) -> Iterator[Live]:
+    session = Live(api_key=api_key, holds_api_key=holds_api_key)
+    yield session
+    session.assert_key_never_logged()
+
+
+def assert_the_request_id_was_logged(session: Live) -> None:
+    logged = any("request id req_" in line for line in session.tracer.debug_lines)
+    assert logged, "the adapter should log the request id"
 
 
 def tool(
@@ -154,7 +157,7 @@ def test_haiku_calls_a_trivial_tool_through_run_agent(live: Live) -> None:
 
     live.print_spend("haiku trivial tool")
     assert result == AgentResult(submitted=5, stop="submitted", turns=1)
-    live.assert_key_never_logged()
+    assert_the_request_id_was_logged(live)
 
 
 def test_opus_echoed_thinking_block_is_accepted_on_the_second_turn(live: Live) -> None:
@@ -181,7 +184,6 @@ def test_opus_echoed_thinking_block_is_accepted_on_the_second_turn(live: Live) -
     assert "thinking" in first_turn_blocks, "the echo is proven only if turn 1 held thinking"
     echoed = live.client.requests[1].messages[1]["content"]
     assert [_block_type(block) for block in echoed] == first_turn_blocks
-    live.assert_key_never_logged()
 
 
 # The API refuses an empty error result (HTTP 400), so the adapter sends a stand-in text. An empty
@@ -206,7 +208,6 @@ def test_a_tool_result_with_empty_content_is_accepted(live: Live, is_error: bool
     assert result == AgentResult(submitted=1, stop="submitted", turns=2)
     sent_result = live.client.requests[1].messages[-1]["content"][0]
     assert (sent_result["content"], sent_result["is_error"]) == ("", is_error)
-    live.assert_key_never_logged()
 
 
 OPUS_ONE_SHOT = RoleConfig(model="claude-opus-5-5", effort="low", max_turns=1, max_tokens=200)
@@ -249,7 +250,6 @@ def test_a_schema_the_api_refuses_in_strict_mode_works_with_strict_off(
     )
     assert rejection in str(refused.value)
     assert response.stop_reason in ("end_turn", "max_tokens")
-    live.assert_key_never_logged()
 
 
 class Verdict(BaseModel):
@@ -271,4 +271,3 @@ def test_haiku_structured_output_comes_back_parsed(live: Live) -> None:
         f"cost=${cost_usd(HAIKU.model, response.usage):.5f}"
     )
     assert verdict.label.lower() == "positive"
-    live.assert_key_never_logged()

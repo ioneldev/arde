@@ -44,6 +44,11 @@ files = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# tests/ on the path lets a test in any folder import the shared helpers.
+pythonpath = ["tests"]
+# pytester runs the key guard's own proof. strict-markers stops a misspelt eval marker running a
+# paid test in make check.
+addopts = ["--strict-markers", "-p", "pytester"]
 markers = [
     "integration: needs the Go toolchain",
     "eval: calls the Anthropic API and costs money",

@@ -5,10 +5,15 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
 from arde.adapters.tracer import REDACTED, JsonlTracer
 
 SECRET = "sk-ant-abc"
+
+
+def secret_of(text: str) -> SecretStr:
+    return SecretStr(text)
 
 
 def trace_lines(run_dir: Path) -> list[dict[str, object]]:
@@ -107,14 +112,23 @@ def test_new_events_are_appended_to_what_the_folder_already_holds(tmp_path: Path
 
 
 def test_secrets_are_redacted_everywhere(tmp_path: Path) -> None:
-    t = JsonlTracer(tmp_path, secrets=(SECRET,))
+    t = JsonlTracer(tmp_path, secrets=(secret_of(SECRET),))
     t.event("x", k=SECRET)
     t.debug(SECRET)
     assert SECRET not in everything_written(tmp_path)
 
 
+# --showlocals prints each frame's arguments, so the plain text must not be one of them.
+def test_the_tracer_is_handed_secrets_that_print_masked(tmp_path: Path) -> None:
+    secrets = (secret_of(SECRET),)
+
+    JsonlTracer(tmp_path, secrets=secrets)
+
+    assert SECRET not in repr(secrets)
+
+
 def test_a_secret_is_replaced_by_a_marker_inside_longer_text(tmp_path: Path) -> None:
-    tracer = JsonlTracer(tmp_path, secrets=(SECRET,))
+    tracer = JsonlTracer(tmp_path, secrets=(secret_of(SECRET),))
 
     tracer.event("tool_call", header=f"x-api-key: {SECRET}; again {SECRET}")
 
@@ -122,7 +136,7 @@ def test_a_secret_is_replaced_by_a_marker_inside_longer_text(tmp_path: Path) -> 
 
 
 def test_a_secret_is_redacted_in_nested_values_keys_and_the_kind(tmp_path: Path) -> None:
-    tracer = JsonlTracer(tmp_path, secrets=(SECRET,))
+    tracer = JsonlTracer(tmp_path, secrets=(secret_of(SECRET),))
 
     tracer.event(
         f"kind-{SECRET}",
@@ -139,7 +153,7 @@ def test_a_secret_is_redacted_in_nested_values_keys_and_the_kind(tmp_path: Path)
 
 def test_a_secret_holding_json_special_characters_is_redacted(tmp_path: Path) -> None:
     secret = 'pa"ss\\word'
-    tracer = JsonlTracer(tmp_path, secrets=(secret,))
+    tracer = JsonlTracer(tmp_path, secrets=(secret_of(secret),))
 
     tracer.event("x", k=f"value {secret}")
 
@@ -147,7 +161,7 @@ def test_a_secret_holding_json_special_characters_is_redacted(tmp_path: Path) ->
 
 
 def test_every_secret_is_redacted(tmp_path: Path) -> None:
-    tracer = JsonlTracer(tmp_path, secrets=("first-secret", "second-secret"))
+    tracer = JsonlTracer(tmp_path, secrets=(secret_of("first-secret"), secret_of("second-secret")))
 
     tracer.event("x", k="first-secret and second-secret")
 
@@ -155,7 +169,7 @@ def test_every_secret_is_redacted(tmp_path: Path) -> None:
 
 
 def test_a_secret_that_contains_another_is_redacted_whole(tmp_path: Path) -> None:
-    tracer = JsonlTracer(tmp_path, secrets=("sk-ant", "sk-ant-abc"))
+    tracer = JsonlTracer(tmp_path, secrets=(secret_of("sk-ant"), secret_of("sk-ant-abc")))
 
     tracer.event("x", k="key sk-ant-abc")
     tracer.debug("key sk-ant-abc")
@@ -164,7 +178,7 @@ def test_a_secret_that_contains_another_is_redacted_whole(tmp_path: Path) -> Non
 
 
 def test_an_empty_secret_leaves_the_output_untouched(tmp_path: Path) -> None:
-    tracer = JsonlTracer(tmp_path, secrets=("",))
+    tracer = JsonlTracer(tmp_path, secrets=(secret_of(""),))
 
     tracer.event("x", k="plain")
     tracer.debug("plain")
@@ -177,7 +191,7 @@ def test_an_empty_secret_leaves_the_output_untouched(tmp_path: Path) -> None:
 def test_a_secret_read_from_a_file_with_a_trailing_newline_is_still_redacted(
     tmp_path: Path,
 ) -> None:
-    tracer = JsonlTracer(tmp_path, secrets=(f"{SECRET}\n", "  "))
+    tracer = JsonlTracer(tmp_path, secrets=(secret_of(f"{SECRET}\n"), secret_of("  ")))
 
     tracer.event("x", k=f"key {SECRET}", other="two  spaces")
 
