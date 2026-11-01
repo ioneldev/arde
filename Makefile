@@ -1,0 +1,15 @@
+.PHONY: check integration eval
+
+check:
+	uv run ruff check .
+	uv run ruff format --check .
+	uv run mypy src
+	uv run pytest -m "not integration and not eval" -q
+
+integration:
+	uv run pytest -m integration -q
+	cd tools/goinspect && go test ./...
+
+# --env-file hands .env to pytest alone, so the key never enters the shell's environment.
+eval:
+	uv run --env-file .env pytest -m eval -q

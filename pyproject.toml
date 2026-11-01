@@ -1,0 +1,50 @@
+[project]
+name = "arde"
+version = "0.1.0"
+description = "Agentic Repo Docs Engine: documents a Go HTTP service and proves it changed no behaviour."
+readme = "README.md"
+authors = [
+    { name = "Ionel Cîmpan", email = "ionel.cimpan@protonmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=2.3.0",
+    "jsonschema>=4.26.0",
+    "openapi-spec-validator>=0.9.0",
+    "pydantic>=2.14.2",
+    "pyyaml>=6.0.3",
+    "referencing>=0.37.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.27,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+    "types-pyyaml>=6.0.12.20261030",
+]
+
+[tool.ruff]
+line-length = 100
+# docs/research holds throwaway experiment code that is kept as evidence, not maintained.
+# docs/superpowers holds the design and plan, whose Python blocks are pseudo-code: ruff format
+# also rewrites code blocks inside Markdown, which would silently edit those approved documents.
+extend-exclude = ["docs/research", "docs/superpowers"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: needs the Go toolchain",
+    "eval: calls the Anthropic API and costs money",
+]
