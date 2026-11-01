@@ -9,7 +9,7 @@ This spec says what this phase delivers and how we know it's done. The reasoning
 | Task | What | Status |
 |---|---|---|
 | 1 | Repo skeleton, `make check`, docs wiki | Done |
-| 2 | Domain models | Not started |
+| 2 | Domain models | Done |
 | 3 | Tracer, budget, model config | Not started |
 | 4 | LLM port, fake client, agent loop | Not started |
 | 5 | Anthropic client | Not started |
