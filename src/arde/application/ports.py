@@ -7,6 +7,8 @@ from pydantic import BaseModel
 
 from arde.application.models_config import RoleConfig
 from arde.domain.base import Frozen
+from arde.domain.errors import ArdeError
+from arde.domain.report import ExitCode
 from arde.domain.usage import Usage
 
 
@@ -50,6 +52,15 @@ class LLMResponse(Frozen):
     latency_s: float
     # Sent back unchanged on the next turn, because the API checks thinking blocks byte for byte.
     assistant_content: tuple[object, ...]
+
+
+# Lives with the port, not the adapter, because application code catches it and may not import
+# an adapter.
+class ProviderError(ArdeError):
+    """The model provider failed in a way the run cannot work around."""
+
+    def __init__(self, message: str, *, next_action: str) -> None:
+        super().__init__(message, next_action=next_action, exit_code=ExitCode.CHECKS_FAILED)
 
 
 class LLMClient(Protocol):

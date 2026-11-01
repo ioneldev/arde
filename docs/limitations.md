@@ -33,13 +33,20 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 - An error code is exempt as unreachable only if the wiki holds an `unreachable` fact with code evidence. A wrong claim of unreachable is a known limit.
 - It has not been run yet, so its catch rate is unknown.
 
+## The model API
+
+Measured against the live API on 2026-11-02, with Opus 5.5.
+
+- **Strict tool use is refused for the repo profile and for the facts.** The API answers `For 'object' type, 'additionalProperties: object' is not supported` for the open `args` dict in the profile, and `Schema type 'oneOf' is not supported` for the fact union. Rewriting `oneOf` as `anyOf` did not help on Haiku 5.5: the API then said the compiled grammar was too large. Tools with these schemas must be sent with `strict=False`, and code validation holds the guarantee.
+- **A refusal ends the agent, with no retry on another model.** The server-side fallback needs the beta client, and Haiku 5.5, which the classifier uses, has no fallback at all. The agent stops with the reason `refused`.
+- **An error result with no text is refused by the API** (HTTP 400). The client sends a stand-in text, so a tool that fails silently does not end the run.
+
 ## Not tested yet
 
 As of Phase 0. Move an item out of this list when a test or a measurement covers it.
 
 - Linux, Windows and amd64 hosts. The container was tried only on Docker for Mac (arm64).
-- Any real API call, and agents producing patterns or facts.
-- Closing schemas around `oneOf`.
+- Agents producing patterns or facts. The API client itself has been run live, but no agent has produced these yet.
 - A full run end to end, and any second repo. No-config onboarding is a claim, not a result.
 - Run cost. The estimate of about $3 per first run with prompt caching rests on a review, not a measurement.
 

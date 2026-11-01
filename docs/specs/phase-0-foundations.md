@@ -12,7 +12,7 @@ This spec says what this phase delivers and how we know it's done. The reasoning
 | 2 | Domain models | Done |
 | 3 | Tracer, budget, model config | Done |
 | 4 | LLM port, fake client, agent loop | Done |
-| 5 | Anthropic client | Not started |
+| 5 | Anthropic client | Done |
 | Review | Architecture, code, bug hunters, security | Not started |
 | Gate | Ionel reviews, understands and tests | Not started |
 
