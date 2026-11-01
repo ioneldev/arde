@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 from recording_tracer import RecordingTracer
 
 from arde.adapters.llm.anthropic_client import AnthropicClient
@@ -34,6 +34,7 @@ OPUS = RoleConfig(model="claude-opus-5-5", effort="high", max_turns=4, max_token
 SPEND_CAP_USD = 0.50
 
 ToolInput = dict[str, object]
+ToolHandler = Callable[[ToolInput], ToolOutcome]
 
 
 class ObservingClient(LLMClient):
@@ -69,8 +70,8 @@ def _block_type(block: object) -> str:
 
 @dataclass
 class Live:
-    # Out of the repr, because pytest prints a failing test's arguments with their repr.
-    api_key: str = field(repr=False)
+    # A SecretStr, because pytest prints the arguments of every frame of a failure with their repr.
+    api_key: SecretStr
     tracer: RecordingTracer = field(default_factory=RecordingTracer)
     budget: Budget = field(default_factory=lambda: Budget(max_usd=SPEND_CAP_USD))
 
@@ -93,7 +94,8 @@ class Live:
 
     # Compared as booleans, because a failed comparison of the key itself would print it.
     def assert_key_never_logged(self) -> None:
-        key_was_logged = any(self.api_key in line for line in self.tracer.debug_lines)
+        key = self.api_key.get_secret_value()
+        key_was_logged = any(key in line for line in self.tracer.debug_lines)
         assert not key_was_logged, "the API key reached the debug log"
         logged_a_request_id = any("request id req_" in line for line in self.tracer.debug_lines)
         assert logged_a_request_id, "the adapter should log the request id"
@@ -104,10 +106,12 @@ def live() -> Live:
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         pytest.fail("ANTHROPIC_API_KEY is not set: run these tests with make eval, not pytest")
-    return Live(api_key=api_key)
+    return Live(api_key=SecretStr(api_key))
 
 
-def tool(name: str, description: str, properties: dict[str, object], handler: Callable) -> Tool:  # type: ignore[type-arg]
+def tool(
+    *, name: str, description: str, properties: dict[str, object], handler: ToolHandler
+) -> Tool:
     schema = {
         "type": "object",
         "properties": properties,
@@ -126,10 +130,10 @@ def accept_answer(tool_input: ToolInput) -> ToolOutcome:
 
 def submit_tool(answer_type: str) -> Tool:
     return tool(
-        "submit_answer",
-        "Submit the final answer. Calling this ends the task.",
-        {"answer": {"type": answer_type}},
-        accept_answer,
+        name="submit_answer",
+        description="Submit the final answer. Calling this ends the task.",
+        properties={"answer": {"type": answer_type}},
+        handler=accept_answer,
     )
 
 
@@ -155,10 +159,10 @@ def test_haiku_calls_a_trivial_tool_through_run_agent(live: Live) -> None:
 
 def test_opus_echoed_thinking_block_is_accepted_on_the_second_turn(live: Live) -> None:
     look_up = tool(
-        "look_up_color",
-        "Look up the color registered for a numeric code.",
-        {"code": {"type": "string"}},
-        lambda tool_input: ToolOutcome(content="blue"),
+        name="look_up_color",
+        description="Look up the color registered for a numeric code.",
+        properties={"code": {"type": "string"}},
+        handler=lambda tool_input: ToolOutcome(content="blue"),
     )
     spec = spec_for(
         system=(
@@ -185,10 +189,10 @@ def test_opus_echoed_thinking_block_is_accepted_on_the_second_turn(live: Live) -
 @pytest.mark.parametrize("is_error", [True, False])
 def test_a_tool_result_with_empty_content_is_accepted(live: Live, is_error: bool) -> None:
     probe = tool(
-        "probe",
-        "Probe the service.",
-        {"target": {"type": "string"}},
-        lambda tool_input: ToolOutcome(content="", is_error=is_error),
+        name="probe",
+        description="Probe the service.",
+        properties={"target": {"type": "string"}},
+        handler=lambda tool_input: ToolOutcome(content="", is_error=is_error),
     )
     spec = spec_for(
         system="Call probe once. Whatever it returns, then call submit_answer with 1.",

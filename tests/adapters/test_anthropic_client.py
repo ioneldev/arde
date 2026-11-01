@@ -1,12 +1,17 @@
 """The Anthropic adapter, run against a stand-in for the SDK client: no network and no key."""
 
 import json
+import threading
+import traceback
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler
+from socketserver import ThreadingTCPServer
 
 import anthropic
 import httpx2
 import pytest
 from anthropic.types import Message, ParsedMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 from recording_tracer import RecordingTracer
 
 from arde.adapters.llm.anthropic_client import AnthropicClient
@@ -148,9 +153,9 @@ def client_returning(
 
 def status_error(
     error_type: type[anthropic.APIStatusError],
+    *,
     status: int,
     detail: str,
-    *,
     body: object = None,
 ) -> anthropic.APIStatusError:
     request = httpx2.Request("POST", MESSAGES_URL)
@@ -371,7 +376,7 @@ def raises_provider_error(
 
 def test_auth_error_becomes_provider_error_with_next_action() -> None:
     error, _ = raises_provider_error(
-        status_error(anthropic.AuthenticationError, 401, "invalid x-api-key")
+        status_error(anthropic.AuthenticationError, status=401, detail="invalid x-api-key")
     )
 
     assert "rejected the API key" in str(error)
@@ -388,7 +393,7 @@ def test_the_api_message_replaces_the_sdk_dump_of_the_whole_body() -> None:
         "request_id": REQUEST_ID,
     }
     sdk_error = status_error(
-        anthropic.AuthenticationError, 401, f"Error code: 401 - {body}", body=body
+        anthropic.AuthenticationError, status=401, detail=f"Error code: 401 - {body}", body=body
     )
 
     error, _ = raises_provider_error(sdk_error)
@@ -400,7 +405,7 @@ def test_the_api_message_replaces_the_sdk_dump_of_the_whole_body() -> None:
 
 def test_rate_limit_after_retries_becomes_provider_error() -> None:
     error, messages = raises_provider_error(
-        status_error(anthropic.RateLimitError, 429, "rate limit reached")
+        status_error(anthropic.RateLimitError, status=429, detail="rate limit reached")
     )
 
     assert "rate limit" in str(error).lower()
@@ -425,12 +430,54 @@ def test_a_timeout_is_told_apart_from_a_refused_connection() -> None:
 @pytest.mark.parametrize(
     ("sdk_error", "problem", "next_action_mentions"),
     [
-        (status_error(anthropic.PermissionDeniedError, 403, "no access"), "not allowed", "model"),
-        (status_error(anthropic.NotFoundError, 404, "model: nope"), "model", "ARDE_MODELS_FILE"),
-        (status_error(anthropic.BadRequestError, 400, "schema too big"), "invalid", "request id"),
-        (status_error(anthropic.OverloadedError, 529, "Overloaded"), "overloaded", "again"),
-        (status_error(anthropic.InternalServerError, 500, "oops"), "server error", "again"),
-        (status_error(anthropic.UnprocessableEntityError, 422, "bad"), "call failed", "report"),
+        (
+            status_error(anthropic.PermissionDeniedError, status=403, detail="no access"),
+            "not allowed",
+            "model",
+        ),
+        (
+            status_error(anthropic.NotFoundError, status=404, detail="model: nope"),
+            "model",
+            "ARDE_MODELS_FILE",
+        ),
+        (
+            status_error(anthropic.BadRequestError, status=400, detail="schema too big"),
+            "invalid",
+            "request id",
+        ),
+        (
+            status_error(anthropic.OverloadedError, status=529, detail="Overloaded"),
+            "overloaded",
+            "again",
+        ),
+        (
+            status_error(anthropic.InternalServerError, status=500, detail="oops"),
+            "server error",
+            "again",
+        ),
+        (
+            status_error(
+                anthropic.APIStatusError,
+                status=402,
+                detail="Your credit balance is too low",
+                body={
+                    "type": "error",
+                    "error": {"type": "billing_error", "message": "Your credit balance is too low"},
+                },
+            ),
+            "billing",
+            "Console",
+        ),
+        (
+            status_error(anthropic.RequestTooLargeError, status=413, detail="too large"),
+            "too large",
+            "size limit",
+        ),
+        (
+            status_error(anthropic.UnprocessableEntityError, status=422, detail="bad"),
+            "call failed",
+            "report",
+        ),
     ],
 )
 def test_every_api_status_error_names_a_next_action(
@@ -452,7 +499,7 @@ def test_an_error_the_sdk_raises_for_other_reasons_is_wrapped_too() -> None:
 
 
 def test_the_sdk_error_stays_attached_for_the_debug_log() -> None:
-    sdk_error = status_error(anthropic.AuthenticationError, 401, "invalid x-api-key")
+    sdk_error = status_error(anthropic.AuthenticationError, status=401, detail="invalid x-api-key")
 
     error, _ = raises_provider_error(sdk_error)
 
@@ -491,7 +538,9 @@ def test_parse_without_structured_output_is_a_provider_error() -> None:
 
 
 def test_parse_errors_from_the_api_become_provider_errors() -> None:
-    client, _ = client_returning(status_error(anthropic.RateLimitError, 429, "slow down"))
+    client, _ = client_returning(
+        status_error(anthropic.RateLimitError, status=429, detail="slow down")
+    )
 
     with pytest.raises(ProviderError):
         client.parse(REQUEST, Verdict)
@@ -599,7 +648,163 @@ def test_echoed_thinking_blocks_go_back_on_the_wire_unchanged() -> None:
     assert sent[1]["cache_control"] == {"type": "ephemeral"}
 
 
+def test_a_failure_that_cannot_succeed_on_a_second_try_is_not_told_to_run_again() -> None:
+    billing_body = {"type": "error", "error": {"type": "billing_error", "message": "low"}}
+    unrepeatable = [
+        status_error(anthropic.APIStatusError, status=402, detail="low", body=billing_body),
+        status_error(anthropic.RequestTooLargeError, status=413, detail="too large"),
+    ]
+
+    next_actions = [raises_provider_error(sdk_error)[0].next_action for sdk_error in unrepeatable]
+
+    assert [action for action in next_actions if "Run again" in action] == []
+
+
+# max_tokens beyond what the SDK allows without streaming: it raises before it sends anything.
+@pytest.mark.parametrize("call", ["complete", "parse"])
+def test_a_max_tokens_the_sdk_will_not_send_is_a_provider_error(call: str) -> None:
+    sent: list[dict[str, object]] = []
+    client = AnthropicClient(sdk_over_mock_api(api_reply([], "end_turn"), sent), RecordingTracer())
+    too_many = REQUEST.model_copy(
+        update={"config": CONFIG.model_copy(update={"max_tokens": 64_000})}
+    )
+
+    with pytest.raises(ProviderError) as raised:
+        client.complete(too_many) if call == "complete" else client.parse(too_many, Verdict)
+
+    assert "max_tokens" in raised.value.next_action
+    assert "ARDE_MODELS_FILE" in raised.value.next_action
+    assert "64000" in str(raised.value)
+    assert sent == []
+
+
+def test_a_reply_that_is_valid_json_but_breaks_the_schema_does_not_blame_max_tokens() -> None:
+    reply = api_reply([{"type": "text", "text": '{"label": 5}'}], "end_turn")
+    client = AnthropicClient(sdk_over_mock_api(reply, []), RecordingTracer())
+
+    with pytest.raises(ProviderError) as raised:
+        client.parse(REQUEST, Verdict)
+
+    assert "max_tokens" not in raised.value.next_action
+    assert "Verdict" in str(raised.value)
+    assert raised.value.next_action
+
+
+def test_a_reply_that_is_not_json_covers_both_a_cut_off_and_a_partial_refusal() -> None:
+    reply = api_reply([{"type": "text", "text": "I cannot help with"}], "refusal")
+    client = AnthropicClient(sdk_over_mock_api(reply, []), RecordingTracer())
+
+    with pytest.raises(ProviderError) as raised:
+        client.parse(REQUEST, Verdict)
+
+    assert "max_tokens" in raised.value.next_action
+    assert "declined" in raised.value.next_action
+
+
+# What pytest prints for a failing test, which includes every frame's arguments.
+def pytest_failure_text(raised: pytest.ExceptionInfo[ProviderError]) -> str:
+    return str(raised.getrepr(style="long", funcargs=True))
+
+
+BAD_KEYS = {
+    "empty": "",
+    "only spaces": "   ",
+    "trailing newline": "sk-ant-SECRET-0123\n",
+    "leading space": " sk-ant-SECRET-0123",
+    "inner space": "sk-ant-SECRET 0123",
+    "tab": "sk-ant-SECRET\t0123",
+    "non-ascii": "sk-ant-SECRET-\u00e9",
+}
+
+
+# Parametrized by name, because pytest prints the arguments of a failing test and the key is one.
+@pytest.mark.parametrize("kind", BAD_KEYS)
+def test_a_malformed_key_is_refused_without_echoing_it(kind: str) -> None:
+    with pytest.raises(ProviderError) as raised:
+        AnthropicClient.from_api_key(SecretStr(BAD_KEYS[kind]), RecordingTracer())
+
+    assert "ANTHROPIC_API_KEY" in raised.value.next_action
+    assert "SECRET" not in pytest_failure_text(raised) + raised.value.next_action
+
+
+class RejectingApi(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("content-length", 0)))
+        error = {"type": "authentication_error", "message": "invalid x-api-key"}
+        body = json.dumps({"type": "error", "error": error}).encode()
+        self.send_response(401)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.send_header("request-id", REQUEST_ID)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        pass
+
+
+# A real socket on the loopback address, because only a real transport refuses a header value.
+# Not an HTTPServer: its bind looks up the host name, which took 35 seconds on a laptop.
+@pytest.fixture
+def loopback_api() -> Iterator[str]:
+    server = ThreadingTCPServer(("127.0.0.1", 0), RejectingApi)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}).start()
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+    server.server_close()
+
+
+# Module constants, so the literal is not in the test source that pytest prints with a failure.
+LEAK_MARKER = "LEAK-PROBE"
+KEY_WITH_NEWLINE = f"sk-ant-{LEAK_MARKER}-0123\n"
+
+
+def sdk_on_loopback(api_key: str, base_url: str) -> anthropic.Anthropic:
+    return anthropic.Anthropic(api_key=api_key, base_url=base_url, max_retries=0)
+
+
+def test_the_loopback_api_answers_a_well_formed_key_with_an_auth_error(loopback_api: str) -> None:
+    client = AnthropicClient(sdk_on_loopback("sk-ant-WELL-FORMED", loopback_api), RecordingTracer())
+
+    with pytest.raises(ProviderError) as raised:
+        client.complete(REQUEST)
+
+    assert "rejected the API key" in str(raised.value)
+
+
+# Built by hand, to get past from_api_key. The transport refuses the header and says so in a
+# message that holds the whole value, so no part of that chain may reach the ProviderError.
+def test_a_key_the_transport_refuses_never_reaches_the_error_or_its_traceback(
+    loopback_api: str,
+) -> None:
+    tracer = RecordingTracer()
+    sdk = sdk_on_loopback(KEY_WITH_NEWLINE, loopback_api)
+
+    with pytest.raises(ProviderError) as raised:
+        AnthropicClient(sdk, tracer).complete(REQUEST)
+
+    everything_a_log_could_hold = "".join(
+        [pytest_failure_text(raised), raised.value.next_action, *tracer.debug_lines]
+    )
+    assert LEAK_MARKER not in everything_a_log_could_hold
+    assert raised.value.__cause__ is None
+
+
+def test_only_the_kinds_of_a_connection_failure_are_logged_not_its_messages() -> None:
+    tracer = RecordingTracer()
+    sdk_error = connection_error()
+    sdk_error.__cause__ = RuntimeError("Illegal header value b'Bearer sk-ant-SECRET'")
+
+    error, _ = raises_provider_error(sdk_error, tracer)
+
+    logged = "\n".join(tracer.debug_lines)
+    assert "RuntimeError" in logged
+    assert "SECRET" not in logged
+    assert "SECRET" not in "".join(traceback.format_exception(error))
+
+
 def test_building_from_an_api_key_needs_no_network() -> None:
-    client = AnthropicClient.from_api_key("sk-test-not-a-real-key", RecordingTracer())
+    client = AnthropicClient.from_api_key(SecretStr("sk-test-not-a-real-key"), RecordingTracer())
 
     assert isinstance(client, AnthropicClient)

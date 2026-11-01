@@ -48,8 +48,8 @@ class JsonlTracer(Tracer):
         return text
 
 
-# A key read from a file often ends in a newline, and the client does not send it. Stripping
-# makes the secret match the text that really appears. An empty secret is dropped, because
+# A key read from a file often ends in a newline, which is never part of the key. Stripping makes
+# the secret match the text that really appears. An empty secret is dropped, because
 # replacing "" would insert the marker between every character. The longest secret goes first,
 # so a secret that contains another is replaced whole and leaves no tail behind.
 def _secrets_to_redact(secrets: tuple[str, ...]) -> tuple[str, ...]:
