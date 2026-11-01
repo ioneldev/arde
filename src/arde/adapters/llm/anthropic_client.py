@@ -130,13 +130,13 @@ class AnthropicClient(LLMClient):
     # The transport refuses a header value with a space or a control character in it, and the SDK
     # reports that as a lost connection. A key is checked here instead, where the error can say so.
     # A SecretStr, because a traceback prints the arguments of every frame it passes through, and
-    # this frame is one of them when the key is refused.
+    # this frame is one of them when the key is refused. The plain value is never put in a local
+    # for the same reason: --showlocals prints those.
     @classmethod
     def from_api_key(cls, api_key: SecretStr, tracer: Tracer) -> Self:
-        key = api_key.get_secret_value()
-        if _VISIBLE_ASCII.fullmatch(key) is None:
+        if _VISIBLE_ASCII.fullmatch(api_key.get_secret_value()) is None:
             raise _malformed_key()
-        return cls(anthropic.Anthropic(api_key=key), tracer)
+        return cls(anthropic.Anthropic(api_key=api_key.get_secret_value()), tracer)
 
     # A refusal comes back as stop_reason "refusal" for the agent loop to stop on. No server-side
     # fallback is requested: it needs the beta client, and Haiku 5.5, which the classifier uses,
@@ -166,21 +166,28 @@ class AnthropicClient(LLMClient):
             raise _missing_structured_output(schema, response)
         return reply.parsed_output, response
 
+    # The failure is raised after the handlers, not inside them. Inside a handler Python links
+    # the SDK error as __context__ even for "from None", and a transport error's chain holds the
+    # request headers, the API key among them.
     def _send[M: Message](self, request: LLMRequest, ask: Callable[[], M]) -> tuple[M, LLMResponse]:
         started = self._clock()
         try:
             reply = ask()
         except anthropic.AnthropicError as error:
             self._log_failure(error)
-            raise _provider_error(error) from _cause_that_is_safe_to_keep(error)
+            failure = _provider_error(error)
+            cause = _cause_that_is_safe_to_keep(error)
         # A ValidationError is a ValueError too. parse() reports it, so only a plain one is caught.
         except ValueError as error:
             if type(error) is not ValueError or _STREAMING_REQUIRED not in str(error):
                 raise
-            raise _max_tokens_too_high(request) from None
-        latency_s = self._clock() - started
-        self._tracer.debug(f"{reply.model} request id {reply._request_id}")
-        return reply, _to_response(reply, latency_s=latency_s)
+            failure = _max_tokens_too_high(request)
+            cause = None
+        else:
+            latency_s = self._clock() - started
+            self._tracer.debug(f"{reply.model} request id {reply._request_id}")
+            return reply, _to_response(reply, latency_s=latency_s)
+        raise failure from cause
 
     # Only the kinds are logged. A transport error's message can quote the request headers, and
     # the API key is one of them.

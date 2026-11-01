@@ -701,9 +701,18 @@ def test_a_reply_that_is_not_json_covers_both_a_cut_off_and_a_partial_refusal() 
     assert "declined" in raised.value.next_action
 
 
-# What pytest prints for a failing test, which includes every frame's arguments.
+# What pytest prints for a failing test under --showlocals: every frame's arguments and locals.
 def pytest_failure_text(raised: pytest.ExceptionInfo[ProviderError]) -> str:
-    return str(raised.getrepr(style="long", funcargs=True))
+    return str(raised.getrepr(style="long", funcargs=True, showlocals=True))
+
+
+def links_of(error: BaseException) -> Iterator[BaseException]:
+    seen: set[int] = set()
+    link: BaseException | None = error
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        yield link
+        link = link.__cause__ or link.__context__
 
 
 BAD_KEYS = {
@@ -719,7 +728,7 @@ BAD_KEYS = {
 
 # Parametrized by name, because pytest prints the arguments of a failing test and the key is one.
 @pytest.mark.parametrize("kind", BAD_KEYS)
-def test_a_malformed_key_is_refused_without_echoing_it(kind: str) -> None:
+def test_a_malformed_key_is_never_printed_not_even_with_showlocals(kind: str) -> None:
     with pytest.raises(ProviderError) as raised:
         AnthropicClient.from_api_key(SecretStr(BAD_KEYS[kind]), RecordingTracer())
 
@@ -758,6 +767,8 @@ def loopback_api() -> Iterator[str]:
 # Module constants, so the literal is not in the test source that pytest prints with a failure.
 LEAK_MARKER = "LEAK-PROBE"
 KEY_WITH_NEWLINE = f"sk-ant-{LEAK_MARKER}-0123\n"
+WELL_FORMED_MARKER = "WELL-FORMED-PROBE"
+WELL_FORMED_KEY = f"sk-ant-{WELL_FORMED_MARKER}-0123"
 
 
 def sdk_on_loopback(api_key: str, base_url: str) -> anthropic.Anthropic:
@@ -765,7 +776,7 @@ def sdk_on_loopback(api_key: str, base_url: str) -> anthropic.Anthropic:
 
 
 def test_the_loopback_api_answers_a_well_formed_key_with_an_auth_error(loopback_api: str) -> None:
-    client = AnthropicClient(sdk_on_loopback("sk-ant-WELL-FORMED", loopback_api), RecordingTracer())
+    client = AnthropicClient(sdk_on_loopback(WELL_FORMED_KEY, loopback_api), RecordingTracer())
 
     with pytest.raises(ProviderError) as raised:
         client.complete(REQUEST)
@@ -773,9 +784,23 @@ def test_the_loopback_api_answers_a_well_formed_key_with_an_auth_error(loopback_
     assert "rejected the API key" in str(raised.value)
 
 
+# The one thing that stays attached is the server's answer, so it must hold no key either.
+def test_the_server_answer_kept_as_the_cause_holds_no_key(loopback_api: str) -> None:
+    client = AnthropicClient(sdk_on_loopback(WELL_FORMED_KEY, loopback_api), RecordingTracer())
+
+    with pytest.raises(ProviderError) as raised:
+        client.complete(REQUEST)
+
+    assert isinstance(raised.value.__cause__, anthropic.AuthenticationError)
+    every_link_rendered = [
+        "".join(traceback.format_exception(link)) for link in links_of(raised.value)
+    ]
+    assert WELL_FORMED_MARKER not in "".join(every_link_rendered)
+
+
 # Built by hand, to get past from_api_key. The transport refuses the header and says so in a
 # message that holds the whole value, so no part of that chain may reach the ProviderError.
-def test_a_key_the_transport_refuses_never_reaches_the_error_or_its_traceback(
+def test_a_key_the_transport_refuses_is_in_no_link_of_the_error_chain(
     loopback_api: str,
 ) -> None:
     tracer = RecordingTracer()
@@ -789,6 +814,12 @@ def test_a_key_the_transport_refuses_never_reaches_the_error_or_its_traceback(
     )
     assert LEAK_MARKER not in everything_a_log_could_hold
     assert raised.value.__cause__ is None
+    # Not even an implicit link: a handler or a logger that follows __context__ would find it.
+    assert raised.value.__context__ is None
+    every_link_rendered = [
+        "".join(traceback.format_exception(link)) for link in links_of(raised.value)
+    ]
+    assert LEAK_MARKER not in "".join(every_link_rendered)
 
 
 def test_only_the_kinds_of_a_connection_failure_are_logged_not_its_messages() -> None:
