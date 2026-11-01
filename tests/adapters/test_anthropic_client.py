@@ -227,41 +227,6 @@ def test_a_tool_that_is_not_strict_omits_the_field() -> None:
     assert "strict" not in sdk.created[0]["tools"][0]
 
 
-def tool_result_turn(content: str, *, is_error: bool) -> dict[str, object]:
-    result = {"type": "tool_result", "tool_use_id": "toolu_1", "content": content}
-    return {"role": "user", "content": [{**result, "is_error": is_error}]}
-
-
-def sent_tool_result(request: LLMRequest) -> dict[str, object]:
-    client, sdk = client_returning(message_with())
-    client.complete(request)
-    return sdk.created[0]["messages"][-1]["content"][0]
-
-
-# The API answers an error result with no content with HTTP 400 ("content cannot be empty if
-# is_error is true"), so the adapter gives it a text instead of failing the whole run.
-def test_an_error_result_with_no_content_is_sent_with_a_stand_in_text() -> None:
-    request = REQUEST.model_copy(update={"messages": (tool_result_turn("", is_error=True),)})
-
-    sent = sent_tool_result(request)
-
-    assert sent["content"] == "The tool reported an error but gave no message."
-    assert sent["is_error"] is True
-    assert request.messages[0] == tool_result_turn("", is_error=True)
-
-
-@pytest.mark.parametrize(
-    ("content", "is_error"),
-    [("disk full", True), ("found 3 routes", False), ("", False)],
-)
-def test_every_other_tool_result_is_sent_as_it_is(content: str, is_error: bool) -> None:
-    turn = tool_result_turn(content, is_error=is_error)
-
-    sent = sent_tool_result(REQUEST.model_copy(update={"messages": (turn,)}))
-
-    assert sent == turn["content"][0]
-
-
 def test_a_text_message_is_sent_as_it_is() -> None:
     client, sdk = client_returning(message_with())
 
@@ -820,6 +785,16 @@ def test_a_key_the_transport_refuses_is_in_no_link_of_the_error_chain(
         "".join(traceback.format_exception(link)) for link in links_of(raised.value)
     ]
     assert LEAK_MARKER not in "".join(every_link_rendered)
+
+
+def test_a_status_failure_logs_its_kind_too() -> None:
+    tracer = RecordingTracer()
+
+    raises_provider_error(
+        status_error(anthropic.AuthenticationError, status=401, detail="invalid x-api-key"), tracer
+    )
+
+    assert any("AuthenticationError" in line for line in tracer.debug_lines)
 
 
 def test_only_the_kinds_of_a_connection_failure_are_logged_not_its_messages() -> None:

@@ -82,6 +82,31 @@ def test_the_run_folder_is_created_when_missing(tmp_path: Path) -> None:
     assert (run_dir / "trace.jsonl").is_file()
 
 
+def test_both_files_exist_before_anything_is_written(tmp_path: Path) -> None:
+    JsonlTracer(tmp_path, secrets=())
+
+    assert (tmp_path / "trace.jsonl").read_text(encoding="utf-8") == ""
+    assert (tmp_path / "debug.log").read_text(encoding="utf-8") == ""
+
+
+def test_a_run_folder_that_cannot_be_written_fails_before_any_spend(tmp_path: Path) -> None:
+    (tmp_path / "trace.jsonl").mkdir()
+
+    with pytest.raises(IsADirectoryError):
+        JsonlTracer(tmp_path, secrets=())
+
+
+@pytest.mark.parametrize("text", ["caf\udce9.go", "half an emoji \ud83d"])
+def test_text_that_is_not_valid_unicode_never_crashes_the_tracer(tmp_path: Path, text: str) -> None:
+    tracer = JsonlTracer(tmp_path, secrets=())
+
+    tracer.event("tool_call", summary=text)
+    tracer.debug(text)
+
+    assert len(trace_lines(tmp_path)) == 1
+    assert "\\ud" in (tmp_path / "debug.log").read_text(encoding="utf-8")
+
+
 def test_debug_text_goes_to_debug_log_with_a_timestamp(tmp_path: Path) -> None:
     tracer = JsonlTracer(tmp_path, secrets=())
 

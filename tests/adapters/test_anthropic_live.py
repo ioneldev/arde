@@ -8,7 +8,7 @@ from pydantic import BaseModel, SecretStr
 from recording_tracer import RecordingTracer
 
 from arde.adapters.llm.anthropic_client import AnthropicClient
-from arde.application.agent_loop import AgentDeps, AgentResult, AgentSpec, run_agent
+from arde.application.agent_loop import Accepted, AgentDeps, AgentSpec, SubmitTool, run_agent
 from arde.application.budget import Budget
 from arde.application.models_config import RoleConfig
 from arde.application.ports import (
@@ -78,8 +78,8 @@ class Live:
     def __post_init__(self) -> None:
         self.client = ObservingClient(AnthropicClient.from_api_key(self.api_key, self.tracer))
 
-    def run(self, spec: AgentSpec, config: RoleConfig) -> AgentResult:
-        deps = AgentDeps(client=self.client, config=config, tracer=self.tracer, budget=self.budget)
+    def run(self, spec: AgentSpec[object]) -> object:
+        deps = AgentDeps(client=self.client, tracer=self.tracer, budget=self.budget)
         return run_agent(spec, deps)
 
     def print_spend(self, label: str) -> None:
@@ -112,51 +112,61 @@ def assert_the_request_id_was_logged(session: Live) -> None:
     assert logged, "the adapter should log the request id"
 
 
-def tool(
-    *, name: str, description: str, properties: dict[str, object], handler: ToolHandler
-) -> Tool:
+def tool_definition(*, name: str, description: str, properties: dict[str, object]) -> ToolDef:
     schema = {
         "type": "object",
         "properties": properties,
         "required": list(properties),
         "additionalProperties": False,
     }
-    return Tool(
-        definition=ToolDef(name=name, description=description, input_schema=schema),
-        handler=handler,
-    )
+    return ToolDef(name=name, description=description, input_schema=schema)
 
 
-def accept_answer(tool_input: ToolInput) -> ToolOutcome:
-    return ToolOutcome(content="accepted", submitted=tool_input["answer"])
+def tool(
+    *, name: str, description: str, properties: dict[str, object], handler: ToolHandler
+) -> Tool:
+    definition = tool_definition(name=name, description=description, properties=properties)
+    return Tool(definition=definition, handler=handler)
 
 
-def submit_tool(answer_type: str) -> Tool:
-    return tool(
+def accept_answer(tool_input: ToolInput) -> Accepted[object]:
+    return Accepted(tool_input["answer"])
+
+
+def submit_tool(answer_type: str) -> SubmitTool[object]:
+    definition = tool_definition(
         name="submit_answer",
         description="Submit the final answer. Calling this ends the task.",
         properties={"answer": {"type": answer_type}},
-        handler=accept_answer,
     )
+    return SubmitTool(definition=definition, validate=accept_answer)
 
 
-def spec_for(*, system: str, user: str, tools: tuple[Tool, ...]) -> AgentSpec:
+def spec_for(
+    *,
+    config: RoleConfig,
+    system: str,
+    user: str,
+    tools: tuple[Tool, ...] = (),
+    submit: SubmitTool[object],
+) -> AgentSpec[object]:
     return AgentSpec(
-        role="live", system=system, user=user, tools=tools, submit_tool="submit_answer"
+        role="classifier", config=config, system=system, user=user, tools=tools, submit=submit
     )
 
 
 def test_haiku_calls_a_trivial_tool_through_run_agent(live: Live) -> None:
     spec = spec_for(
+        config=HAIKU,
         system="Answer by calling submit_answer. Write nothing else.",
         user="What is 2 + 3?",
-        tools=(submit_tool("integer"),),
+        submit=submit_tool("integer"),
     )
 
-    result = live.run(spec, HAIKU)
+    result = live.run(spec)
 
     live.print_spend("haiku trivial tool")
-    assert result == AgentResult(submitted=5, stop="submitted", turns=1)
+    assert result == 5
     assert_the_request_id_was_logged(live)
 
 
@@ -168,25 +178,28 @@ def test_opus_echoed_thinking_block_is_accepted_on_the_second_turn(live: Live) -
         handler=lambda tool_input: ToolOutcome(content="blue"),
     )
     spec = spec_for(
+        config=OPUS,
         system=(
             "Work the sum out first. Then call look_up_color with the sum as its code, and call "
             "submit_answer with the color it returned. Never guess the color."
         ),
         user="The sum to work out is 4817 + 9286 - 1375.",
-        tools=(look_up, submit_tool("string")),
+        tools=(look_up,),
+        submit=submit_tool("string"),
     )
 
-    result = live.run(spec, OPUS)
+    result = live.run(spec)
 
     live.print_spend("opus two turns")
-    assert result == AgentResult(submitted="blue", stop="submitted", turns=2)
+    assert result == "blue"
+    assert len(live.client.responses) == 2
     first_turn_blocks = live.client.block_types_per_turn()[0][1]
     assert "thinking" in first_turn_blocks, "the echo is proven only if turn 1 held thinking"
     echoed = live.client.requests[1].messages[1]["content"]
     assert [_block_type(block) for block in echoed] == first_turn_blocks
 
 
-# The API refuses an empty error result (HTTP 400), so the adapter sends a stand-in text. An empty
+# The API refuses an empty error result (HTTP 400), so the loop sends a stand-in text. An empty
 # result that is not an error goes through as it is.
 @pytest.mark.parametrize("is_error", [True, False])
 def test_a_tool_result_with_empty_content_is_accepted(live: Live, is_error: bool) -> None:
@@ -197,17 +210,21 @@ def test_a_tool_result_with_empty_content_is_accepted(live: Live, is_error: bool
         handler=lambda tool_input: ToolOutcome(content="", is_error=is_error),
     )
     spec = spec_for(
+        config=HAIKU,
         system="Call probe once. Whatever it returns, then call submit_answer with 1.",
         user="The target is: api.",
-        tools=(probe, submit_tool("integer")),
+        tools=(probe,),
+        submit=submit_tool("integer"),
     )
 
-    result = live.run(spec, HAIKU)
+    result = live.run(spec)
 
     live.print_spend(f"empty result, is_error={is_error}")
-    assert result == AgentResult(submitted=1, stop="submitted", turns=2)
+    assert result == 1
+    assert len(live.client.responses) == 2
     sent_result = live.client.requests[1].messages[-1]["content"][0]
-    assert (sent_result["content"], sent_result["is_error"]) == ("", is_error)
+    assert bool(sent_result["content"]) is is_error
+    assert sent_result["is_error"] is is_error
 
 
 OPUS_ONE_SHOT = RoleConfig(model="claude-opus-5-5", effort="low", max_turns=1, max_tokens=200)

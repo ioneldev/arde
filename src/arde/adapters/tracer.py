@@ -21,6 +21,9 @@ class JsonlTracer(Tracer):
         self._trace_path = run_dir / "trace.jsonl"
         self._debug_path = run_dir / "debug.log"
         self._secret_pattern = _pattern_matching(secrets)
+        # Created now, so a folder that cannot hold a trace fails before anything is paid for.
+        _create(self._trace_path)
+        _create(self._debug_path)
 
     def event(self, kind: str, **fields: object) -> None:
         if "ts" in fields:
@@ -76,6 +79,13 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
+def _create(path: Path) -> None:
+    with path.open("a", encoding="utf-8"):
+        pass
+
+
+# backslashreplace, because a file name that is not UTF-8 reaches Python as a lone surrogate, and
+# a record of what happened must not be what ends the run.
 def _append_line(path: Path, line: str) -> None:
-    with path.open("a", encoding="utf-8") as file:
+    with path.open("a", encoding="utf-8", errors="backslashreplace") as file:
         file.write(line + "\n")

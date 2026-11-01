@@ -4,15 +4,18 @@ import os
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import PositiveInt, ValidationError
 
-from arde.domain.base import Frozen
+from arde.domain.base import Frozen, describe_problems
 from arde.domain.errors import ArdeError
 from arde.domain.report import ExitCode
 
 MODELS_FILE_VARIABLE = "ARDE_MODELS_FILE"
+
+Role = Literal["discovery", "explore", "docs", "classifier", "judge"]
 
 
 class RoleConfig(Frozen):
@@ -49,7 +52,7 @@ def load_models(path: Path | None = None) -> dict[str, RoleConfig]:
     try:
         models_file = _ModelsFile.model_validate(raw)
     except ValidationError as error:
-        raise ModelsFileError(str(source), _describe(error)) from error
+        raise ModelsFileError(str(source), describe_problems(error, whole="the file")) from error
     return {role: getattr(models_file, role) for role in _ModelsFile.model_fields}
 
 
@@ -70,10 +73,3 @@ def _read_yaml(source: Traversable) -> object:
         raise ModelsFileError(str(source), f"it cannot be read ({error})") from error
     except yaml.YAMLError as error:
         raise ModelsFileError(str(source), f"it is not valid YAML ({error})") from error
-
-
-def _describe(error: ValidationError) -> str:
-    return "; ".join(
-        f"{'.'.join(str(part) for part in problem['loc']) or 'the file'}: {problem['msg']}"
-        for problem in error.errors()
-    )

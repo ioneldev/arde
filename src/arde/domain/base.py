@@ -3,11 +3,21 @@
 import re
 from typing import Annotated, Any
 
-from pydantic import AfterValidator, BaseModel, ConfigDict
+from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError
 
 
 class Frozen(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+
+# Without the input, because the text goes to the model and the logs, and the input may hold
+# anything the model was sent.
+def describe_problems(error: ValidationError, *, whole: str) -> str:
+    """Says what broke which field, naming the object itself as whole when no field is to blame."""
+    return "; ".join(
+        f"{'.'.join(str(part) for part in problem['loc']) or whole}: {problem['msg']}"
+        for problem in error.errors(include_input=False, include_url=False)
+    )
 
 
 def _reject_line_breaks(text: str) -> str:

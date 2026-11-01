@@ -23,7 +23,6 @@ from arde.domain.usage import Usage
 
 _PROMPT_CACHE: CacheControlEphemeralParam = {"type": "ephemeral"}
 _RUN_AGAIN = "Run again in a few minutes"
-_NO_ERROR_MESSAGE = "The tool reported an error but gave no message."
 _VISIBLE_ASCII = re.compile(r"[\x21-\x7e]+")
 # The SDK has no exception type for a max_tokens it will not send without streaming, and it
 # raises a plain ValueError, so the message is all there is to recognise it by. Its limit depends
@@ -192,8 +191,7 @@ class AnthropicClient(LLMClient):
     # Only the kinds are logged. A transport error's message can quote the request headers, and
     # the API key is one of them.
     def _log_failure(self, error: anthropic.AnthropicError) -> None:
-        if not isinstance(error, anthropic.APIStatusError):
-            self._tracer.debug(f"The Anthropic call failed: {_kinds_in_chain(error)}")
+        self._tracer.debug(f"The Anthropic call failed: {_kinds_in_chain(error)}")
 
 
 def _params(request: LLMRequest) -> dict[str, Any]:
@@ -201,32 +199,12 @@ def _params(request: LLMRequest) -> dict[str, Any]:
         "model": request.config.model,
         "max_tokens": request.config.max_tokens,
         "system": request.system,
-        "messages": [_with_error_text(message) for message in request.messages],
+        "messages": list(request.messages),
         "output_config": {"effort": request.config.effort},
     }
     if request.tools:
         params["tools"] = [_tool_param(tool) for tool in request.tools]
     return params
-
-
-# The API answers an error result with no content with HTTP 400, which would end the run over a
-# tool that merely said nothing. The caller's message is copied, not edited.
-def _with_error_text(message: dict[str, object]) -> dict[str, object]:
-    content = message.get("content")
-    if not isinstance(content, list):
-        return message
-    return {**message, "content": [_error_result_with_text(block) for block in content]}
-
-
-def _error_result_with_text(block: object) -> object:
-    if not isinstance(block, dict):
-        return block
-    is_empty_error = (
-        block.get("type") == "tool_result"
-        and block.get("is_error") is True
-        and not block.get("content")
-    )
-    return {**block, "content": _NO_ERROR_MESSAGE} if is_empty_error else block
 
 
 def _tool_param(tool: ToolDef) -> dict[str, Any]:

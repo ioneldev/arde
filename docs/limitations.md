@@ -39,7 +39,7 @@ Measured against the live API on 2026-11-02, with Opus 5.5.
 
 - **Strict tool use is refused for the repo profile and for the facts.** The API answers `For 'object' type, 'additionalProperties: object' is not supported` for the open `args` dict in the profile, and `Schema type 'oneOf' is not supported` for the fact union. Rewriting `oneOf` as `anyOf` did not help on Haiku 5.5: the API then said the compiled grammar was too large. Tools with these schemas must be sent with `strict=False`, and code validation holds the guarantee.
 - **A refusal ends the agent, with no retry on another model.** The server-side fallback needs the beta client, and Haiku 5.5, which the classifier uses, has no fallback at all. The agent stops with the reason `refused`.
-- **An error result with no text is refused by the API** (HTTP 400). The client sends a stand-in text, so a tool that fails silently does not end the run.
+- **An error result with no text is refused by the API** (HTTP 400). The agent loop sends a stand-in text, so a tool that fails silently does not end the run.
 
 ## Not tested yet
 

@@ -15,8 +15,9 @@ from arde.domain.usage import Usage
 class Tracer(Protocol):
     """Writes the run's record: structured events for the trace, free text for the debug log.
 
-    Event kinds: run_start, step_start, step_end, model_call, tool_call, check_result, repair,
-    correction, warning and run_end. The tracer stamps each event, so callers pass no time.
+    Event kinds: run_start, step_start, step_end, model_call, model_error, tool_call, correction,
+    agent_end, check_result, repair, warning and run_end. The tracer stamps each event, so callers
+    pass no time.
     """
 
     def event(self, kind: str, **fields: object) -> None: ...
@@ -74,7 +75,6 @@ class LLMClient(Protocol):
 class ToolOutcome(Frozen):
     content: str
     is_error: bool = False
-    submitted: object | None = None
 
 
 class Tool(Frozen):
