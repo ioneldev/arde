@@ -12,8 +12,15 @@ DOMAIN_MAY_NOT_IMPORT = ("arde.adapters", "arde.application")
 APPLICATION_MAY_NOT_IMPORT = ("arde.adapters",)
 
 GO_ADAPTER = Path("arde") / "adapters" / "language" / "go"
-# Word boundaries keep "swagger.json" legal: only the tool named swag is Go-specific.
-GO_SPECIFIC_WORDS = re.compile(r"\b(goinspect|gofmt|swag|go build)\b")
+# \b treats "_" as part of a word, so it would miss run_goinspect and swag_version. These
+# patterns match inside identifiers. swag may not be followed by a lowercase letter, and SWAG not
+# by an uppercase one, which keeps Swagger and SWAGGER legal.
+GO_SPECIFIC_PATTERNS = {
+    "goinspect": re.compile(r"goinspect", re.IGNORECASE),
+    "gofmt": re.compile(r"gofmt", re.IGNORECASE),
+    "swag": re.compile(r"[Ss]wag(?![a-z])|SWAG(?![A-Z])"),
+    "go build": re.compile(r"(?<![a-z])go[\W_]+build(?![a-z])", re.IGNORECASE),
+}
 
 
 def test_the_scanned_package_exists() -> None:
@@ -103,23 +110,55 @@ def test_a_layer_with_no_folder_or_no_files_has_no_violations(tmp_path: Path) ->
     assert import_violations(tmp_path, "domain", DOMAIN_MAY_NOT_IMPORT) == []
 
 
-@pytest.mark.parametrize("word", ["goinspect", "gofmt", "swag", "go build"])
-def test_go_specific_words_outside_the_go_adapter_are_reported(tmp_path: Path, word: str) -> None:
-    write(tmp_path, "arde/application/pipeline.py", f'COMMAND = "{word} ./..."\n')
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        ('COMMAND = "goinspect ./..."', "goinspect"),
+        ('COMMAND = "gofmt -l"', "gofmt"),
+        ('COMMAND = "swag init"', "swag"),
+        ('COMMAND = "go build ./..."', "go build"),
+        ("swag_version = 1", "swag"),
+        ("def run_swag():\n    pass", "swag"),
+        ("class SwagRunner:\n    pass", "swag"),
+        ("SWAG_VERSION = 1", "swag"),
+        ('"""Swag annotations."""', "swag"),
+        ("def run_goinspect():\n    pass", "goinspect"),
+        ("class GoinspectRunner:\n    pass", "goinspect"),
+        ('GOINSPECT_BIN = "x"', "goinspect"),
+        ("def gofmt_check():\n    pass", "gofmt"),
+        ("subprocess.run(['go', 'build'])", "go build"),
+        ('subprocess.run(["go","build","./..."])', "go build"),
+        ('COMMAND = "go  build"', "go build"),
+        ("def go_build_cmd():\n    pass", "go build"),
+    ],
+)
+def test_go_specific_shapes_outside_the_go_adapter_are_reported(
+    tmp_path: Path, source: str, name: str
+) -> None:
+    write(tmp_path, "arde/application/pipeline.py", f"{source}\n")
 
-    assert go_specific_leaks(tmp_path) == [f"arde/application/pipeline.py: mentions {word}"]
+    assert go_specific_leaks(tmp_path) == [f"arde/application/pipeline.py: mentions {name}"]
 
 
-def test_go_specific_words_inside_the_go_adapter_are_accepted(tmp_path: Path) -> None:
-    write(
-        tmp_path, str(GO_ADAPTER / "swag_runner.py"), 'COMMANDS = ["gofmt", "swag", "go build"]\n'
-    )
+def test_go_specific_shapes_inside_the_go_adapter_are_accepted(tmp_path: Path) -> None:
+    source = "swag_version = 1\nclass GoinspectRunner: ...\ndef gofmt_check(): ...\n"
+    write(tmp_path, str(GO_ADAPTER / "runner.py"), source)
 
     assert go_specific_leaks(tmp_path) == []
 
 
-def test_swagger_is_not_mistaken_for_swag(tmp_path: Path) -> None:
-    write(tmp_path, "arde/checks/spec_valid.py", 'SPEC_FILES = ["swagger.json", "swagger.yaml"]\n')
+@pytest.mark.parametrize(
+    "source",
+    [
+        'SPEC_FILES = ["swagger.json", "swagger.yaml"]',
+        "class SwaggerSpec:\n    pass",
+        "SWAGGER_FILE = 'swagger.json'",
+        "def validate_swagger():\n    pass",
+        '"""A good build ran in Argo build mode, and we go to build later."""',
+    ],
+)
+def test_names_that_only_contain_the_letters_are_not_reported(tmp_path: Path, source: str) -> None:
+    write(tmp_path, "arde/checks/spec_valid.py", f"{source}\n")
 
     assert go_specific_leaks(tmp_path) == []
 
@@ -160,12 +199,17 @@ def is_inside(module: str, package: str) -> bool:
 
 
 def go_specific_leaks(source_root: Path) -> list[str]:
-    return [
-        f"{label(path, source_root)}: mentions {word}"
-        for path in sorted((source_root / "arde").rglob("*.py"))
-        if not path.relative_to(source_root).is_relative_to(GO_ADAPTER)
-        for word in sorted(set(GO_SPECIFIC_WORDS.findall(path.read_text(encoding="utf-8"))))
-    ]
+    leaks: list[str] = []
+    for path in sorted((source_root / "arde").rglob("*.py")):
+        if path.relative_to(source_root).is_relative_to(GO_ADAPTER):
+            continue
+        names = go_specific_names(path.read_text(encoding="utf-8"))
+        leaks.extend(f"{label(path, source_root)}: mentions {name}" for name in names)
+    return leaks
+
+
+def go_specific_names(source: str) -> list[str]:
+    return [name for name, pattern in GO_SPECIFIC_PATTERNS.items() if pattern.search(source)]
 
 
 def label(path: Path, source_root: Path) -> str:

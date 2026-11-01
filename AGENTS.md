@@ -30,7 +30,7 @@ A small Go helper, `goinspect`, does the AST work and the call graph, because th
 - Comments explain why, never what. Past two positional arguments, pass a model.
 - Every user-facing error names the next action.
 - The API key never appears in a trace, log or report. Never commit `.env`.
-- Docs name only paths that exist, and `make check` fails on a broken link or a missing path. Add a path to a page when its file lands, not before.
+- Docs name only paths that exist, and `make check` fails on a broken link or a missing path. Add a path to a page when its file lands, not before. Phase specs in `docs/specs/` are the exception: they may name future paths, but their links must work.
 
 ## To change X, go here
 

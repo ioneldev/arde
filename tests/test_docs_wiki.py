@@ -8,9 +8,15 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# The plan and the design describe paths that do not exist yet, on purpose.
-# Wiki pages may only name what exists now, so those two folders are out of scope.
-NOT_WIKI = ("superpowers", "research")
+ROOT_PAGES = ("AGENTS.md", "README.md")
+
+# The wiki is exactly these locations. docs/superpowers and docs/research describe future paths
+# on purpose, and a new docs folder stays out of scope until it is listed here.
+DOCS_PAGE_GLOBS = ("docs/*.md", "docs/decisions/*.md", "docs/specs/*.md")
+
+# Phase specs are written before their phase starts, so they name paths that do not exist yet.
+# They still need working links and an index entry.
+PHASE_SPEC_GLOB = "docs/specs/*.md"
 
 REPO_PATH_PREFIXES = ("src/", "tools/", "docs/", "tests/")
 EXTERNAL_LINK_PREFIXES = ("http://", "https://", "mailto:", "#")
@@ -39,7 +45,7 @@ def test_every_markdown_link_resolves() -> None:
 
 
 def test_every_backticked_repo_path_exists() -> None:
-    assert missing_repo_paths(wiki_files(ROOT), ROOT) == []
+    assert missing_repo_paths(path_checked_files(ROOT), ROOT) == []
 
 
 def test_index_links_every_docs_page() -> None:
@@ -131,31 +137,76 @@ def test_every_page_linked_from_the_index_is_accepted(tmp_path: Path) -> None:
     assert pages_missing_from_index(tmp_path) == []
 
 
-def test_plans_and_research_need_no_index_entry(tmp_path: Path) -> None:
+def test_the_wiki_covers_exactly_the_listed_locations(tmp_path: Path) -> None:
+    covered = [
+        "AGENTS.md",
+        "README.md",
+        "docs/decisions/0001-x.md",
+        "docs/index.md",
+        "docs/specs/phase-1.md",
+    ]
+    out_of_scope = [
+        "docs/superpowers/plans/plan.md",
+        "docs/research/spike/notes.md",
+        "docs/guides/setup.md",
+        "docs/decisions/nested/deep.md",
+    ]
+    for relative in covered + out_of_scope:
+        write(tmp_path, relative, "# Page")
+
+    assert [label(page, tmp_path) for page in wiki_files(tmp_path)] == covered
+
+
+def test_pages_outside_the_listed_locations_need_no_index_entry(tmp_path: Path) -> None:
     write(tmp_path, "docs/index.md", "# Index")
     write(tmp_path, "docs/superpowers/plans/plan.md", "# Plan")
     write(tmp_path, "docs/research/spike/notes.md", "# Notes")
+    write(tmp_path, "docs/guides/setup.md", "# Setup")
 
     assert pages_missing_from_index(tmp_path) == []
 
 
-def test_plans_and_research_are_not_checked_for_links_or_paths(tmp_path: Path) -> None:
-    write(tmp_path, "docs/superpowers/plans/plan.md", "[x](future.md) `src/future/` ")
-    write(tmp_path, "docs/research/spike/notes.md", "[x](future.md) `src/future/` ")
+def test_a_phase_spec_missing_from_the_index_is_reported(tmp_path: Path) -> None:
+    write(tmp_path, "docs/index.md", "# Index")
+    write(tmp_path, "docs/specs/phase-1.md", "# Phase 1")
 
-    assert wiki_files(tmp_path) == []
+    assert pages_missing_from_index(tmp_path) == ["docs/specs/phase-1.md"]
+
+
+def test_a_broken_link_in_a_phase_spec_is_reported(tmp_path: Path) -> None:
+    write(tmp_path, "docs/specs/phase-1.md", "See [the plan](../plans/ghost.md).")
+
+    assert broken_links(wiki_files(tmp_path), tmp_path) == [
+        "docs/specs/phase-1.md: link to ../plans/ghost.md does not exist"
+    ]
+
+
+def test_a_future_path_in_a_phase_spec_is_accepted(tmp_path: Path) -> None:
+    write(tmp_path, "docs/specs/phase-1.md", "Adds `src/arde/domain/` and `tools/goinspect/`.")
+
+    assert missing_repo_paths(path_checked_files(tmp_path), tmp_path) == []
+
+
+def test_the_same_future_path_in_a_decision_is_reported(tmp_path: Path) -> None:
+    write(tmp_path, "docs/decisions/0001-x.md", "Adds `src/arde/domain/`.")
+
+    assert missing_repo_paths(path_checked_files(tmp_path), tmp_path) == [
+        "docs/decisions/0001-x.md: `src/arde/domain/` does not exist"
+    ]
 
 
 def wiki_files(root: Path) -> list[Path]:
-    top_level = [root / "AGENTS.md", root / "README.md"]
-    return [page for page in top_level if page.is_file()] + docs_pages(root)
+    root_pages = [root / name for name in ROOT_PAGES if (root / name).is_file()]
+    return root_pages + docs_pages(root)
 
 
 def docs_pages(root: Path) -> list[Path]:
-    docs = root / "docs"
-    return sorted(
-        page for page in docs.rglob("*.md") if page.relative_to(docs).parts[0] not in NOT_WIKI
-    )
+    return sorted({page for pattern in DOCS_PAGE_GLOBS for page in root.glob(pattern)})
+
+
+def path_checked_files(root: Path) -> list[Path]:
+    phase_specs = set(root.glob(PHASE_SPEC_GLOB))
+    return [page for page in wiki_files(root) if page not in phase_specs]
 
 
 def broken_links(files: list[Path], root: Path) -> list[str]:

@@ -1,6 +1,6 @@
 # ARDE docs
 
-A small wiki for people and agents working on this repo. Start with [AGENTS.md](../AGENTS.md) for commands and rules, then read the pages below. Every page is linked from here, and `make check` fails on a broken link or a path that does not exist.
+A small wiki for people and agents working on this repo. Start with [AGENTS.md](../AGENTS.md) for commands and rules, then read the pages below. Every page is linked from here, and `make check` fails on a broken link or a path that does not exist. Phase specs may name future paths, because they are written before the phase starts.
 
 ## Understand it
 
