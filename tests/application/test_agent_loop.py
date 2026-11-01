@@ -92,7 +92,9 @@ def accept_only_42(tool_input: ToolInput) -> Accepted[object] | Rejected:
 
 
 def definition_named(name: str) -> ToolDef:
-    return ToolDef(name=name, description=f"The {name} tool", input_schema={"type": "object"})
+    return ToolDef(
+        name=name, description=f"The {name} tool", input_schema={"type": "object"}, strict=False
+    )
 
 
 def tool_named(name: str, handler: Callable[[ToolInput], ToolOutcome]) -> Tool:
@@ -877,6 +879,47 @@ def test_the_summary_drops_a_word_it_cannot_fit_whole() -> None:
 
     assert "sk-ant" not in summary
     assert "kkk" not in summary
+
+
+FAKE_SECRET = "sk-ant-fake-secret-for-this-test-only"
+
+
+def trace_kinds(run_dir: Path) -> list[str]:
+    lines = (run_dir / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+    return [json.loads(line)["kind"] for line in lines]
+
+
+def test_a_run_through_the_real_tracer_leaves_both_files_with_no_secret(tmp_path: Path) -> None:
+    llm = FakeLLM(
+        [
+            reply("end_turn", text="I will read the file."),
+            calling(call(READ, path="config.go")),
+            calling(submit()),
+        ]
+    )
+    read_secret = ToolSpy(content=f"token = {FAKE_SECRET}")
+    deps = AgentDeps(
+        client=llm,
+        tracer=JsonlTracer(tmp_path, secrets=(SecretStr(FAKE_SECRET),)),
+        budget=Budget(max_usd=10.0),
+    )
+
+    run_agent(spec_with((tool_named(READ, read_secret),), submit_tool()), deps)
+
+    trace = (tmp_path / "trace.jsonl").read_text(encoding="utf-8")
+    debug_log = (tmp_path / "debug.log").read_text(encoding="utf-8")
+    assert FAKE_SECRET not in trace + debug_log
+    assert "token = [REDACTED]" in debug_log
+    assert "I will read the file." in debug_log
+    assert "config.go" in debug_log
+    assert trace_kinds(tmp_path) == [
+        "model_call",
+        "model_call",
+        "tool_call",
+        "model_call",
+        "tool_call",
+        "agent_end",
+    ]
 
 
 def real_tracer_run(handler: Callable[[ToolInput], ToolOutcome], run_dir: Path) -> FakeLLM:

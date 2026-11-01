@@ -1,14 +1,25 @@
 """Calls the real Anthropic API. Run with make eval, which loads the key from .env. Costs money."""
 
+import json
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, SecretStr
-from recording_tracer import RecordingTracer
 
 from arde.adapters.llm.anthropic_client import AnthropicClient
-from arde.application.agent_loop import Accepted, AgentDeps, AgentSpec, SubmitTool, run_agent
+from arde.adapters.tracer import JsonlTracer
+from arde.application.agent_loop import (
+    Accepted,
+    AgentDeps,
+    AgentSpec,
+    SubmitTool,
+    record_model_call,
+    run_agent,
+)
 from arde.application.budget import Budget
 from arde.application.models_config import RoleConfig
 from arde.application.ports import (
@@ -20,7 +31,7 @@ from arde.application.ports import (
     ToolDef,
     ToolOutcome,
 )
-from arde.domain.base import strict_tool_schema
+from arde.application.tool_schema import strict_tool_schema
 from arde.domain.facts import Wiki
 from arde.domain.pricing import cost_usd
 from arde.domain.profile import RepoProfile
@@ -29,6 +40,8 @@ pytestmark = pytest.mark.eval
 
 HAIKU = RoleConfig(model="claude-haiku-5-5", effort="low", max_turns=3, max_tokens=1024)
 OPUS = RoleConfig(model="claude-opus-5-5", effort="high", max_turns=4, max_tokens=4000)
+OPUS_FOR_CACHING = RoleConfig(model="claude-opus-5-5", effort="low", max_turns=4, max_tokens=2000)
+REPO_ROOT = Path(__file__).resolve().parents[2]
 # A runaway loop stops here, because the budget raises as soon as a call pushes spend past it.
 SPEND_CAP_USD = 0.50
 
@@ -72,15 +85,18 @@ class Live:
     # A SecretStr, because pytest prints the arguments of every frame of a failure with their repr.
     api_key: SecretStr
     holds_api_key: Callable[[str], bool]
-    tracer: RecordingTracer = field(default_factory=RecordingTracer)
+    run_dir: Path
     budget: Budget = field(default_factory=lambda: Budget(max_usd=SPEND_CAP_USD))
 
     def __post_init__(self) -> None:
+        self.tracer = JsonlTracer(self.run_dir, secrets=(self.api_key,))
         self.client = ObservingClient(AnthropicClient.from_api_key(self.api_key, self.tracer))
 
+    def deps(self) -> AgentDeps:
+        return AgentDeps(client=self.client, tracer=self.tracer, budget=self.budget)
+
     def run(self, spec: AgentSpec[object]) -> object:
-        deps = AgentDeps(client=self.client, tracer=self.tracer, budget=self.budget)
-        return run_agent(spec, deps)
+        return run_agent(spec, self.deps())
 
     def print_spend(self, label: str) -> None:
         for role, totals in self.budget.totals().items():
@@ -92,24 +108,41 @@ class Live:
             )
         print(f"[turns] {label}: {self.client.block_types_per_turn()}")
 
+    def trace_text(self) -> str:
+        return (self.run_dir / "trace.jsonl").read_text(encoding="utf-8")
+
+    def debug_text(self) -> str:
+        return (self.run_dir / "debug.log").read_text(encoding="utf-8")
+
+    def traced_kinds(self) -> list[str]:
+        return [json.loads(line)["kind"] for line in self.trace_text().splitlines()]
+
     # A verdict, not a comparison, because a failed comparison of the key itself would print it.
-    def assert_key_never_logged(self) -> None:
-        everything_recorded = [str(self.tracer.events), *self.tracer.debug_lines]
-        key_was_logged = any(map(self.holds_api_key, everything_recorded))
-        assert not key_was_logged, "the API key reached the trace or the debug log"
+    def assert_key_was_never_written(self) -> None:
+        assert self.debug_text(), "nothing was logged, so this check would prove nothing"
+        key_was_written = self.holds_api_key(self.trace_text() + self.debug_text())
+        assert not key_was_written, "the API key reached trace.jsonl or debug.log"
 
 
-# Checked after the test, not by it, so a test that fails on its own assertion is checked too.
+@pytest.fixture(scope="session")
+def eval_runs() -> Path:
+    return REPO_ROOT / "runs" / "eval" / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+# The folder survives the run so its files can be read, and is printed so it can be found. The key
+# is checked after the test, not by it, so a test that fails on its own assertion is checked too.
 @pytest.fixture
-def live(api_key: SecretStr, holds_api_key: Callable[[str], bool]) -> Iterator[Live]:
-    session = Live(api_key=api_key, holds_api_key=holds_api_key)
+def live(
+    api_key: SecretStr,
+    holds_api_key: Callable[[str], bool],
+    eval_runs: Path,
+    request: pytest.FixtureRequest,
+) -> Iterator[Live]:
+    run_dir = eval_runs / re.sub(r"\W+", "-", request.node.name)
+    session = Live(api_key=api_key, holds_api_key=holds_api_key, run_dir=run_dir)
     yield session
-    session.assert_key_never_logged()
-
-
-def assert_the_request_id_was_logged(session: Live) -> None:
-    logged = any("request id req_" in line for line in session.tracer.debug_lines)
-    assert logged, "the adapter should log the request id"
+    print(f"[trace] {run_dir}")
+    session.assert_key_was_never_written()
 
 
 def tool_definition(*, name: str, description: str, properties: dict[str, object]) -> ToolDef:
@@ -119,7 +152,7 @@ def tool_definition(*, name: str, description: str, properties: dict[str, object
         "required": list(properties),
         "additionalProperties": False,
     }
-    return ToolDef(name=name, description=description, input_schema=schema)
+    return ToolDef(name=name, description=description, input_schema=schema, strict=True)
 
 
 def tool(
@@ -167,7 +200,8 @@ def test_haiku_calls_a_trivial_tool_through_run_agent(live: Live) -> None:
 
     live.print_spend("haiku trivial tool")
     assert result == 5
-    assert_the_request_id_was_logged(live)
+    assert "request id req_" in live.debug_text()
+    assert live.traced_kinds() == ["model_call", "tool_call", "agent_end"]
 
 
 def test_opus_echoed_thinking_block_is_accepted_on_the_second_turn(live: Live) -> None:
@@ -240,7 +274,7 @@ def request_with_one_tool(schema: dict[str, object], *, strict: bool) -> LLMRequ
     )
 
 
-# Observed on 2026-11-02: the API refuses both schemas in strict mode. The rejection is not billed.
+# Observed on 2026-11-02: the API refuses both schemas in strict mode.
 # Code validation holds the guarantee, so a tool with such a schema is built with strict=False.
 # When this test fails on the rejection, the API has relaxed and strict can be tried again.
 @pytest.mark.parametrize(
@@ -269,6 +303,37 @@ def test_a_schema_the_api_refuses_in_strict_mode_works_with_strict_off(
     assert response.stop_reason in ("end_turn", "max_tokens")
 
 
+# Long enough to pass the minimum a prefix needs before the API will cache it.
+PADDING = " ".join(
+    f"Rule {number}: every statement must trace to a checked fact." for number in range(90)
+)
+
+
+def test_the_second_turn_of_an_agent_reads_its_prompt_from_the_cache(live: Live) -> None:
+    look_up = tool(
+        name="look_up_color",
+        description="Look up the color registered for a numeric code.",
+        properties={"code": {"type": "string"}},
+        handler=lambda tool_input: ToolOutcome(content="blue"),
+    )
+    spec = spec_for(
+        config=OPUS_FOR_CACHING,
+        system=f"Call look_up_color, then submit_answer with its result. {PADDING}",
+        user="The code is 7.",
+        tools=(look_up,),
+        submit=submit_tool("string"),
+    )
+
+    result = live.run(spec)
+
+    live.print_spend("opus cache hit")
+    assert result == "blue"
+    first_turn, second_turn = live.client.responses
+    print(f"[cache] first={first_turn.usage} second={second_turn.usage}")
+    assert first_turn.usage.cache_write + first_turn.usage.cache_read > 0
+    assert second_turn.usage.cache_read > 0
+
+
 class Verdict(BaseModel):
     label: str
 
@@ -282,9 +347,8 @@ def test_haiku_structured_output_comes_back_parsed(live: Live) -> None:
     )
 
     verdict, response = live.client.parse(request, Verdict)
+    record_model_call(response, role="classifier", model=HAIKU.model, deps=live.deps())
 
-    print(
-        f"[spend] haiku parse: {response.usage.model_dump()} "
-        f"cost=${cost_usd(HAIKU.model, response.usage):.5f}"
-    )
+    live.print_spend("haiku parse")
     assert verdict.label.lower() == "positive"
+    assert live.traced_kinds() == ["model_call"]

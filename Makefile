@@ -11,5 +11,6 @@ integration:
 	cd tools/goinspect && go test ./...
 
 # --env-file hands .env to pytest alone, so the key never enters the shell's environment.
+# -rP prints what passing tests printed, the spend and the trace folder, through the key guard.
 eval:
-	uv run --env-file .env pytest -m eval -q
+	uv run --env-file .env pytest -m eval -q -rP

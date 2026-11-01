@@ -8,5 +8,6 @@ dist/
 .superpowers/
 .worktrees/
 debug.log
+runs/
 tools/goinspect/goinspect
 .DS_Store

@@ -14,6 +14,7 @@ from arde.application.ports import (
     LLMClient,
     LLMRequest,
     LLMResponse,
+    ModelStop,
     Tool,
     ToolCall,
     ToolDef,
@@ -38,7 +39,7 @@ _SEND_LESS = (
     "Do the same work with less in one call, and split a large submission if a tool allows it."
 )
 # Retrying neither of these can help: the same text is refused, and the same history is too long.
-_TERMINAL_STOPS: dict[str, StopReason] = {
+_TERMINAL_STOPS: dict[ModelStop, StopReason] = {
     "refusal": "refused",
     "model_context_window_exceeded": "context_window_exceeded",
 }
@@ -226,7 +227,10 @@ def record_model_call(response: LLMResponse, *, role: Role, model: str, deps: Ag
     """Traces and charges one paid call. Every caller of the model comes through here."""
     usage, latency_s = response.usage, response.latency_s
     try:
-        deps.tracer.debug(f"{role} model reply ({response.stop_reason}):\n{response.text}")
+        deps.tracer.debug(
+            f"{role} model reply ({response.stop_reason}, request id {response.request_id}):\n"
+            f"{response.text}"
+        )
         deps.tracer.event(
             "model_call",
             role=role,

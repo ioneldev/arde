@@ -1,7 +1,7 @@
 """The interfaces the application needs from the outside world. Adapters implement them."""
 
 from collections.abc import Callable
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel
 
@@ -25,11 +25,12 @@ class Tracer(Protocol):
     def debug(self, text: str) -> None: ...
 
 
+# No default for strict: the API refuses some schemas in strict mode, so each tool decides.
 class ToolDef(Frozen):
     name: str
     description: str
     input_schema: dict[str, object]
-    strict: bool = True
+    strict: bool
 
 
 class ToolCall(Frozen):
@@ -45,14 +46,25 @@ class LLMRequest(Frozen):
     tools: tuple[ToolDef, ...]
 
 
+ModelStop = Literal[
+    "end_turn",
+    "tool_use",
+    "stop_sequence",
+    "max_tokens",
+    "refusal",
+    "model_context_window_exceeded",
+]
+
+
 class LLMResponse(Frozen):
     tool_calls: tuple[ToolCall, ...]
     text: str
-    stop_reason: str
+    stop_reason: ModelStop
     usage: Usage
     latency_s: float
     # Sent back unchanged on the next turn, because the API checks thinking blocks byte for byte.
     assistant_content: tuple[object, ...]
+    request_id: str | None = None
 
 
 # Lives with the port, not the adapter, because application code catches it and may not import
@@ -60,8 +72,19 @@ class LLMResponse(Frozen):
 class ProviderError(ArdeError):
     """The model provider failed in a way the run cannot work around."""
 
-    def __init__(self, message: str, *, next_action: str) -> None:
-        super().__init__(message, next_action=next_action, exit_code=ExitCode.CHECKS_FAILED)
+    def __init__(
+        self, message: str, *, next_action: str, exit_code: ExitCode = ExitCode.CHECKS_FAILED
+    ) -> None:
+        super().__init__(message, next_action=next_action, exit_code=exit_code)
+
+
+class ParseFailed(ProviderError):
+    """The reply was paid for but holds no usable value, so it carries what to charge."""
+
+    def __init__(self, message: str, *, next_action: str, response: LLMResponse) -> None:
+        super().__init__(message, next_action=next_action)
+        self.response = response
+        self.usage = response.usage
 
 
 class LLMClient(Protocol):

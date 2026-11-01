@@ -3,20 +3,22 @@
 import json
 import threading
 import traceback
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler
 from socketserver import ThreadingTCPServer
+from types import TracebackType
+from typing import Self
 
 import anthropic
 import httpx2
 import pytest
-from anthropic.types import Message, ParsedMessage
+from anthropic.types import Message
 from pydantic import BaseModel, SecretStr
 from recording_tracer import RecordingTracer
 
 from arde.adapters.llm.anthropic_client import AnthropicClient
 from arde.application.models_config import RoleConfig
-from arde.application.ports import LLMRequest, ProviderError, ToolDef
+from arde.application.ports import LLMRequest, ParseFailed, ProviderError, ToolDef
 from arde.domain.errors import ArdeError
 from arde.domain.report import ExitCode
 from arde.domain.usage import Usage
@@ -33,6 +35,7 @@ READ_FILE = ToolDef(
         "required": ["path"],
         "additionalProperties": False,
     },
+    strict=True,
 )
 READ_FILE_PARAMS = {
     "name": "read_file",
@@ -40,6 +43,7 @@ READ_FILE_PARAMS = {
     "input_schema": READ_FILE.input_schema,
     "strict": True,
 }
+STREAM_HEADERS = {"content-type": "text/event-stream", "request-id": REQUEST_ID}
 REQUEST = LLMRequest(
     config=CONFIG,
     system="You explore a service.",
@@ -61,7 +65,9 @@ class FakeClock:
 
 
 class StubMessages:
-    """Stands in for client.messages: records each call, then returns the outcome or raises it."""
+    """Stands in for client.messages and the stream it opens: records the call, then answers."""
+
+    request_id = REQUEST_ID
 
     def __init__(
         self, outcome: object, *, clock: FakeClock | None = None, call_takes_s: float = 0.0
@@ -69,18 +75,24 @@ class StubMessages:
         self._outcome = outcome
         self._clock = clock
         self._call_takes_s = call_takes_s
-        self.created: list[dict[str, object]] = []
-        self.parsed: list[dict[str, object]] = []
+        self.streamed: list[dict[str, object]] = []
 
-    def create(self, **kwargs: object) -> object:
-        self.created.append(kwargs)
-        return self._answer()
+    def stream(self, **kwargs: object) -> Self:
+        self.streamed.append(kwargs)
+        return self
 
-    def parse(self, **kwargs: object) -> object:
-        self.parsed.append(kwargs)
-        return self._answer()
+    def __enter__(self) -> Self:
+        return self
 
-    def _answer(self) -> object:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback_: TracebackType | None,
+    ) -> None:
+        return None
+
+    def get_final_message(self) -> object:
         if self._clock is not None:
             self._clock.now += self._call_takes_s
         if isinstance(self._outcome, Exception):
@@ -100,10 +112,10 @@ def usage_fields(**overrides: int | None) -> dict[str, int | None]:
 def message_with(
     content: list[dict[str, object]] | None = None,
     *,
-    stop_reason: str = "end_turn",
+    stop_reason: str | None = "end_turn",
     usage: dict[str, int | None] | None = None,
 ) -> Message:
-    reply = Message.model_validate(
+    return Message.model_validate(
         {
             "id": "msg_1",
             "type": "message",
@@ -115,32 +127,11 @@ def message_with(
             "usage": usage or usage_fields(),
         }
     )
-    reply._request_id = REQUEST_ID
-    return reply
 
 
-def parsed_message_with(
-    content: list[dict[str, object]], *, stop_reason: str = "end_turn"
-) -> ParsedMessage[Verdict]:
-    reply = ParsedMessage[Verdict].model_validate(
-        {
-            "id": "msg_1",
-            "type": "message",
-            "role": "assistant",
-            "model": CONFIG.model,
-            "content": content,
-            "stop_reason": stop_reason,
-            "stop_sequence": None,
-            "usage": usage_fields(),
-        }
-    )
-    reply._request_id = REQUEST_ID
-    return reply
-
-
-def verdict_reply(label: str) -> ParsedMessage[Verdict]:
+def verdict_reply(label: str, *, stop_reason: str = "end_turn") -> Message:
     text = Verdict(label=label).model_dump_json()
-    return parsed_message_with([{"type": "text", "text": text, "parsed_output": {"label": label}}])
+    return message_with([{"type": "text", "text": text}], stop_reason=stop_reason)
 
 
 def client_returning(
@@ -176,7 +167,7 @@ def test_request_shape() -> None:
 
     client.complete(REQUEST)
 
-    assert sdk.created == [
+    assert sdk.streamed == [
         {
             "model": "claude-opus-5-5",
             "max_tokens": 2000,
@@ -189,6 +180,30 @@ def test_request_shape() -> None:
     ]
 
 
+def test_every_call_streams_on_the_wire() -> None:
+    sent: list[dict[str, object]] = []
+    reply = api_reply([{"type": "text", "text": '{"label": "ok"}'}], "end_turn")
+    client = AnthropicClient(sdk_over_mock_api(reply, sent), RecordingTracer())
+
+    client.complete(REQUEST)
+    client.parse(REQUEST, Verdict)
+
+    assert [body["stream"] for body in sent] == [True, True]
+
+
+# Above 21,333 the SDK refuses a call that does not stream, which is why every call streams.
+@pytest.mark.parametrize("call", ["complete", "parse"])
+def test_a_large_max_tokens_is_sent_on_both_paths(call: str) -> None:
+    sent: list[dict[str, object]] = []
+    reply = api_reply([{"type": "text", "text": '{"label": "ok"}'}], "end_turn")
+    client = AnthropicClient(sdk_over_mock_api(reply, sent), RecordingTracer())
+    large = REQUEST.model_copy(update={"config": CONFIG.model_copy(update={"max_tokens": 64_000})})
+
+    client.complete(large) if call == "complete" else client.parse(large, Verdict)
+
+    assert sent[0]["max_tokens"] == 64_000
+
+
 # Opus 5.5 answers a forced tool_choice with a 400 and has thinking always on, so the adapter
 # leaves tool_choice, thinking and sampling to the API defaults.
 REJECTED_PARAMS = {"temperature", "top_p", "top_k", "tool_choice", "thinking"}
@@ -199,7 +214,7 @@ def test_complete_never_sends_what_the_model_rejects() -> None:
 
     client.complete(REQUEST)
 
-    assert REJECTED_PARAMS.isdisjoint(sdk.created[0])
+    assert REJECTED_PARAMS.isdisjoint(sdk.streamed[0])
 
 
 def test_parse_never_sends_what_the_model_rejects() -> None:
@@ -207,7 +222,7 @@ def test_parse_never_sends_what_the_model_rejects() -> None:
 
     client.parse(REQUEST, Verdict)
 
-    assert REJECTED_PARAMS.isdisjoint(sdk.parsed[0])
+    assert REJECTED_PARAMS.isdisjoint(sdk.streamed[0])
 
 
 def test_a_strict_tool_sends_strict_true() -> None:
@@ -215,7 +230,7 @@ def test_a_strict_tool_sends_strict_true() -> None:
 
     client.complete(REQUEST)
 
-    assert [tool["strict"] for tool in sdk.created[0]["tools"]] == [True]
+    assert [tool["strict"] for tool in sdk.streamed[0]["tools"]] == [True]
 
 
 def test_a_tool_that_is_not_strict_omits_the_field() -> None:
@@ -224,7 +239,7 @@ def test_a_tool_that_is_not_strict_omits_the_field() -> None:
 
     client.complete(REQUEST.model_copy(update={"tools": (loose_read_file,)}))
 
-    assert "strict" not in sdk.created[0]["tools"][0]
+    assert "strict" not in sdk.streamed[0]["tools"][0]
 
 
 def test_a_text_message_is_sent_as_it_is() -> None:
@@ -232,7 +247,7 @@ def test_a_text_message_is_sent_as_it_is() -> None:
 
     client.complete(REQUEST)
 
-    assert sdk.created[0]["messages"] == [{"role": "user", "content": "Find every route."}]
+    assert sdk.streamed[0]["messages"] == [{"role": "user", "content": "Find every route."}]
 
 
 def test_a_request_without_tools_sends_no_tools_field() -> None:
@@ -240,7 +255,7 @@ def test_a_request_without_tools_sends_no_tools_field() -> None:
 
     client.complete(REQUEST.model_copy(update={"tools": ()}))
 
-    assert "tools" not in sdk.created[0]
+    assert "tools" not in sdk.streamed[0]
 
 
 def test_usage_maps_cache_fields() -> None:
@@ -313,13 +328,12 @@ def test_latency_is_measured_around_the_call() -> None:
     assert response.latency_s == 2.5
 
 
-def test_the_request_id_reaches_the_debug_log() -> None:
-    tracer = RecordingTracer()
-    client, _ = client_returning(message_with(), tracer)
+# Only the stream knows it: a streamed final message has no _request_id, as a plain reply does.
+def test_the_request_id_comes_from_the_stream() -> None:
+    reply = api_reply([{"type": "text", "text": "done"}], "end_turn")
+    client = AnthropicClient(sdk_over_mock_api(reply, []), RecordingTracer())
 
-    client.complete(REQUEST)
-
-    assert any(REQUEST_ID in line for line in tracer.debug_lines)
+    assert client.complete(REQUEST).request_id == REQUEST_ID
 
 
 def test_provider_error_is_an_arde_error_the_application_can_catch() -> None:
@@ -328,6 +342,12 @@ def test_provider_error_is_an_arde_error_the_application_can_catch() -> None:
     assert isinstance(error, ArdeError)
     assert error.exit_code == ExitCode.CHECKS_FAILED
     assert error.next_action == "Run again"
+
+
+def test_provider_error_can_say_the_setup_is_wrong() -> None:
+    error = ProviderError("Bad key", next_action="Fix it", exit_code=ExitCode.BAD_USAGE)
+
+    assert error.exit_code == ExitCode.BAD_USAGE
 
 
 def raises_provider_error(
@@ -348,7 +368,6 @@ def test_auth_error_becomes_provider_error_with_next_action() -> None:
     assert "invalid x-api-key" in str(error)
     assert REQUEST_ID in str(error)
     assert "ANTHROPIC_API_KEY" in error.next_action
-    assert error.exit_code == ExitCode.CHECKS_FAILED
 
 
 def test_the_api_message_replaces_the_sdk_dump_of_the_whole_body() -> None:
@@ -376,7 +395,7 @@ def test_rate_limit_after_retries_becomes_provider_error() -> None:
     assert "rate limit" in str(error).lower()
     assert "Wait" in error.next_action
     # The SDK has already retried by the time it raises. A second layer would multiply the waits.
-    assert len(messages.created) == 1
+    assert len(messages.streamed) == 1
 
 
 def test_connection_error_becomes_provider_error() -> None:
@@ -408,7 +427,7 @@ def test_a_timeout_is_told_apart_from_a_refused_connection() -> None:
         (
             status_error(anthropic.BadRequestError, status=400, detail="schema too big"),
             "invalid",
-            "request id",
+            "ARDE_MODELS_FILE",
         ),
         (
             status_error(anthropic.OverloadedError, status=529, detail="Overloaded"),
@@ -456,6 +475,14 @@ def test_every_api_status_error_names_a_next_action(
     assert next_action_mentions in error.next_action
 
 
+def test_a_bad_request_says_it_may_be_a_setting_or_a_bug() -> None:
+    error, _ = raises_provider_error(
+        status_error(anthropic.BadRequestError, status=400, detail="no such effort")
+    )
+
+    assert "request id" in error.next_action
+
+
 def test_an_error_the_sdk_raises_for_other_reasons_is_wrapped_too() -> None:
     error, _ = raises_provider_error(anthropic.CredentialsError("no credentials"))
 
@@ -463,43 +490,130 @@ def test_an_error_the_sdk_raises_for_other_reasons_is_wrapped_too() -> None:
     assert error.next_action
 
 
-def test_the_sdk_error_stays_attached_for_the_debug_log() -> None:
-    sdk_error = status_error(anthropic.AuthenticationError, status=401, detail="invalid x-api-key")
-
-    error, _ = raises_provider_error(sdk_error)
-
-    assert error.__cause__ is sdk_error
+def forbidden() -> anthropic.APIStatusError:
+    return status_error(anthropic.PermissionDeniedError, status=403, detail="no")
 
 
-def test_parse_uses_messages_parse_and_returns_parsed_output() -> None:
-    client, sdk = client_returning(verdict_reply("ok"))
+def unknown_model() -> anthropic.APIStatusError:
+    return status_error(anthropic.NotFoundError, status=404, detail="model: nope")
+
+
+def rejected_key() -> anthropic.APIStatusError:
+    return status_error(anthropic.AuthenticationError, status=401, detail="invalid x-api-key")
+
+
+def rate_limited() -> anthropic.APIStatusError:
+    return status_error(anthropic.RateLimitError, status=429, detail="slow down")
+
+
+def server_error() -> anthropic.APIStatusError:
+    return status_error(anthropic.InternalServerError, status=500, detail="oops")
+
+
+def overloaded() -> anthropic.APIStatusError:
+    return status_error(anthropic.OverloadedError, status=529, detail="busy")
+
+
+@pytest.mark.parametrize("failure", [rejected_key, forbidden, unknown_model])
+def test_a_bad_key_or_model_is_bad_usage(failure: Callable[[], Exception]) -> None:
+    error, _ = raises_provider_error(failure())
+
+    assert error.exit_code is ExitCode.BAD_USAGE
+
+
+@pytest.mark.parametrize(
+    "failure", [rate_limited, server_error, overloaded, connection_error, timeout_error]
+)
+def test_an_outage_during_a_run_stays_exit_1(failure: Callable[[], Exception]) -> None:
+    error, _ = raises_provider_error(failure())
+
+    assert error.exit_code is ExitCode.CHECKS_FAILED
+
+
+# A transport error's chain holds the request headers, so nothing may link back to any SDK error.
+@pytest.mark.parametrize(
+    "failure", [rejected_key, rate_limited, overloaded, connection_error, timeout_error]
+)
+def test_no_failure_keeps_a_link_to_the_sdk_error(failure: Callable[[], Exception]) -> None:
+    error, _ = raises_provider_error(failure())
+
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+def test_parse_returns_the_validated_value_and_the_response() -> None:
+    client, _ = client_returning(verdict_reply("ok"))
 
     verdict, response = client.parse(REQUEST, Verdict)
 
     assert verdict == Verdict(label="ok")
     assert response.usage == Usage(input_tokens=3, output_tokens=4, cache_read=0, cache_write=0)
-    assert sdk.created == []
-    assert sdk.parsed == [
+
+
+def test_parse_sends_the_schema_beside_effort_on_the_cached_streaming_path() -> None:
+    client, sdk = client_returning(verdict_reply("ok"))
+
+    client.parse(REQUEST, Verdict)
+
+    assert sdk.streamed == [
         {
             "model": "claude-opus-5-5",
             "max_tokens": 2000,
             "system": "You explore a service.",
             "messages": [{"role": "user", "content": "Find every route."}],
             "tools": [READ_FILE_PARAMS],
-            "output_config": {"effort": "high"},
-            "output_format": Verdict,
+            "cache_control": {"type": "ephemeral"},
+            "output_config": {
+                "effort": "high",
+                "format": {"type": "json_schema", "schema": anthropic.transform_schema(Verdict)},
+            },
         }
     ]
 
 
-def test_parse_without_structured_output_is_a_provider_error() -> None:
-    client, _ = client_returning(parsed_message_with([], stop_reason="refusal"))
+@pytest.mark.parametrize(
+    ("stop_reason", "advice"),
+    [
+        ("max_tokens", "max_tokens"),
+        ("refusal", "declined"),
+        ("tool_use", "stop reason"),
+        ("stop_sequence", "stop reason"),
+    ],
+)
+def test_parse_refuses_a_reply_that_did_not_end_normally(stop_reason: str, advice: str) -> None:
+    client, _ = client_returning(verdict_reply("ok", stop_reason=stop_reason))
 
-    with pytest.raises(ProviderError) as raised:
+    with pytest.raises(ParseFailed) as raised:
+        client.parse(REQUEST, Verdict)
+
+    assert stop_reason in str(raised.value)
+    assert advice in raised.value.next_action
+
+
+def test_parse_with_no_text_block_is_a_failure_that_keeps_the_usage() -> None:
+    client, _ = client_returning(message_with([], stop_reason="refusal"))
+
+    with pytest.raises(ParseFailed) as raised:
         client.parse(REQUEST, Verdict)
 
     assert "refusal" in str(raised.value)
     assert raised.value.next_action
+    assert raised.value.usage.input_tokens == 3
+
+
+@pytest.mark.parametrize(
+    "text", ['{"label": 5}', "not json at all", ""], ids=["schema_break", "not_json", "empty"]
+)
+def test_a_paid_reply_that_fails_validation_keeps_its_usage(text: str) -> None:
+    client, _ = client_returning(message_with([{"type": "text", "text": text}]))
+
+    with pytest.raises(ParseFailed) as raised:
+        client.parse(REQUEST, Verdict)
+
+    assert isinstance(raised.value, ProviderError)
+    assert raised.value.usage == Usage(input_tokens=3, output_tokens=4, cache_read=0, cache_write=0)
+    assert "Verdict" in str(raised.value)
+    assert raised.value.__cause__ is None
 
 
 def test_parse_errors_from_the_api_become_provider_errors() -> None:
@@ -511,18 +625,75 @@ def test_parse_errors_from_the_api_become_provider_errors() -> None:
         client.parse(REQUEST, Verdict)
 
 
+def api_reply(content: list[dict[str, object]], stop_reason: str | None) -> dict[str, object]:
+    return {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": CONFIG.model,
+        "content": content,
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": usage_fields(),
+    }
+
+
+def block_events(index: int, block: dict[str, object]) -> list[dict[str, object]]:
+    if block["type"] == "text":
+        opening: dict[str, object] = {"type": "text", "text": ""}
+        delta: dict[str, object] = {"type": "text_delta", "text": block["text"]}
+    elif block["type"] == "thinking":
+        opening = {"type": "thinking", "thinking": "", "signature": ""}
+        delta = {"type": "signature_delta", "signature": block["signature"]}
+    else:
+        opening = {**block, "input": {}}
+        delta = {"type": "input_json_delta", "partial_json": json.dumps(block["input"])}
+    return [
+        {"type": "content_block_start", "index": index, "content_block": opening},
+        {"type": "content_block_delta", "index": index, "delta": delta},
+        {"type": "content_block_stop", "index": index},
+    ]
+
+
+def stream_events(reply: dict[str, object]) -> list[dict[str, object]]:
+    blocks = [
+        event
+        for index, block in enumerate(reply["content"])
+        for event in block_events(index, block)
+    ]
+    finish = {"stop_reason": reply["stop_reason"], "stop_sequence": None}
+    return [
+        {"type": "message_start", "message": {**reply, "content": [], "stop_reason": None}},
+        *blocks,
+        {"type": "message_delta", "delta": finish, "usage": {"output_tokens": 4}},
+        {"type": "message_stop"},
+    ]
+
+
+def sse_bytes(events: list[dict[str, object]]) -> bytes:
+    return b"".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n".encode() for e in events)
+
+
+def event_stream(events: list[dict[str, object]]) -> httpx2.Response:
+    return httpx2.Response(200, content=sse_bytes(events), headers=STREAM_HEADERS)
+
+
+def sdk_answering(answer: Callable[[httpx2.Request], httpx2.Response]) -> anthropic.Anthropic:
+    return anthropic.Anthropic(
+        api_key="sk-test-not-a-real-key",
+        max_retries=0,
+        http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(answer)),
+    )
+
+
 def sdk_over_mock_api(
     reply: dict[str, object], sent: list[dict[str, object]]
 ) -> anthropic.Anthropic:
     def answer(request: httpx2.Request) -> httpx2.Response:
         sent.append(json.loads(request.content))
-        return httpx2.Response(200, json=reply, headers={"request-id": REQUEST_ID})
+        return event_stream(stream_events(reply))
 
-    transport = httpx2.MockTransport(answer)
-    return anthropic.Anthropic(
-        api_key="sk-test-not-a-real-key",
-        http_client=anthropic.DefaultHttpxClient(transport=transport),
-    )
+    return sdk_answering(answer)
 
 
 def test_the_sdk_retries_before_the_adapter_gives_up() -> None:
@@ -548,24 +719,11 @@ def test_the_sdk_retries_before_the_adapter_gives_up() -> None:
     assert "slow down" in str(raised.value)
 
 
-def api_reply(content: list[dict[str, object]], stop_reason: str) -> dict[str, object]:
-    return {
-        "id": "msg_1",
-        "type": "message",
-        "role": "assistant",
-        "model": CONFIG.model,
-        "content": content,
-        "stop_reason": stop_reason,
-        "stop_sequence": None,
-        "usage": usage_fields(),
-    }
-
-
-def test_a_reply_cut_off_mid_json_is_a_provider_error_naming_max_tokens() -> None:
+def test_a_reply_cut_off_mid_json_is_a_failure_naming_max_tokens() -> None:
     reply = api_reply([{"type": "text", "text": '{"label"'}], "max_tokens")
     client = AnthropicClient(sdk_over_mock_api(reply, []), RecordingTracer())
 
-    with pytest.raises(ProviderError) as raised:
+    with pytest.raises(ParseFailed) as raised:
         client.parse(REQUEST, Verdict)
 
     assert "max_tokens" in raised.value.next_action
@@ -625,29 +783,11 @@ def test_a_failure_that_cannot_succeed_on_a_second_try_is_not_told_to_run_again(
     assert [action for action in next_actions if "Run again" in action] == []
 
 
-# max_tokens beyond what the SDK allows without streaming: it raises before it sends anything.
-@pytest.mark.parametrize("call", ["complete", "parse"])
-def test_a_max_tokens_the_sdk_will_not_send_is_a_provider_error(call: str) -> None:
-    sent: list[dict[str, object]] = []
-    client = AnthropicClient(sdk_over_mock_api(api_reply([], "end_turn"), sent), RecordingTracer())
-    too_many = REQUEST.model_copy(
-        update={"config": CONFIG.model_copy(update={"max_tokens": 64_000})}
-    )
-
-    with pytest.raises(ProviderError) as raised:
-        client.complete(too_many) if call == "complete" else client.parse(too_many, Verdict)
-
-    assert "max_tokens" in raised.value.next_action
-    assert "ARDE_MODELS_FILE" in raised.value.next_action
-    assert "64000" in str(raised.value)
-    assert sent == []
-
-
 def test_a_reply_that_is_valid_json_but_breaks_the_schema_does_not_blame_max_tokens() -> None:
     reply = api_reply([{"type": "text", "text": '{"label": 5}'}], "end_turn")
     client = AnthropicClient(sdk_over_mock_api(reply, []), RecordingTracer())
 
-    with pytest.raises(ProviderError) as raised:
+    with pytest.raises(ParseFailed) as raised:
         client.parse(REQUEST, Verdict)
 
     assert "max_tokens" not in raised.value.next_action
@@ -655,15 +795,131 @@ def test_a_reply_that_is_valid_json_but_breaks_the_schema_does_not_blame_max_tok
     assert raised.value.next_action
 
 
-def test_a_reply_that_is_not_json_covers_both_a_cut_off_and_a_partial_refusal() -> None:
-    reply = api_reply([{"type": "text", "text": "I cannot help with"}], "refusal")
-    client = AnthropicClient(sdk_over_mock_api(reply, []), RecordingTracer())
+def status_error_event(error_type: str, message: str) -> bytes:
+    error = {"type": "error", "error": {"type": error_type, "message": message}}
+    return f"event: error\ndata: {json.dumps(error)}\n\n".encode()
+
+
+class BreaksOff(httpx2.SyncByteStream):
+    """A response body that delivers its first bytes, and then the connection fails."""
+
+    def __init__(self, first: bytes, failure: Exception) -> None:
+        self._first = first
+        self._failure = failure
+
+    def __iter__(self) -> Iterator[bytes]:
+        yield self._first
+        raise self._failure
+
+
+def breaks_off_with(failure: Exception) -> httpx2.Response:
+    first = sse_bytes(stream_events(api_reply([], "end_turn"))[:1])
+    return httpx2.Response(200, stream=BreaksOff(first, failure), headers=STREAM_HEADERS)
+
+
+FULL_REPLY = api_reply([{"type": "text", "text": "done"}], "end_turn")
+FULL_STREAM = stream_events(FULL_REPLY)
+
+
+def with_stop_reason(stop_reason: str | None) -> list[dict[str, object]]:
+    finish = {"stop_reason": stop_reason, "stop_sequence": None}
+    return [
+        {**event, "delta": finish} if event["type"] == "message_delta" else event
+        for event in FULL_STREAM
+    ]
+
+
+def with_usage(usage: dict[str, object]) -> list[dict[str, object]]:
+    start = {**FULL_STREAM[0]["message"], "usage": usage}
+    return [{"type": "message_start", "message": start}, *FULL_STREAM[1:]]
+
+
+# What a stream cannot be trusted to deliver, each measured against the real SDK. Most of these
+# reach the adapter as something other than an AnthropicError.
+UNUSABLE_ANSWERS: dict[str, Callable[[httpx2.Request], httpx2.Response]] = {
+    "html from a proxy": lambda _: httpx2.Response(
+        200, content=b"<html>Sign in</html>", headers={"content-type": "text/html"}
+    ),
+    "json that is no stream": lambda _: httpx2.Response(200, json={"hello": "world"}),
+    "empty body": lambda _: httpx2.Response(200, content=b""),
+    "broken json in an event": lambda _: httpx2.Response(
+        200, content=b"event: message_start\ndata: {oops\n\n", headers=STREAM_HEADERS
+    ),
+    "events out of order": lambda _: event_stream(FULL_STREAM[1:]),
+    "ends before the stop reason": lambda _: event_stream(FULL_STREAM[:4]),
+    "no stop reason": lambda _: event_stream(with_stop_reason(None)),
+    "pause_turn with no server tools": lambda _: event_stream(with_stop_reason("pause_turn")),
+    "a stop reason that is new": lambda _: event_stream(with_stop_reason("something_new")),
+    "negative usage": lambda _: event_stream(with_usage({"input_tokens": -1, "output_tokens": 1})),
+    "connection reset": lambda _: breaks_off_with(httpx2.ReadError("reset")),
+    "peer closed": lambda _: breaks_off_with(httpx2.RemoteProtocolError("peer closed")),
+    "read timeout": lambda _: breaks_off_with(httpx2.ReadTimeout("slow")),
+}
+
+
+@pytest.mark.parametrize("call", ["complete", "parse"])
+@pytest.mark.parametrize("answer", UNUSABLE_ANSWERS.values(), ids=UNUSABLE_ANSWERS.keys())
+def test_an_unusable_reply_is_a_provider_error_with_a_next_action(
+    answer: Callable[[httpx2.Request], httpx2.Response], call: str
+) -> None:
+    client = AnthropicClient(sdk_answering(answer), RecordingTracer())
 
     with pytest.raises(ProviderError) as raised:
-        client.parse(REQUEST, Verdict)
+        client.complete(REQUEST) if call == "complete" else client.parse(REQUEST, Verdict)
 
-    assert "max_tokens" in raised.value.next_action
-    assert "declined" in raised.value.next_action
+    assert not isinstance(raised.value, ParseFailed)
+    assert raised.value.next_action
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
+@pytest.mark.parametrize("stop_reason", ["pause_turn", "something_new"])
+def test_a_stop_reason_the_loop_cannot_act_on_is_named(stop_reason: str) -> None:
+    answer = event_stream(with_stop_reason(stop_reason))
+    client = AnthropicClient(sdk_answering(lambda _: answer), RecordingTracer())
+
+    with pytest.raises(ProviderError, match=stop_reason) as raised:
+        client.complete(REQUEST)
+
+    assert "stop reason" in raised.value.next_action
+
+
+def test_a_broken_stream_names_the_network_or_a_proxy_as_the_next_thing_to_check() -> None:
+    client = AnthropicClient(
+        sdk_answering(lambda _: breaks_off_with(httpx2.ReadError("reset"))), RecordingTracer()
+    )
+
+    with pytest.raises(ProviderError, match="ReadError") as raised:
+        client.complete(REQUEST)
+
+    assert "ANTHROPIC_BASE_URL" in raised.value.next_action
+
+
+@pytest.mark.parametrize("error_type", ["overloaded_error", "api_error"])
+def test_an_error_inside_a_stream_is_a_provider_error(error_type: str) -> None:
+    body = sse_bytes(FULL_STREAM[:1]) + status_error_event(error_type, "try later")
+
+    def answer(_request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, content=body, headers=STREAM_HEADERS)
+
+    client = AnthropicClient(sdk_answering(answer), RecordingTracer())
+
+    with pytest.raises(ProviderError, match="try later"):
+        client.complete(REQUEST)
+
+
+def test_a_broken_stream_logs_only_its_kind() -> None:
+    tracer = RecordingTracer()
+
+    def answer(_request: httpx2.Request) -> httpx2.Response:
+        return breaks_off_with(httpx2.ReadError("Bearer sk-ant-SECRET"))
+
+    with pytest.raises(ProviderError) as raised:
+        AnthropicClient(sdk_answering(answer), tracer).complete(REQUEST)
+
+    logged = "\n".join(tracer.debug_lines)
+    assert "ReadError" in logged
+    assert "SECRET" not in logged + str(raised.value)
 
 
 # What pytest prints for a failing test under --showlocals: every frame's arguments and locals.
@@ -697,6 +953,7 @@ def test_a_malformed_key_is_never_printed_not_even_with_showlocals(kind: str) ->
     with pytest.raises(ProviderError) as raised:
         AnthropicClient.from_api_key(SecretStr(BAD_KEYS[kind]), RecordingTracer())
 
+    assert raised.value.exit_code is ExitCode.BAD_USAGE
     assert "ANTHROPIC_API_KEY" in raised.value.next_action
     assert "SECRET" not in pytest_failure_text(raised) + raised.value.next_action
 
@@ -749,14 +1006,15 @@ def test_the_loopback_api_answers_a_well_formed_key_with_an_auth_error(loopback_
     assert "rejected the API key" in str(raised.value)
 
 
-# The one thing that stays attached is the server's answer, so it must hold no key either.
-def test_the_server_answer_kept_as_the_cause_holds_no_key(loopback_api: str) -> None:
+# A server's answer holds the key too, on error.request.headers, so nothing of it stays attached.
+def test_a_rejected_key_leaves_no_link_to_the_request(loopback_api: str) -> None:
     client = AnthropicClient(sdk_on_loopback(WELL_FORMED_KEY, loopback_api), RecordingTracer())
 
     with pytest.raises(ProviderError) as raised:
         client.complete(REQUEST)
 
-    assert isinstance(raised.value.__cause__, anthropic.AuthenticationError)
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
     every_link_rendered = [
         "".join(traceback.format_exception(link)) for link in links_of(raised.value)
     ]
