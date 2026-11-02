@@ -22,6 +22,8 @@ Each file gives the decision, why, and what it costs.
 - [0007 swag v2 rc6](decisions/0007-swag-v2-rc6.md)
 - [0008 No extra route](decisions/0008-no-extra-route.md)
 - [0009 The container is the one command](decisions/0009-container-as-the-one-command.md)
+- [0010 An agent returns a value or raises](decisions/0010-agent-contract.md)
+- [0011 Every model request streams](decisions/0011-stream-every-request.md)
 
 ## Phase specs
 

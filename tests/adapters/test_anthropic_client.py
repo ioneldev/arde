@@ -871,6 +871,25 @@ def test_an_error_inside_a_stream_is_a_provider_error(error_type: str) -> None:
         client.complete(REQUEST)
 
 
+# The tokens of a broken stream may already be billed, so a silent retry would pay for them twice.
+def test_a_stream_that_breaks_after_it_starts_is_not_retried() -> None:
+    attempts: list[httpx2.Request] = []
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        attempts.append(request)
+        return breaks_off_with(httpx2.ReadError("reset"))
+
+    sdk = anthropic.Anthropic(
+        api_key="sk-test-not-a-real-key",
+        http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(answer)),
+    )
+
+    with pytest.raises(ProviderError):
+        AnthropicClient(sdk, RecordingTracer()).complete(REQUEST)
+
+    assert len(attempts) == 1
+
+
 def test_a_broken_stream_logs_only_its_kind() -> None:
     tracer = RecordingTracer()
 

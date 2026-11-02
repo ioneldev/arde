@@ -6,7 +6,15 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 
 - **Repos must be trusted.** The repo's code runs in the same container as ARDE and the API key. Removing `ANTHROPIC_*` from child processes limits accidents, but it is not a security boundary: code running as the same user could still read the parent's environment. This is reasoned, not tested.
 - **A writable repo mount is an open risk.** The container mounts the local repo so it can write results back. Repo code running in the container could use that mount to tamper with the host repo, for example by planting a git hook that later runs on the host. This must be resolved before the container ships (Task 28 of the plan).
+- **The `/data` volume is shared across repos.** The container keeps `ARDE_HOME`, `GOCACHE` and `GOPATH` in one volume, owned by the same user as repo code. Repo A's tests could write repo B's `profile.override.yaml`, the file `extra_test_commands` trusts. This is reasoned, not tested, and must be resolved before the container ships (Task 28 of the plan).
 - **No sandbox for untrusted merge-request code.** A separate sandbox is a non-goal for now.
+
+## Prompt injection and data
+
+- **Repo text can steer the agents.** Comments, READMEs and test names reach the models as plain input. A poisoned comment can steer a fact or a sentence in the docs. Code limits what that can reach: an agent has no shell or write tools, and it cannot set a command to run. A rule with no HTTP effect still goes unchecked, so a false one can reach the docs. This is reasoned: no agent has run against a hostile repo.
+- **What the agents read leaves the machine.** Whatever an agent reads goes to Anthropic, including any secret committed to the target repo, and it is also stored in `debug.log`. Run folders can be read by their owner alone.
+- **A native run has no container.** With `uv run arde`, repo code runs as the developer, with access to the home directory and the credentials in it.
+- **Redaction is exact match.** The tracer replaces the API key wherever it appears whole. A key that was encoded or split on the way in would pass through. Only `trace.jsonl` and `debug.log` go through the tracer: `report.json`, `service.log` and stderr do not.
 
 ## What it understands
 
@@ -33,9 +41,16 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 - An error code is exempt as unreachable only if the wiki holds an `unreachable` fact with code evidence. A wrong claim of unreachable is a known limit.
 - It has not been run yet, so its catch rate is unknown.
 
+## Cost
+
+- **The cap can be overshot by one call.** A call's price is known only after it is paid for. The run stops once spending reaches the cap, but the last call can pass it by its own cost: at the shipped settings the worst single Opus 5.5 call costs $4.32, from 1M uncached input tokens and 16,000 output tokens.
+- **A stream that breaks is not counted.** The reply never said how many tokens it used, so that spend is missing from the totals. This is reasoned from how the adapter works, not measured against a bill.
+
 ## The model API
 
 Measured against the live API on 2026-11-02, with Opus 5.5.
+
+- **Every request streams.** The SDK refuses a call that does not stream above about 21,333 `max_tokens`, and thinking counts against that limit. A dropped stream is not retried, because the SDK retries only before a stream starts, so it ends the run with a next action. See [decision 0011](decisions/0011-stream-every-request.md).
 
 - **Strict tool use is refused for the repo profile and for the facts.** The API answers `For 'object' type, 'additionalProperties: object' is not supported` for the open `args` dict in the profile, and `Schema type 'oneOf' is not supported` for the fact union. Rewriting `oneOf` as `anyOf` did not help on Haiku 5.5: the API then said the compiled grammar was too large. Tools with these schemas must be sent with `strict=False`, and code validation holds the guarantee.
 - **A refusal ends the agent, with no retry on another model.** The server-side fallback needs the beta client, and Haiku 5.5, which the classifier uses, has no fallback at all. The agent stops with the reason `refused`.

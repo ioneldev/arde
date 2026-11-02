@@ -2,11 +2,11 @@
 
 This is the short map. The reasoning and the measurements are in the [design](superpowers/specs/2026-11-01-arde-design.md).
 
-**Status:** Phase 0. Only the quality gate and the docs wiki exist. The rest is the design that later phases build, so read it as intent until the code lands.
+**Status:** Phase 0 is built: the domain models, the agent loop, the Anthropic client, the tracer, the cost cap and the model settings. Nothing reads Go or runs a service yet, so read the steps below as intent until later phases land them.
 
 ## The orchestrator is code
 
-Python code runs a fixed sequence of steps. Agents work inside it only where the next action depends on what they find. Every agent is the same generic loop, configured with a system prompt, a tool list, a submit tool with a validator, and limits. Validation errors from the submit tool go back to the model as tool results, which is how an agent corrects itself. See [decision 0001](decisions/0001-orchestrator-is-code.md).
+Python code runs a fixed sequence of steps. Agents work inside it only where the next action depends on what they find. Every agent is the same generic loop, configured with a system prompt, a tool list, a submit tool with a validator, and limits. Validation errors from the submit tool go back to the model as tool results, which is how an agent corrects itself. See [decision 0001](decisions/0001-orchestrator-is-code.md) and [decision 0010](decisions/0010-agent-contract.md).
 
 | Step | Kind | Sees | Tools |
 |---|---|---|---|
@@ -45,22 +45,32 @@ A failed run exits non-zero, leaves the user's repo untouched, keeps the old sna
 
 ## Layers
 
-Each layer is a folder under `src/arde/`, created by the task that first needs it. Until then this page names the layers and does not point at paths.
+Each layer is a folder under `src/arde/`, created by the task that first needs it. The checks layer and the cli do not exist yet.
 
-| Layer | Holds |
-|---|---|
-| domain | Frozen Pydantic models and pure rules: facts, inventory, findings, the stale rule |
-| application | The pipeline, the agent roles, and the ports (interfaces) they need |
-| checks | One file per verification check |
-| adapters | The LLM client, the Go language adapter, the workspace, the service runner, the tracer |
-| cli | The command line. It wires adapters into the application |
+| Layer | Holds | Where |
+|---|---|---|
+| domain | Frozen Pydantic models and pure rules: facts, inventory, findings, the stale rule | `src/arde/domain/` |
+| application | The pipeline, the agent roles, and the ports (interfaces) they need | `src/arde/application/` |
+| checks | One file per verification check | not yet |
+| adapters | The LLM client, the Go language adapter, the workspace, the service runner, the tracer | `src/arde/adapters/` |
+| cli | The command line. It wires adapters into the application | not yet |
 
-Imports go inward. Two rules are enforced by `tests/test_architecture.py`:
+What exists today:
 
-- The domain imports neither adapters nor application code.
-- The application imports no adapter. It reaches the outside world through ports.
+- `src/arde/application/agent_loop.py`: the one loop every agent runs, and `record_model_call`, which traces and charges a paid call.
+- `src/arde/application/ports.py`: the `LLMClient` and `Tracer` interfaces.
+- `src/arde/application/budget.py`: the cost cap and the totals per role.
+- `src/arde/adapters/llm/anthropic_client.py`: the Anthropic API behind `LLMClient`.
+- `src/arde/adapters/tracer.py`: writes `trace.jsonl` and `debug.log`.
+- `src/arde/adapters/models_file.py`: reads the model settings per role.
 
-The same test file keeps Go-specific code out of everything except the Go language adapter. A small Go helper, `goinspect`, sits next to it for AST work and the call graph. The orchestrator talks to Go only through the `LanguageAdapter` interface, so another language could be added later.
+Imports go inward. These rules are enforced by `tests/test_architecture.py`:
+
+- The domain imports no adapter, application or cli code.
+- The application imports no adapter or cli code. It reaches the outside world through ports.
+- The checks import no adapter or cli code.
+
+The same test file keeps Go-specific code out of everything except the Go language adapter, and keeps reads of the plain API key to the adapter, the tracer and `tests/conftest.py`. A small Go helper, `goinspect`, sits next to it for AST work and the call graph. The orchestrator talks to Go only through the `LanguageAdapter` interface, so another language could be added later.
 
 ## What the LLM may and may not do
 

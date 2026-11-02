@@ -13,7 +13,7 @@ This spec says what this phase delivers and how we know it's done. The reasoning
 | 3 | Tracer, budget, model config | Done |
 | 4 | LLM port, fake client, agent loop | Done |
 | 5 | Anthropic client | Done |
-| Review | Architecture, code, bug hunters, security | Not started |
+| Review | Architecture, code, bug hunters, security | Done |
 | Gate | Ionel reviews, understands and tests | Not started |
 
 ## Purpose
@@ -22,7 +22,7 @@ Build everything the later phases stand on, with no Go and no real repo involved
 
 ## What it delivers
 
-- **Quality gate:** `make check` runs `ruff`, `mypy` and `pytest`, the same for people, agents and CI. `make integration` and `make eval` run the slower tests.
+- **Quality gate:** `make check` runs `ruff`, `mypy` and `pytest`, the same for people, agents and CI. `make integration` and `make eval` run the slower tests. `make integration` fails today: no test needs Go yet, and it starts working in Phase 1.
 - **Docs wiki:** `AGENTS.md`, `docs/index.md`, architecture, glossary, limitations and decisions, with tests that fail on a broken link or a path that doesn't exist.
 - **Architecture tests:** they fail if the domain or application layers import an adapter, or if Go-specific code appears outside the Go adapter.
 - **Domain models:** frozen Pydantic types for findings, the repo profile, inventory, facts, changes and the run report.
@@ -56,7 +56,7 @@ make check
 make eval
 ```
 
-Then open the newest `trace.jsonl` a test produced, and read each event.
+Then open the newest `trace.jsonl` a test produced, and read each event. Each live test prints its folder, under `runs/eval/`.
 
 ## Not in this phase
 
@@ -65,3 +65,4 @@ Anything that reads Go, runs a service or touches a real repo. Those start in Ph
 ## Open items
 
 - A writable repo mount could let repo code tamper with the host repo. This must be resolved in Task 28, before the container ships.
+- The API key needs rotating, because part of it reached an agent transcript during Task 5. Ionel does this in the Anthropic Console before anything is published.

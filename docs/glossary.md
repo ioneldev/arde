@@ -2,7 +2,7 @@
 
 Terms as ARDE uses them.
 
-**Fact**: One checked statement about the target service, with an id, evidence (a code quote or a recorded request and response) and links to the declarations, routes or files it depends on. Facts are what the docs agent writes from.
+**Fact**: One checked statement about the target service, with an id, evidence (a code quote or a citation of a recorded request and response) and links to the declarations, routes or files it depends on. Facts are what the docs agent writes from.
 
 **Finding**: The result of a failed check. It names the check, who owns the repair (explore, docs or code), the subject, a message and the next action.
 

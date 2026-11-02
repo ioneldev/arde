@@ -2,7 +2,7 @@
 
 ARDE (Agentic Repo Docs Engine) is a command-line tool that documents a Go `net/http` service without manual edits. It adds swag annotations, generates an OpenAPI file with a standard tool, writes project documentation, proves it did not change behaviour, and leaves a trace of what it did.
 
-**Status:** under construction. Only the repo skeleton, the quality gate and the docs wiki exist so far, so there is no command to run yet.
+**Status:** under construction. The foundations exist: the domain models, the agent loop, the Anthropic client, the tracer and the cost cap. Nothing reads Go yet, so there is no command to run.
 
 ## Develop
 

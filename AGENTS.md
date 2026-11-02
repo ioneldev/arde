@@ -29,7 +29,7 @@ A small Go helper, `goinspect`, does the AST work and the call graph, because th
 - Tests come first. Unit tests use the fake LLM and need no network or Go. Mark Go tests `integration` and paid tests `eval`.
 - Comments explain why, never what. Past two positional arguments, pass a model.
 - Every user-facing error names the next action.
-- The API key never appears in a trace, log or report. Never commit `.env`.
+- The API key travels as a `SecretStr`. The tracer redacts it by exact match in `trace.jsonl` and `debug.log`, and `tests/conftest.py` scrubs any 16 characters of it from pytest reports. Only the adapter, the tracer and `tests/conftest.py` read the plain value, and a test enforces that. Never commit `.env`.
 - Docs name only paths that exist, and `make check` fails on a broken link or a missing path. Add a path to a page when its file lands, not before. Phase specs in `docs/specs/` are the exception: they may name future paths, but their links must work.
 
 ## To change X, go here

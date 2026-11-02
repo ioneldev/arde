@@ -52,6 +52,14 @@ def test_index_links_every_docs_page() -> None:
     assert pages_missing_from_index(ROOT) == []
 
 
+# The repo is delivered as a link, and .env.local or .env.bak would hold the same key as .env.
+def test_every_env_file_stays_out_of_git_except_the_example() -> None:
+    ignored = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+    assert ".env*" in ignored
+    assert "!.env.example" in ignored
+
+
 # The checks below prove each rule fires on a violation, so a green run above means something.
 
 
