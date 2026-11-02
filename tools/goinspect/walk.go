@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -20,9 +21,10 @@ type walkPolicy struct {
 	// skipsNestedModules leaves out a directory that holds its own go.mod, because that is
 	// another module and `./...` stops at it. The root is never left out.
 	skipsNestedModules bool
-	// skipsFilesBuiltOnlyWithTheIgnoreTag leaves out a file that no machine builds unless it is
-	// asked for -tags ignore, which is how a generator program is kept out of its package.
-	skipsFilesBuiltOnlyWithTheIgnoreTag bool
+	// skipsFilesThatRequireTheIgnoreTag leaves out a file whose build constraint requires the tag
+	// ignore, which is how a generator program is kept out of its package. See
+	// requiresTheIgnoreTag for what counts.
+	skipsFilesThatRequireTheIgnoreTag bool
 }
 
 // skipOnlyGit is for callers that must not miss a file, such as compare.
@@ -33,15 +35,16 @@ var skipOnlyGit = walkPolicy{
 
 // skipWhatTheGoToolIgnores mirrors how `go build ./...` treats a tree: it passes over vendor and
 // testdata, over any directory or .go file whose name starts with "_" or ".", over a directory
-// that is another module, and over a file that only `-tags ignore` builds. A file for one
-// platform, or behind any other tag, stays in, because some machine builds it.
+// that is another module, and over a file whose build constraint requires the tag ignore. Any
+// other file stays in, a file for one platform and one behind a negated tag included, because
+// some machine builds it.
 var skipWhatTheGoToolIgnores = walkPolicy{
 	skipsDirectory: func(name string) bool {
 		return name == "vendor" || name == "testdata" || startsWithUnderscoreOrDot(name)
 	},
-	skipsFile:                           startsWithUnderscoreOrDot,
-	skipsNestedModules:                  true,
-	skipsFilesBuiltOnlyWithTheIgnoreTag: true,
+	skipsFile:                         startsWithUnderscoreOrDot,
+	skipsNestedModules:                true,
+	skipsFilesThatRequireTheIgnoreTag: true,
 }
 
 // skipTestsAndWhatTheGoToolIgnores is for callers that read the service itself: a _test.go file
@@ -81,11 +84,11 @@ func listGoFiles(root string, policy walkPolicy) ([]string, error) {
 		if !isListedFile(entry, policy) {
 			return nil
 		}
-		builtOnlyWithIgnore, err := isSkippedForItsBuildConstraint(path, policy)
+		requiresIgnore, err := skipsForItsBuildConstraint(path, policy)
 		if err != nil {
 			return err
 		}
-		if builtOnlyWithIgnore {
+		if requiresIgnore {
 			return nil
 		}
 		relative, err := filepath.Rel(walkRoot, path)
@@ -115,28 +118,35 @@ func holdsGoMod(directory string) bool {
 	return err == nil && info.Mode().IsRegular()
 }
 
-func isSkippedForItsBuildConstraint(path string, policy walkPolicy) (bool, error) {
-	if !policy.skipsFilesBuiltOnlyWithTheIgnoreTag {
+func skipsForItsBuildConstraint(path string, policy walkPolicy) (bool, error) {
+	if !policy.skipsFilesThatRequireTheIgnoreTag {
 		return false, nil
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return false, err
 	}
-	return isBuiltOnlyWithTheIgnoreTag(content), nil
+	return constraintsRequireTheIgnoreTag(content), nil
 }
 
-// isBuiltOnlyWithTheIgnoreTag is true when the file's build constraint is false whatever the
-// platform and the other tags are, and true only if the tag "ignore" is. It reads the leading
-// comments the way the go command does, and answers false for anything it cannot read, so that
-// a doubtful file stays in the inventory.
-func isBuiltOnlyWithTheIgnoreTag(content []byte) bool {
-	expressions := leadingBuildConstraints(content)
-	builtWithoutIgnore := func(tag string) bool { return tag != "ignore" }
-	for _, expression := range expressions {
-		if !expression.Eval(builtWithoutIgnore) {
-			return true
-		}
+// constraintsRequireTheIgnoreTag is true when the file's leading constraints, read the way the go
+// command reads them, include one that requires the tag ignore. The lines of a // +build block
+// are ANDed, so one of them is enough. A file with no constraint, or one this cannot read, is false,
+// so that a doubtful file stays in the inventory.
+func constraintsRequireTheIgnoreTag(content []byte) bool {
+	return slices.ContainsFunc(leadingBuildConstraints(content), requiresTheIgnoreTag)
+}
+
+// requiresTheIgnoreTag is true for the tag ignore itself and for an && that has it on either side.
+// The expression is not evaluated, because "ignore || !linux" and "!windows" are false when every
+// tag but ignore is set, and a go build of either includes the file. Anything with a ! or an ||
+// is therefore false here, and the file stays in.
+func requiresTheIgnoreTag(expression constraint.Expr) bool {
+	switch typed := expression.(type) {
+	case *constraint.TagExpr:
+		return typed.Tag == "ignore"
+	case *constraint.AndExpr:
+		return requiresTheIgnoreTag(typed.X) || requiresTheIgnoreTag(typed.Y)
 	}
 	return false
 }

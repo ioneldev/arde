@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -284,34 +287,53 @@ func TestWalkKeepsNestedModulesWhenOnlyGitIsSkipped(t *testing.T) {
 	}
 }
 
-// A file whose build constraint is false whatever the other tags are can never be built unless
-// someone passes -tags ignore. Everything else may be built on some machine, so it stays.
+// A file is left out only when its constraint positively requires the tag ignore: the tag alone,
+// or an && with the tag on either side. Anything else stays in, because a file that is not read
+// is a route or a field that is missing with no message, and one that is read wrongly shows up
+// as a finding. In particular a constraint with a "!" is false in an evaluation that sets every
+// tag but ignore, and go list builds `!windows` and `ignore || !linux`.
+const generatorBody = "package p\n\nfunc Gen() { pick(\"x\") }\n"
+
 var filesByBuildConstraint = map[string]struct {
 	content string
 	skipped bool
 }{
-	"go:build ignore":                {"//go:build ignore\n\npackage main\n", true},
-	"go:build ignore, no blank line": {"//go:build ignore\npackage main\n", true},
-	"+build ignore":                  {"// +build ignore\n\npackage main\n", true},
-	"+build ignore with a note":      {"// +build ignore\n// a note\n\npackage main\n", true},
-	"ignore and linux":               {"//go:build ignore && linux\n\npackage main\n", true},
-	"ignore after a doc comment":     {"// Command gen makes tables.\n//\n//go:build ignore\n\npackage main\n", true},
-	"byte order mark first":          {"\ufeff//go:build ignore\n\npackage main\n", true},
-	"CRLF line endings":              {"//go:build ignore\r\n\r\npackage main\r\n", true},
-	"two +build lines, one false":    {"// +build linux\n// +build ignore\n\npackage main\n", true},
-	"go:build wins over +build":      {"//go:build linux\n// +build ignore\n\npackage main\n", false},
-	"+build without a blank line":    {"// +build ignore\npackage main\n", false},
-	"after the package clause":       {"package main\n\n//go:build ignore\n", false},
-	"after a block comment":          {"/* licence */\n//go:build ignore\n\npackage main\n", false},
-	"not ignore":                     {"//go:build !ignore\n\npackage main\n", false},
-	"ignore or linux":                {"//go:build linux || ignore\n\npackage main\n", false},
-	"a platform":                     {"//go:build windows\n\npackage main\n", false},
-	"a custom tag":                   {"//go:build e2e\n\npackage main\n", false},
-	"no constraint":                  {"package main\n", false},
-	"a constraint that is malformed": {"//go:build (ignore\n\npackage main\n", false},
+	"go:build ignore":                     {"//go:build ignore\n\n" + generatorBody, true},
+	"go:build ignore, no blank line":      {"//go:build ignore\n" + generatorBody, true},
+	"go:build ignore && linux":            {"//go:build ignore && linux\n\n" + generatorBody, true},
+	"go:build linux && ignore":            {"//go:build linux && ignore\n\n" + generatorBody, true},
+	"go:build three terms with ignore":    {"//go:build linux && ignore && !windows\n\n" + generatorBody, true},
+	"go:build in parentheses":             {"//go:build (ignore && linux)\n\n" + generatorBody, true},
+	"+build ignore":                       {"// +build ignore\n\n" + generatorBody, true},
+	"+build ignore with a note":           {"// +build ignore\n// a note\n\n" + generatorBody, true},
+	"+build ignore, linux (comma is and)": {"// +build ignore,linux\n\n" + generatorBody, true},
+	"+build ignore then a second line":    {"// +build ignore\n// +build linux\n\n" + generatorBody, true},
+	"+build linux then ignore":            {"// +build linux\n// +build ignore\n\n" + generatorBody, true},
+	"ignore after a doc comment":          {"// Command gen makes tables.\n//\n//go:build ignore\n\n" + generatorBody, true},
+	"byte order mark first":               {"\ufeff//go:build ignore\n\n" + generatorBody, true},
+	"CRLF line endings":                   {"//go:build ignore\r\n\r\n" + generatorBody, true},
+
+	"not windows":                       {"//go:build !windows\n\n" + generatorBody, false},
+	"not cgo":                           {"//go:build !cgo\n\n" + generatorBody, false},
+	"not a custom tag":                  {"//go:build !custom\n\n" + generatorBody, false},
+	"ignore or not linux":               {"//go:build ignore || !linux\n\n" + generatorBody, false},
+	"ignore or linux":                   {"//go:build ignore || linux\n\n" + generatorBody, false},
+	"not ignore":                        {"//go:build !ignore\n\n" + generatorBody, false},
+	"linux and not windows":             {"//go:build linux && !windows\n\n" + generatorBody, false},
+	"an or in parentheses and a tag":    {"//go:build (ignore || linux) && !windows\n\n" + generatorBody, false},
+	"+build not cgo":                    {"// +build !cgo\n\n" + generatorBody, false},
+	"+build ignore linux (space is or)": {"// +build ignore linux\n\n" + generatorBody, false},
+	"go:build wins over +build":         {"//go:build linux\n// +build ignore\n\n" + generatorBody, false},
+	"+build without a blank line":       {"// +build ignore\n" + generatorBody, false},
+	"after the package clause":          {"package p\n\n//go:build ignore\n\nfunc Gen() { pick(\"x\") }\n", false},
+	"after a block comment":             {"/* licence */\n//go:build ignore\n\n" + generatorBody, false},
+	"a platform":                        {"//go:build windows\n\n" + generatorBody, false},
+	"a custom tag":                      {"//go:build e2e\n\n" + generatorBody, false},
+	"no constraint":                     {generatorBody, false},
+	"a constraint that is malformed":    {"//go:build (ignore\n\n" + generatorBody, false},
 }
 
-func TestWalkSkipsFilesThatAreBuiltOnlyWithTheIgnoreTag(t *testing.T) {
+func TestWalkSkipsFilesThatRequireTheIgnoreTagAndNoOthers(t *testing.T) {
 	for name, scenario := range filesByBuildConstraint {
 		root := writeTree(t, map[string]string{"gen.go": scenario.content, "keep.go": emptyPackage})
 
@@ -326,6 +348,80 @@ func TestWalkSkipsFilesThatAreBuiltOnlyWithTheIgnoreTag(t *testing.T) {
 			t.Errorf("%s: got %v, want %v", name, got, want)
 		}
 	}
+}
+
+func TestDeclarationsAndMatchReadEveryFileThatDoesNotRequireTheIgnoreTag(t *testing.T) {
+	for name, scenario := range filesByBuildConstraint {
+		root := writeTree(t, map[string]string{"gen.go": scenario.content, "keep.go": emptyPackage})
+
+		declared := slices.Contains(declarationFiles(t, root), "gen.go")
+		matched := slices.Contains(matchFiles(t, root), "gen.go")
+
+		if declared == scenario.skipped || matched == scenario.skipped {
+			t.Errorf("%s: declarations read it: %v, match read it: %v, but skipped is %v",
+				name, declared, matched, scenario.skipped)
+		}
+	}
+}
+
+func TestCompareStillSeesEveryFileWhateverItsConstraint(t *testing.T) {
+	for name, scenario := range filesByBuildConstraint {
+		edited := strings.Replace(scenario.content, `pick("x")`, `pick("y")`, 1)
+		oldRoot := writeTree(t, map[string]string{"gen.go": scenario.content})
+		newRoot := writeTree(t, map[string]string{"gen.go": edited})
+
+		exitCode, stdout, stderr := runCommand(t, "compare", "--old", oldRoot, "--new", newRoot)
+
+		if exitCode != 0 || stderr != "" {
+			t.Fatalf("%s: exit %d, stderr %q", name, exitCode, stderr)
+		}
+		if !strings.Contains(stdout, `"changed":["gen.go"]`) {
+			t.Errorf("%s: compare must see the edit, got %s", name, stdout)
+		}
+	}
+}
+
+func declarationFiles(t *testing.T, root string) []string {
+	t.Helper()
+	exitCode, stdout, stderr := runCommand(t, "declarations", root)
+	if exitCode != 0 || stderr != "" {
+		t.Fatalf("declarations: exit %d, stderr %q", exitCode, stderr)
+	}
+	var report struct {
+		Declarations []struct {
+			File string `json:"file"`
+		} `json:"declarations"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("not a declarations report: %v", err)
+	}
+	files := []string{}
+	for _, declaration := range report.Declarations {
+		files = append(files, declaration.File)
+	}
+	return files
+}
+
+func matchFiles(t *testing.T, root string) []string {
+	t.Helper()
+	patternsFile := writeTree(t, map[string]string{"patterns.json": oneArgumentPattern}) + "/patterns.json"
+	exitCode, stdout, stderr := runCommand(t, "match", "--patterns", patternsFile, root)
+	if exitCode != 0 || stderr != "" {
+		t.Fatalf("match: exit %d, stderr %q", exitCode, stderr)
+	}
+	var report struct {
+		Matches []struct {
+			File string `json:"file"`
+		} `json:"matches"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("not a match report: %v", err)
+	}
+	files := []string{}
+	for _, match := range report.Matches {
+		files = append(files, match.File)
+	}
+	return files
 }
 
 func TestWalkKeepsPerPlatformFilesAndCustomTagsWhateverTheMachine(t *testing.T) {
