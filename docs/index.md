@@ -36,6 +36,7 @@ What each phase built, why, and how to test it.
 One per build phase: status, what it delivers, how we know it is done, and how to test it by hand.
 
 - [Phase 0: Foundations](specs/phase-0-foundations.md)
+- [Phase 1: Reading Go](specs/phase-1-reading-go.md)
 
 ## Design and plan
 
