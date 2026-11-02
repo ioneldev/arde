@@ -23,7 +23,6 @@ from arde.adapters.language.go.goinspect_client import GoinspectError
 from arde.adapters.language.go.inventory_builder import NoRoutesError, RouteNotUnderstoodError
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
 from arde.adapters.language.go.toolchain import BadTestCommandError, GoCommandError
-from arde.application.ports import LanguageAdapter
 from arde.domain.errors import ArdeError
 from arde.domain.inventory import (
     INLINE_HANDLER,
@@ -65,12 +64,6 @@ def field(
     )
 
 
-def test_the_adapter_satisfies_the_port_it_is_wired_in_by(goinspect_binary: Path) -> None:
-    port: LanguageAdapter = GoAdapter(goinspect_binary)
-
-    assert port.detects(SHOP)
-
-
 def test_the_factory_builds_the_helper_and_hands_back_the_port(tmp_path: Path) -> None:
     port = go_adapter(tmp_path / "bin")
 
@@ -105,9 +98,9 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
         Route(method="GET", path="/", handler="s.listing"),
         Route(method="GET", path="/items/{sku}", handler="s.quote"),
     )
-    assert inventory.params == (Param(name="qty"),)
+    assert inventory.params == (Param(name="pieces"),)
     assert inventory.error_codes == (
-        ErrorCode(code="bad_quantity", status="http.StatusBadRequest"),
+        ErrorCode(code="bad_pieces", status="http.StatusBadRequest"),
         ErrorCode(code="unknown_sku", status="http.StatusNotFound"),
     )
     assert inventory.env_vars == ("SHOP_PORT", "SHOP_VERBOSE")
@@ -116,41 +109,24 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
         "settings.go:7: env argument `name` is `name`, not a string literal",
     )
     assert inventory.response_fields == (
-        field("ItemView", "Name", "name", "string"),
         field("ItemView", "PriceCents", "price_cents", "int64"),
         field("ItemView", "SKU", "sku", "string"),
+        field("ItemView", "Title", "title", "string"),
         field("Listing", "Items", "items", "[]ItemView"),
+        field("Quote", "ChargeCents", "charge_cents", "int64"),
         field("Quote", "Details", "details", "any"),
         field("Quote", "Note", "note", "string", omitempty=True),
-        field("Quote", "Quantity", "quantity", "int"),
+        field("Quote", "Pieces", "pieces", "int"),
         field("Quote", "SKU", "sku", "string"),
-        field("Quote", "TotalCents", "total_cents", "int64"),
         field("Stamp", "IssuedBy", "issued_by", "string"),
         field("problem", "Code", "code", "string", file="web/failures.go"),
     )
-
-
-def test_the_shop_covers_a_method_in_the_pattern_and_a_method_in_the_call(
-    adapter: GoAdapter,
-) -> None:
-    routes = adapter.extract_inventory(SHOP, shop_profile()).routes
-
-    assert [(route.method, route.path) for route in routes] == [
-        ("GET", "/"),
-        ("GET", "/items/{sku}"),
-    ]
 
 
 def test_the_default_pattern_finds_a_direct_getenv_but_not_the_wrapper(adapter: GoAdapter) -> None:
     profile = shop_profile(patterns=ROUTE_PATTERNS)
 
     assert adapter.extract_inventory(SHOP, profile).env_vars == ("SHOP_VERBOSE",)
-
-
-def test_a_pattern_for_a_wrapper_adds_to_the_default_one(adapter: GoAdapter) -> None:
-    inventory = adapter.extract_inventory(SHOP, shop_profile())
-
-    assert inventory.env_vars == ("SHOP_PORT", "SHOP_VERBOSE")
 
 
 def test_a_profile_that_repeats_the_default_pattern_lists_nothing_twice(adapter: GoAdapter) -> None:
@@ -270,7 +246,7 @@ def test_no_tests_gives_count_zero_not_failure(adapter: GoAdapter, tmp_path: Pat
 
 
 def test_a_failing_test_is_reported_and_not_raised(adapter: GoAdapter, shop: Path) -> None:
-    edit(shop / "pricing" / "pricing.go", "unitCents * int64(quantity)", "unitCents")
+    edit(shop / "pricing" / "pricing.go", "unitCents * int64(pieces)", "unitCents")
 
     result = adapter.run_checks(shop, shop_profile())
 
@@ -731,8 +707,8 @@ def test_editing_a_helper_changes_the_routes_that_reach_it_and_no_others(
 
     edit(
         shop / "pricing" / "pricing.go",
-        "unitCents * int64(quantity)",
-        "unitCents*int64(quantity)+1",
+        "unitCents * int64(pieces)",
+        "unitCents*int64(pieces)+1",
     )
     after = adapter.route_fingerprints(shop, routes)
 
@@ -765,13 +741,13 @@ def test_a_comment_edit_changes_no_declaration(adapter: GoAdapter, shop: Path) -
 
 
 def test_an_edited_function_is_named_by_file_kind_and_name(adapter: GoAdapter, shop: Path) -> None:
-    edit(shop / "pricing" / "pricing.go", "unitCents * int64(quantity)", "unitCents")
+    edit(shop / "pricing" / "pricing.go", "unitCents * int64(pieces)", "unitCents")
 
-    assert adapter.changed_declarations(SHOP, shop) == ["pricing/pricing.go::func Total"]
+    assert adapter.changed_declarations(SHOP, shop) == ["pricing/pricing.go::func Charge"]
 
 
 def test_an_edited_method_is_named_after_its_receiver_type(adapter: GoAdapter, shop: Path) -> None:
-    edit(shop / "web" / "handlers.go", "parsed > maxQuantity", "parsed > maxQuantity+1")
+    edit(shop / "web" / "handlers.go", "parsed > maxPieces", "parsed > maxPieces+1")
 
     assert adapter.changed_declarations(SHOP, shop) == [
         "web/handlers.go::func server.quote",
@@ -781,8 +757,8 @@ def test_an_edited_method_is_named_after_its_receiver_type(adapter: GoAdapter, s
 def test_a_new_and_a_removed_declaration_are_both_named(adapter: GoAdapter, shop: Path) -> None:
     edit(
         shop / "pricing" / "pricing.go",
-        "func Total(",
-        "func Added() int { return 1 }\n\nfunc Total(",
+        "func Charge(",
+        "func Added() int { return 1 }\n\nfunc Charge(",
     )
     edit(shop / "web" / "failures.go", "type problem struct", "type renamed struct")
 
@@ -794,10 +770,10 @@ def test_a_new_and_a_removed_declaration_are_both_named(adapter: GoAdapter, shop
 
 
 def test_an_edited_constant_is_named(adapter: GoAdapter, shop: Path) -> None:
-    edit(shop / "web" / "handlers.go", "const maxQuantity = 50", "const maxQuantity = 60")
+    edit(shop / "web" / "handlers.go", "const maxPieces = 50", "const maxPieces = 60")
 
     assert adapter.changed_declarations(SHOP, shop) == [
-        "web/handlers.go::const maxQuantity",
+        "web/handlers.go::const maxPieces",
     ]
 
 

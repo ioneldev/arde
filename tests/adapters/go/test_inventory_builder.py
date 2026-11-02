@@ -161,8 +161,23 @@ def test_a_route_call_with_no_path_argument_stops_the_run() -> None:
     [Lit("GET items"), Lit("get /items"), Lit("GET example.com/items"), Lit("items"), Lit("")],
 )
 def test_a_path_that_does_not_start_with_a_slash_stops_the_run(path: str) -> None:
-    with pytest.raises(RouteNotUnderstoodError, match="start with"):
+    with pytest.raises(RouteNotUnderstoodError, match="start with") as stopped:
         routes_of(registering(path))
+
+    assert stopped.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
+
+
+@pytest.mark.parametrize("path", [Lit("GET example.com/items"), Lit("get /items"), Lit("items")])
+def test_the_advice_for_a_literal_that_cannot_be_read_does_not_ask_for_a_literal(
+    path: Lit,
+) -> None:
+    with pytest.raises(RouteNotUnderstoodError) as stopped:
+        routes_of(registering(path))
+
+    advice = stopped.value.next_action
+    assert "string literal" not in advice
+    assert "[METHOD ]/path" in advice
+    assert "host" in advice
 
 
 @pytest.mark.parametrize("handler", ["s.show", "show", "handlers.Show", "pkg.Type.Method", "_x1"])

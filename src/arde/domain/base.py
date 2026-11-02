@@ -152,4 +152,11 @@ def _require_a_file_that_is_not_a_flag(path: str) -> str:
     return path
 
 
-MainFile = Annotated[RepoRelativePath, AfterValidator(_require_a_file_that_is_not_a_flag)]
+MainFile = Annotated[
+    RepoRelativePath,
+    AfterValidator(_require_a_file_that_is_not_a_flag),
+    _matching(
+        rf"{_PLAIN_CHAR}+",
+        "a file path: use no whitespace, quotes, backticks or control characters",
+    ),
+]

@@ -7,7 +7,12 @@ from shop_support import shop_profile
 
 from arde.adapters.child_process import ChildCommand, ChildOutcome
 from arde.adapters.language.go import toolchain
-from arde.adapters.language.go.toolchain import GoCommandError, build_service, run_checks
+from arde.adapters.language.go.toolchain import (
+    BadTestCommandError,
+    GoCommandError,
+    build_service,
+    run_checks,
+)
 
 LISTING = (
     "TestAdd\nTestSubtract\nExampleAdd\n"
@@ -168,3 +173,16 @@ def test_the_package_is_listed_after_a_double_dash_like_it_is_built(
 
     [listed] = [argv for argv in go.asked if "{{.Name}}" in argv]
     assert listed[-2:] == ("--", "./cmd/app")
+
+
+@pytest.mark.parametrize("bad_command", ["echo 'unbalanced", "", "   "])
+def test_an_extra_command_that_is_not_a_command_stops_the_run_before_any_command_runs(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, bad_command: str
+) -> None:
+    go = use(monkeypatch, StandInGo())
+    profile = shop_profile(extra_test_commands=("touch fine", bad_command))
+
+    with pytest.raises(BadTestCommandError):
+        run_checks(repo, profile)
+
+    assert go.asked == [], "a typo in the override file must not wait for build, vet and test"

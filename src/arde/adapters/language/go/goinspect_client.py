@@ -3,6 +3,7 @@
 import json
 import tempfile
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -114,11 +115,13 @@ class GoinspectClient:
     def compare(self, old_dir: Path, new_dir: Path) -> CompareReply:
         old, new = old_dir.resolve(), new_dir.resolve()
         arguments = ("compare", "--old", str(old), "--new", str(new))
-        return self._ask(arguments, CompareReply, cwd=old)
+        return self._ask(_Question(arguments, CompareReply, cwd=old))
 
     def declarations(self, root: Path) -> DeclarationsReply:
         resolved = root.resolve()
-        return self._ask(("declarations", str(resolved)), DeclarationsReply, cwd=resolved)
+        return self._ask(
+            _Question(("declarations", str(resolved)), DeclarationsReply, cwd=resolved)
+        )
 
     def matches(self, root: Path, patterns: Sequence[ExtractionPattern]) -> MatchReply:
         resolved = root.resolve()
@@ -128,41 +131,53 @@ class GoinspectClient:
                 json.dumps([pattern.model_dump() for pattern in patterns]), encoding="utf-8"
             )
             arguments = ("match", "--patterns", str(patterns_file), str(resolved))
-            return self._ask(arguments, MatchReply, cwd=resolved)
+            return self._ask(_Question(arguments, MatchReply, cwd=resolved))
 
     def fingerprints(self, root: Path, roots: Sequence[str]) -> FingerprintsReply:
         if not roots:
             return FingerprintsReply(fingerprints={}, reach={}, unresolved=())
         resolved = root.resolve()
         arguments = ("fingerprints", "--roots", ",".join(roots), str(resolved))
-        return self._ask(arguments, FingerprintsReply, cwd=resolved)
+        return self._ask(_Question(arguments, FingerprintsReply, cwd=resolved))
 
-    def _ask[T: Frozen](self, arguments: tuple[str, ...], reply_type: type[T], *, cwd: Path) -> T:
+    def _ask[T: Frozen](self, question: "_Question[T]") -> T:
         command = ChildCommand(
-            argv=(str(self._binary), *arguments),
-            cwd=cwd,
+            argv=(str(self._binary), *question.arguments),
+            cwd=question.cwd,
             timeout_s=GOINSPECT_TIMEOUT_S,
             output=GOINSPECT_REPLY_LIMIT,
         )
         outcome = run_child(command)
-        name = arguments[0]
         if not outcome.succeeded:
             raise GoinspectError(
-                f"goinspect {name} failed with exit {outcome.exit_code}: {outcome.stderr.strip()}",
+                f"goinspect {question.name} failed with exit {outcome.exit_code}: "
+                f"{outcome.stderr.strip()}",
                 next_action=(
                     "Fix what the message names, usually a Go file that does not parse, "
                     "and run again."
                 ),
             )
-        return _read_reply(name, outcome, reply_type)
+        return _read_reply(question, outcome)
 
 
-def _read_reply[T: Frozen](name: str, outcome: ChildOutcome, reply_type: type[T]) -> T:
+# What was asked of goinspect, and the model its answer must fit.
+@dataclass(frozen=True)
+class _Question[T: Frozen]:
+    arguments: tuple[str, ...]
+    reply_type: type[T]
+    cwd: Path
+
+    @property
+    def name(self) -> str:
+        return self.arguments[0]
+
+
+def _read_reply[T: Frozen](question: _Question[T], outcome: ChildOutcome) -> T:
     try:
-        return reply_type.model_validate_json(outcome.stdout)
+        return question.reply_type.model_validate_json(outcome.stdout)
     except ValidationError as error:
         raise GoinspectError(
-            f"goinspect {name} printed a reply ARDE cannot read: "
+            f"goinspect {question.name} printed a reply ARDE cannot read: "
             f"{describe_problems(error, whole='the reply')}",
             next_action=(
                 "This means ARDE and goinspect are out of step. Run ARDE again, which rebuilds "

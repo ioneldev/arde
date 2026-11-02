@@ -141,7 +141,8 @@ class CheckResult(Frozen):
     output: str
     # Every test, benchmark, fuzz test and example the toolchain lists. Zero is a valid answer.
     test_count: int
-    # Test files the build leaves out, such as one behind a build tag, as paths from the repo root.
+    # Files the build leaves out, such as a test file behind a build tag or one for another
+    # platform, as paths from the repo root.
     ignored_files: tuple[str, ...]
 
 
@@ -182,5 +183,8 @@ class LanguageAdapter(Protocol):
     def run_checks(self, repo: Path, profile: RepoProfile) -> CheckResult: ...
 
     def build_service(self, repo: Path, profile: RepoProfile) -> Path:
-        """Builds the service into a new folder outside the repo, which the caller removes."""
+        """Builds the service and returns the binary, in a new folder outside the repo.
+
+        The caller removes that folder, which is the parent of the path returned.
+        """
         ...

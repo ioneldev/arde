@@ -34,14 +34,23 @@ class SourceReading(Frozen):
     make_targets: tuple[str, ...]
 
 
+# Two causes need two pieces of advice: an argument that is not a literal, and a literal that is
+# not a pattern ARDE reads.
+USE_A_LITERAL = (
+    "Change the route pattern in the profile so its path argument points at a string literal, "
+    "or register the route with one, then run again."
+)
+USE_A_PATH_PATTERN = (
+    "ARDE reads route patterns of the form [METHOD ]/path, with no host. Register the route "
+    "that way, or change the route pattern in the profile to match one that does, then run again."
+)
+
+
 class RouteNotUnderstoodError(ArdeError):
-    def __init__(self, call: CallMatch, problem: str) -> None:
+    def __init__(self, call: CallMatch, problem: str, *, next_action: str) -> None:
         super().__init__(
             f"Cannot read the route registered at {call.file}:{call.line}: {problem}.",
-            next_action=(
-                "Change the route pattern in the profile so its path argument points at a "
-                "string literal, or register the route with one, then run again."
-            ),
+            next_action=next_action,
             exit_code=ExitCode.DISCOVERY_NEEDS_INPUT,
         )
 
@@ -101,11 +110,13 @@ def _route_from(match: CallMatch) -> Route:
             if shown is None
             else f"its path argument `{shown[:_SHOWN_LENGTH]}` is not a string literal"
         )
-        raise RouteNotUnderstoodError(match, problem)
+        raise RouteNotUnderstoodError(match, problem, next_action=USE_A_LITERAL)
     method, path = _split_pattern(pattern, callee=match.call)
     if not path.startswith("/"):
         raise RouteNotUnderstoodError(
-            match, f"the path `{path[:_SHOWN_LENGTH]}` must start with /, after any method"
+            match,
+            f"the path `{path[:_SHOWN_LENGTH]}` must start with /, after any method",
+            next_action=USE_A_PATH_PATTERN,
         )
     return Route(method=method, path=path.removesuffix("{$}"), handler=_handler_name(match))
 

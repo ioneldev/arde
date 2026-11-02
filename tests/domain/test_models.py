@@ -515,6 +515,19 @@ def test_a_main_file_cannot_be_the_repo_root(value: str) -> None:
         DiscoveredProfile(**{**PROFILE_FIELDS, "main_file": value})
 
 
+@pytest.mark.parametrize(
+    "value", ["a\nb.go", " -x.go", "a b.go", 'a"b.go', "a`b.go", "a\x07b.go", "a\tb.go"]
+)
+def test_a_main_file_is_as_plain_as_a_main_package(value: str) -> None:
+    with pytest.raises(ValidationError, match="must be"):
+        DiscoveredProfile(**{**PROFILE_FIELDS, "main_file": value})
+
+
+@pytest.mark.parametrize("value", ["main.go", "cmd/server/main.go", "./main.go", "a-b_c.d/main.go"])
+def test_a_plain_main_file_is_accepted(value: str) -> None:
+    assert DiscoveredProfile(**{**PROFILE_FIELDS, "main_file": value}).main_file == value
+
+
 # Everything that takes a path a model chose. Each builder fills the rest with valid data.
 PATH_FIELDS: dict[str, Callable[[str], object]] = {
     "code quote file": lambda path: CodeQuote(kind="code", file=path, quote="x"),

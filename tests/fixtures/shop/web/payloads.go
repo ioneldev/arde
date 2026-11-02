@@ -8,7 +8,7 @@ import (
 // ItemView is one line of the price list.
 type ItemView struct {
 	SKU        string `json:"sku"`
-	Name       string `json:"name"`
+	Title      string `json:"title"`
 	PriceCents int64  `json:"price_cents"`
 }
 
@@ -25,13 +25,13 @@ type Stamp struct {
 // Quote is the reply to a price request.
 type Quote struct {
 	Stamp
-	SKU        string `json:"sku"`
-	Quantity   int    `json:"quantity"`
-	TotalCents int64  `json:"total_cents"`
-	Note       string `json:"note,omitempty"`
-	Details    any    `json:"details"`
-	Internal   string `json:"-"`
-	cacheKey   string
+	SKU         string `json:"sku"`
+	Pieces      int    `json:"pieces"`
+	ChargeCents int64  `json:"charge_cents"`
+	Note        string `json:"note,omitempty"`
+	Details     any    `json:"details"`
+	Internal    string `json:"-"`
+	cacheKey    string
 }
 
 func respond(w http.ResponseWriter, status int, body any) {

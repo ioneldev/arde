@@ -6,6 +6,7 @@ import shlex
 import shutil
 import tempfile
 from pathlib import Path
+from typing import NamedTuple
 
 from arde.adapters.child_process import ChildCommand, ChildOutcome, run_child
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
@@ -27,6 +28,11 @@ SERVICE_BINARY_NAME = "service"
 _LISTED_TEST = re.compile(r"(Test|Benchmark|Fuzz|Example)\w*")
 # One absolute path per line. A test file behind a build tag is listed here with the others.
 _IGNORED_FILES_TEMPLATE = '{{range .IgnoredGoFiles}}{{$.Dir}}/{{.}}{{"\\n"}}{{end}}'
+
+
+class GoStep(NamedTuple):
+    arguments: tuple[str, ...]
+    timeout_s: float
 
 
 class GoCommandError(ArdeError):
@@ -58,7 +64,7 @@ def build_service(repo: Path, profile: RepoProfile) -> Path:
 # caller finds out far from the cause.
 def _require_one_main_package(repo: Path, main_package: str) -> None:
     arguments = ("list", "-buildvcs=false", "-f", "{{.Name}}", "--", main_package)
-    listing = _go(repo, arguments, GO_LIST_TIMEOUT_S)
+    listing = _go(repo, GoStep(arguments, GO_LIST_TIMEOUT_S))
     if not listing.succeeded:
         raise GoCommandError(
             f"main_package {main_package} cannot be loaded: {listing.output.strip()}",
@@ -85,7 +91,7 @@ def _what_it_names(names: list[str]) -> str:
 # -buildvcs=false because the copy may carry a .git folder the build cannot read.
 def _build_into(binary: Path, repo: Path, profile: RepoProfile) -> None:
     arguments = ("build", "-buildvcs=false", "-o", str(binary), "--", profile.main_package)
-    outcome = _go(repo, arguments, GO_BUILD_TIMEOUT_S)
+    outcome = _go(repo, GoStep(arguments, GO_BUILD_TIMEOUT_S))
     if not outcome.succeeded:
         raise GoCommandError(
             f"The service does not build: {outcome.output.strip()}",
@@ -97,12 +103,16 @@ def _build_into(binary: Path, repo: Path, profile: RepoProfile) -> None:
 
 
 def run_checks(repo: Path, profile: RepoProfile) -> CheckResult:
+    # Split first, so that a typo in the override file does not wait for build, vet and test.
+    extra_commands = [(command, _split_command(command)) for command in profile.extra_test_commands]
     # -o /dev/null: a repo of one main package would otherwise get its binary written into it.
-    build = _go(repo, ("build", "-buildvcs=false", "-o", os.devnull, "./..."), GO_BUILD_TIMEOUT_S)
-    vet = _go(repo, ("vet", "./..."), GO_VET_TIMEOUT_S)
-    test = _go(repo, ("test", "./..."), GO_TEST_TIMEOUT_S)
-    extras = [(command, _run_extra(repo, command)) for command in profile.extra_test_commands]
-    listing = _go(repo, ("test", "-list", ".*", "./..."), GO_TEST_TIMEOUT_S)
+    build = _go(
+        repo, GoStep(("build", "-buildvcs=false", "-o", os.devnull, "./..."), GO_BUILD_TIMEOUT_S)
+    )
+    vet = _go(repo, GoStep(("vet", "./..."), GO_VET_TIMEOUT_S))
+    test = _go(repo, GoStep(("test", "./..."), GO_TEST_TIMEOUT_S))
+    extras = [(command, _run_extra(repo, words)) for command, words in extra_commands]
+    listing = _go(repo, GoStep(("test", "-list", ".*", "./..."), GO_TEST_TIMEOUT_S))
     sections = [("build", build), ("vet", vet), ("test", test)]
     sections += [(f"extra: {command}", outcome) for command, outcome in extras]
     return CheckResult(
@@ -145,7 +155,7 @@ def _ignored_files(repo: Path) -> tuple[str, ...]:
     if not folders:
         return ()
     arguments = ("list", "-e", "-f", _IGNORED_FILES_TEMPLATE, *folders)
-    listing = _go(repo, arguments, GO_LIST_TIMEOUT_S)
+    listing = _go(repo, GoStep(arguments, GO_LIST_TIMEOUT_S))
     _require_whole(listing, "the list of files the build leaves out")
     if not listing.succeeded:
         raise GoCommandError(
@@ -180,24 +190,28 @@ def _is_passed_over(folder: Path) -> bool:
 
 # No shell: the words are split and run as they are, so a command in the profile cannot chain
 # another with && or ;.
-def _run_extra(repo: Path, command: str) -> ChildOutcome:
+def _split_command(command: str) -> tuple[str, ...]:
     try:
         words = shlex.split(command)
     except ValueError as error:
         raise BadTestCommandError(command) from error
     if not words:
         raise BadTestCommandError(command)
+    return tuple(words)
+
+
+def _run_extra(repo: Path, words: tuple[str, ...]) -> ChildOutcome:
     extra = ChildCommand(
-        argv=tuple(words),
-        cwd=repo,
-        timeout_s=EXTRA_TEST_COMMAND_TIMEOUT_S,
-        output=CHECK_OUTPUT_LIMIT,
+        argv=words, cwd=repo, timeout_s=EXTRA_TEST_COMMAND_TIMEOUT_S, output=CHECK_OUTPUT_LIMIT
     )
     return run_child(extra)
 
 
-def _go(repo: Path, arguments: tuple[str, ...], timeout_s: float) -> ChildOutcome:
+def _go(repo: Path, step: GoStep) -> ChildOutcome:
     command = ChildCommand(
-        argv=("go", *arguments), cwd=repo, timeout_s=timeout_s, output=CHECK_OUTPUT_LIMIT
+        argv=("go", *step.arguments),
+        cwd=repo,
+        timeout_s=step.timeout_s,
+        output=CHECK_OUTPUT_LIMIT,
     )
     return run_child(command)
