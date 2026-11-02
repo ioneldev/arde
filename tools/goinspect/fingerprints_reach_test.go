@@ -45,7 +45,32 @@ func TestFingerprintFollowsAMethodCalledOnATypeParameter(t *testing.T) {
 	repo := "package shop\n\ntype product struct{}\n\nfunc (product) Key() int { return 1 }\n\n" +
 		"type repo[T interface{ Key() int }] struct{ item T }\n\nfunc (r repo[T]) find() int { return r.item.Key() }\n\n" +
 		"func detail() int { return repo[product]{}.find() }\n"
+	validator := "type product struct{}\n\nfunc (product) Validate() string { return \"ok\" }\n\ntype validator interface{ Validate() string }\n\n"
+	genericHandler := "package shop\n\nimport \"net/http\"\n\n" + validator +
+		"type crud[T validator] struct{ mux *http.ServeMux }\n\n" +
+		"func (c *crud[T]) detail(w http.ResponseWriter, r *http.Request) {\n\tvar item T\n\tw.Write([]byte(item.Validate()))\n}\n\n" +
+		"func (c *crud[T]) mount() { c.mux.HandleFunc(\"GET /x\", c.detail) }\n\n" +
+		"func Run(m *http.ServeMux) { (&crud[product]{mux: m}).mount() }\n"
+	genericFunctionRoot := "package shop\n\n" + validator +
+		"func detail[T validator](x T) string { return x.Validate() }\n\nfunc Run() string { return detail(product{}) }\n"
+	genericField := "package shop\n\n" + validator +
+		"type repo[T validator] struct{ item T }\n\nfunc (r repo[T]) detail() string { return r.item.Validate() }\n\n" +
+		"func Run() string { return repo[product]{}.detail() }\n"
 	cases := map[string]reachCase{
+		// The root is the generic function itself. Its instances are where the concrete type is
+		// known, and nothing calls the generic body directly.
+		"a generic handler that calls a method on its type parameter": {
+			source: genericHandler, old: "return \"ok\"", new: "return \"no\"",
+			mustReach: []string{"(shop.product).Validate", "(*shop.crud[T]).detail"},
+		},
+		"a generic function as the root": {
+			source: genericFunctionRoot, old: "return \"ok\"", new: "return \"no\"",
+			mustReach: []string{"(shop.product).Validate", "shop.detail"},
+		},
+		"a generic root that calls a method on a field of its type parameter": {
+			source: genericField, old: "return \"ok\"", new: "return \"no\"",
+			mustReach: []string{"(shop.product).Validate", "(shop.repo[T]).detail"},
+		},
 		"a function with a constrained parameter: the method": {
 			source: measure, old: "Size() int { return 1 }", new: "Size() int { return 2 }",
 			mustReach: []string{"(shop.store).Size", "shop.measure"},
@@ -178,4 +203,14 @@ func TestFingerprintKeepsARootThatReachesAFunctionDeclaredWithoutABody(t *testin
 	if want := []string{"shop.detail", "shop.now"}; !reflect.DeepEqual(output.Reach[routeDetail], want) {
 		t.Fatalf("reach %v, want %v", output.Reach[routeDetail], want)
 	}
+}
+
+// Starting a generic root from its instances must not pull in instances of anything else.
+func TestFingerprintStaysTheSameWhenAnUnrelatedFunctionInstantiatesAGeneric(t *testing.T) {
+	source := "package shop\n\ntype product struct{}\n\nfunc (product) Validate() string { return \"ok\" }\n\ntype validator interface{ Validate() string }\n\n" +
+		"func detail[T validator](x T) string { return x.Validate() }\n\nfunc Run() string { return detail(product{}) }\n\n" +
+		"func Pick[T any](x T) T { return x }\n\nfunc other() int { return Pick[int](1) }\n"
+
+	assertEditKeepsTheFingerprint(t, "a new instance of an unrelated generic", source,
+		"return Pick[int](1)", "return Pick[int](1) + len(Pick[string](\"a\"))")
 }

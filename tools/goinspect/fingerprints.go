@@ -10,6 +10,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -32,13 +33,22 @@ type moduleProgram struct {
 	modulePath     string
 	program        *ssa.Program
 	sourcePackages []*ssa.Package
+	// instancesByOrigin lets a walk that starts at a generic function also enter the instances
+	// of it, because the concrete type behind a type parameter is known only in an instance.
+	instancesByOrigin map[*ssa.Function][]*ssa.Function
+	// hashInputs holds what hashFunctions feeds the hash for a function, so a function reached
+	// by many routes is rendered once. Rendering dumps the syntax through reflection, which is
+	// slow, and it is the same text for every route.
+	hashInputs map[*ssa.Function]string
 }
 
 // fingerprintRoots hashes, for each named function, everything it can reach inside the module.
 // SSA decides what is reached, and three inputs say what each reached function does, because
 // none of them is enough alone: see hashFunctions. It hashes what the functions say and not the
 // package state they use: a package-level var or type is outside a fingerprint, and
-// `declarations` covers those. A const is inside, because SSA writes its value into every use.
+// `declarations` covers those. A const is inside, because SSA writes its value into every use,
+// except one used only as an array length inside a type declared in the function: SSA prints that
+// type by name, and the syntax holds only the const's name.
 // A root is unresolved when no function has its name, and when it reaches code with no body to
 // hash: see hasFunctionWithoutBody.
 func fingerprintRoots(dir string, roots []string) (fingerprintReport, error) {
@@ -63,7 +73,7 @@ func fingerprintRoots(dir string, roots []string) (fingerprintReport, error) {
 			report.Unresolved = append(report.Unresolved, root)
 			continue
 		}
-		report.Fingerprints[root] = hashFunctions(reached)
+		report.Fingerprints[root] = module.hashFunctions(reached)
 		report.Reach[root] = namesOf(reached)
 	}
 	return report, nil
@@ -87,7 +97,23 @@ func loadModuleProgram(dir string) (moduleProgram, error) {
 	}
 	program, ssaPackages := ssautil.Packages(loaded, ssa.InstantiateGenerics)
 	program.Build()
-	return moduleProgram{modulePath: modulePath, program: program, sourcePackages: ssaPackages}, nil
+	return moduleProgram{
+		modulePath:        modulePath,
+		program:           program,
+		sourcePackages:    ssaPackages,
+		instancesByOrigin: instancesByOrigin(program),
+		hashInputs:        map[*ssa.Function]string{},
+	}, nil
+}
+
+func instancesByOrigin(program *ssa.Program) map[*ssa.Function][]*ssa.Function {
+	instances := map[*ssa.Function][]*ssa.Function{}
+	for function := range ssautil.AllFunctions(program) {
+		if origin := function.Origin(); origin != nil {
+			instances[origin] = append(instances[origin], function)
+		}
+	}
+	return instances
 }
 
 func requireGoMod(dir string) error {
@@ -205,6 +231,11 @@ func (module moduleProgram) reachFrom(starts []*ssa.Function) []*ssa.Function {
 	walk := &reachWalk{module: module, visited: map[*ssa.Function]bool{}}
 	for _, start := range starts {
 		walk.visit(start)
+		// A generic root has no concrete type behind its type parameter, and its instances do.
+		// A new instance of a generic root can move the root, which only over-reports.
+		for _, instance := range module.instancesByOrigin[start] {
+			walk.visit(instance)
+		}
 	}
 	slices.SortFunc(walk.reached, func(a, b *ssa.Function) int { return strings.Compare(a.String(), b.String()) })
 	return walk.reached
@@ -277,14 +308,23 @@ func hasFunctionWithoutBody(functions []*ssa.Function) bool {
 //     bytes and prints a float to 6 digits, and because SSA writes named constants into the code;
 //   - the function's own syntax, because the listing shows a type declared inside the function
 //     by its name alone, so its fields and tags would never reach the hash.
-func hashFunctions(functions []*ssa.Function) string {
+func (module moduleProgram) hashFunctions(functions []*ssa.Function) string {
 	hash := sha256.New()
 	for _, function := range functions {
-		// The NUL ends each input, so one cannot run into the next.
-		fmt.Fprintf(hash, "%s\x00%s\x00%s\x00%s\x00",
-			function.String(), listingWithoutPositions(function), exactConstantsOf(function), syntaxFingerprint(function))
+		io.WriteString(hash, module.hashInputOf(function))
 	}
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func (module moduleProgram) hashInputOf(function *ssa.Function) string {
+	if rendered, known := module.hashInputs[function]; known {
+		return rendered
+	}
+	// The NUL ends each input, so one cannot run into the next.
+	rendered := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00",
+		function.String(), listingWithoutPositions(function), exactConstantsOf(function), syntaxFingerprint(function))
+	module.hashInputs[function] = rendered
+	return rendered
 }
 
 // listingWithoutPositions drops the "# " lines of the SSA listing. They hold the file, line and
@@ -326,8 +366,10 @@ func exactConstantsOf(function *ssa.Function) string {
 }
 
 // syntaxFingerprint normalises the function's syntax in place the way `compare` and
-// `declarations` do, so comments, moved code and the tags ARDE adds move nothing. By now every
-// error has been reported and the build is done, so nothing else reads the tree.
+// `declarations` do, so comments, moved code and the tags ARDE adds move nothing in the syntax.
+// The SSA listing prints an anonymous struct type with its tags, so a tag ARDE adds to one of
+// those still moves a fingerprint. ARDE writes its tags on named structs. By now every error has
+// been reported and the build is done, so nothing else reads the tree.
 func syntaxFingerprint(function *ssa.Function) string {
 	syntax := function.Syntax()
 	if syntax == nil {
