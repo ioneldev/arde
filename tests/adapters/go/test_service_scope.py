@@ -73,10 +73,11 @@ def wait_for(port: int) -> None:
 
 
 @contextmanager
-def serving(binary: Path, port_env: str) -> Iterator[int]:
+def serving(binary: Path, port_env: str, *, cwd: Path | None = None) -> Iterator[int]:
     port = free_port()
     process = subprocess.Popen(
         [str(binary)],
+        cwd=cwd,
         env={**os.environ, port_env: str(port)},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -224,6 +225,62 @@ def test_the_running_service_answers_every_route_behind_a_mount(adapter: GoAdapt
         }
 
     assert set(statuses.values()) == {200, 201}
+
+
+FILE_SERVER = """package main
+
+import (
+	"net/http"
+	"os"
+)
+
+func main() {
+	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("public"))))
+	http.ListenAndServe("127.0.0.1:"+os.Getenv("FILES_PORT"), nil)
+}
+"""
+FILES_PROFILE = RepoProfile(
+    main_package=".", main_file="main.go", port_env="FILES_PORT", patterns=()
+)
+
+
+def a_file_server(root: Path) -> Path:
+    (root / "go.mod").write_text("module example.com/files\n\ngo 1.27\n", encoding="utf-8")
+    (root / "main.go").write_text(FILE_SERVER, encoding="utf-8")
+    (root / "public").mkdir()
+    (root / "public" / "notes.txt").write_text("hello\n", encoding="utf-8")
+    return root
+
+
+def test_a_file_server_under_strip_prefix_is_a_route_with_no_function(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    [route] = adapter.extract_inventory(a_file_server(tmp_path), FILES_PROFILE).routes
+
+    assert (route.key, route.handler, route.handler_id) == ("ANY /static/", INLINE_HANDLER, None)
+
+
+def test_a_file_server_counts_as_changed_on_every_run_because_nothing_hashes_it(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_file_server(tmp_path)
+    routes = adapter.extract_inventory(repo, FILES_PROFILE).routes
+
+    assert adapter.route_fingerprints(repo, routes, main_package=".").unhashed == {
+        "ANY /static/": "inline"
+    }
+
+
+def test_the_running_service_serves_the_files_under_the_route_listed(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_file_server(tmp_path)
+
+    with (
+        adapter.built_service(repo, FILES_PROFILE) as binary,
+        serving(binary, "FILES_PORT", cwd=repo) as port,
+    ):
+        assert status_of(port, method="GET", path="/static/notes.txt") == 200
 
 
 def test_a_prefix_stripped_before_a_mount_stops_the_run(adapter: GoAdapter, tmp_path: Path) -> None:

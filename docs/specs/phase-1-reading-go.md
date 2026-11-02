@@ -75,7 +75,7 @@ Agents, the workspace and anything that writes to a repo. Those start in Phase 2
 ## Known limits
 
 - The call graph is static, so it misses calls through interfaces and function values. Declaration hashes and stored requests cover that gap.
-- Only `net/http` is tested. A `gin` pattern can match and keeps its method, but paths stay in `gin`'s `:id` form and router group prefixes aren't resolved. `http.StripPrefix` stops the run.
+- Only `net/http` is tested. A `gin` pattern can match and keeps its method, but paths stay in `gin`'s `:id` form and router group prefixes aren't resolved. `http.StripPrefix` stops the run, unless its handler is a direct call to a file server.
 - Embedded struct fields aren't listed as response fields.
 
 ## Open items

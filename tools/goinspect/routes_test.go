@@ -597,7 +597,7 @@ func main() {
 	}
 }
 
-func TestRoutesListsEveryCallToStripPrefix(t *testing.T) {
+func TestRoutesFindsStripPrefixHoweverItIsReached(t *testing.T) {
 	cases := map[string]string{
 		"written at the site": `package main
 
@@ -646,6 +646,179 @@ func main() {
 		if len(stripped) != 1 || stripped[0].File != "main.go" {
 			t.Errorf("%s: got %+v", name, stripped)
 		}
+	}
+}
+
+func TestRoutesReadsAFileServerUnderStripPrefixAsARoute(t *testing.T) {
+	cases := map[string]string{
+		"FileServer at the site": `package main
+
+import "net/http"
+
+func main() {
+	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("public"))))
+}
+`,
+		"FileServerFS at the site": `package main
+
+import (
+	"net/http"
+	"os"
+)
+
+func main() {
+	http.Handle("/static/", http.StripPrefix("/static/", http.FileServerFS(os.DirFS("public"))))
+}
+`,
+		"behind an import name": `package main
+
+import web "net/http"
+
+func main() {
+	web.Handle("/static/", web.StripPrefix("/static/", web.FileServer(web.Dir("public"))))
+}
+`,
+		"in parentheses": `package main
+
+import "net/http"
+
+func main() {
+	http.Handle("/static/", http.StripPrefix("/static/", (http.FileServer(http.Dir("public")))))
+}
+`,
+		"on a mux": `package main
+
+import "net/http"
+
+func main() {
+	mux := http.NewServeMux()
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("public"))))
+	http.ListenAndServe(":0", mux)
+}
+`,
+		"the stripped handler in a variable": `package main
+
+import "net/http"
+
+func main() {
+	files := http.StripPrefix("/static/", http.FileServer(http.Dir("public")))
+	http.Handle("/static/", files)
+}
+`,
+	}
+
+	for name, source := range cases {
+		root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
+
+		report := routesOf(t, root, ".", noPatterns)
+
+		if len(report.StrippedPrefixes) != 0 {
+			t.Errorf("%s: got %+v", name, report.StrippedPrefixes)
+		}
+		if got := sitePaths(report.Sites); !slices.Equal(got, []string{"/static/"}) {
+			t.Errorf("%s: sites %v", name, got)
+		}
+		if report.Sites[0].HandlerID != nil {
+			t.Errorf("%s: a file server has no function of the service, got %s", name, *report.Sites[0].HandlerID)
+		}
+	}
+}
+
+func TestRoutesStopsAtEveryOtherStripPrefix(t *testing.T) {
+	cases := map[string]string{
+		"a variable that holds a file server": `package main
+
+import "net/http"
+
+func main() {
+	files := http.FileServer(http.Dir("public"))
+	http.Handle("/static/", http.StripPrefix("/static/", files))
+}
+`,
+		"a function of the service with the same name": `package main
+
+import "net/http"
+
+func FileServer(root http.FileSystem) http.Handler { return http.NotFoundHandler() }
+
+func main() {
+	http.Handle("/static/", http.StripPrefix("/static/", FileServer(http.Dir("public"))))
+}
+`,
+		"middleware around a file server": `package main
+
+import "net/http"
+
+func logged(next http.Handler) http.Handler { return next }
+
+func main() {
+	http.Handle("/static/", http.StripPrefix("/static/", logged(http.FileServer(http.Dir("public")))))
+}
+`,
+		"a conversion around a file server": `package main
+
+import "net/http"
+
+func main() {
+	http.Handle("/static/", http.StripPrefix("/static/", http.Handler(http.FileServer(http.Dir("public")))))
+}
+`,
+		"a file server reached through a value": `package main
+
+import "net/http"
+
+func main() {
+	serve := http.FileServer
+	http.Handle("/static/", http.StripPrefix("/static/", serve(http.Dir("public"))))
+}
+`,
+		"both arguments from one call": `package main
+
+import "net/http"
+
+func both() (string, http.Handler) { return "/static/", http.FileServer(http.Dir("public")) }
+
+func main() {
+	http.Handle("/static/", http.StripPrefix(both()))
+}
+`,
+		"a file server as the path of something else": `package main
+
+import "net/http"
+
+func main() {
+	http.Handle("/x/", http.StripPrefix("/x/", http.TimeoutHandler(http.FileServer(http.Dir("public")), 1, "slow")))
+}
+`,
+	}
+
+	for name, source := range cases {
+		root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
+
+		if got := routesOf(t, root, ".", noPatterns).StrippedPrefixes; len(got) != 1 {
+			t.Errorf("%s: got %+v", name, got)
+		}
+	}
+}
+
+func TestRoutesReadsAFileServerUnderStripPrefixBesideACgoFile(t *testing.T) {
+	requireACCompiler(t)
+	root := writeModule(t, "example.com/depot", map[string]string{
+		"c.go": "package main\n\n// int two(void) { return 2; }\nimport \"C\"\n\nvar two = int(C.two())\n",
+		"main.go": `package main
+
+import "net/http"
+
+func main() {
+	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("public"))))
+}
+`,
+	})
+
+	report := routesOf(t, root, ".", noPatterns)
+
+	if len(report.StrippedPrefixes) != 0 || !slices.Equal(sitePaths(report.Sites), []string{"/static/"}) {
+		t.Fatalf("got %+v", report)
 	}
 }
 

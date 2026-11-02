@@ -17,6 +17,8 @@ const routeKind = "route"
 
 const stripPrefixFunction = "net/http.StripPrefix"
 
+var fileServerFunctions = []string{"net/http.FileServer", "net/http.FileServerFS"}
+
 // registrationFunctions are the calls that add a route to net/http, named as the type checker
 // names them, so a receiver can be called anything and a look-alike method is not one.
 var registrationFunctions = []string{
@@ -118,7 +120,7 @@ func (reader routeReader) report(calls []serviceCall) routeReport {
 	for _, call := range calls {
 		report.Sites = append(report.Sites, reader.sitesOf(call)...)
 		report.WrapperCalls = append(report.WrapperCalls, reader.wrapperCallsOf(call)...)
-		if call.isCallTo(stripPrefixFunction) {
+		if call.isCallTo(stripPrefixFunction) && !call.stripsAFileServer() {
 			report.StrippedPrefixes = append(report.StrippedPrefixes, call.place)
 		}
 		if reader.addsToAWrappedPath(call) {
@@ -148,6 +150,20 @@ func comparePlaces(a, b sourcePlace) int {
 func (call serviceCall) isCallTo(names ...string) bool {
 	target := typeutil.StaticCallee(call.info, call.syntax)
 	return target != nil && slices.Contains(names, target.FullName())
+}
+
+// stripsAFileServer is true for http.StripPrefix around a direct call to a file server. No route
+// sits under one, so nothing's path is left unread, and this is the usual way to serve static files.
+// A variable is not followed, so a stripped handler can never be taken for a file server by name.
+func (call serviceCall) stripsAFileServer() bool {
+	if len(call.syntax.Args) != 2 {
+		return false
+	}
+	handler, isCall := ast.Unparen(call.syntax.Args[1]).(*ast.CallExpr)
+	if !isCall {
+		return false
+	}
+	return serviceCall{syntax: handler, info: call.info}.isCallTo(fileServerFunctions...)
 }
 
 func (call serviceCall) matches(pattern callPattern) bool {
