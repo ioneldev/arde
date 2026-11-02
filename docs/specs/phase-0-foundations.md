@@ -1,6 +1,6 @@
 # Phase 0: Foundations
 
-**Status:** ready for Ionel's review
+**Status:** done. Ionel approved Review gate 0 on 2026-11-02.
 
 This spec says what this phase delivers and how we know it's done. The reasoning lives in the [design](../superpowers/specs/2026-11-01-arde-design.md), and the step-by-step tasks live in the [plan](../superpowers/plans/2026-11-01-arde.md).
 
@@ -14,7 +14,7 @@ This spec says what this phase delivers and how we know it's done. The reasoning
 | 4 | LLM port, fake client, agent loop | Done |
 | 5 | Anthropic client | Done |
 | Review | Architecture, code, bug hunters, security | Done |
-| Gate | Ionel reviews, understands and tests | Waiting for Ionel |
+| Gate | Ionel reviews, understands and tests | Done |
 
 ## Purpose
 
@@ -62,7 +62,16 @@ Then open the newest `trace.jsonl` a test produced, and read each event. Each li
 
 Anything that reads Go, runs a service or touches a real repo. Those start in Phase 1.
 
+## Gate record
+
+On 2026-11-02 Ionel walked through the agent loop and gave the go-ahead for Phase 1. They also approved three choices:
+
+- **Exit codes:** a bad key, 401, 403 or 404 exits 2, and a mid-run outage exits 1.
+- **Cost cap:** `--max-usd`, default 10, added in Task 17.
+- **Refusals:** no fallback. The refusal category is recorded and measured on the first real run.
+
+Ionel also rotated the API key that day, which closes the leak from Task 5.
+
 ## Open items
 
 - A writable repo mount could let repo code tamper with the host repo. This must be resolved in Task 28, before the container ships.
-- The API key needs rotating, because part of it reached an agent transcript during Task 5. Ionel does this in the Anthropic Console before anything is published.

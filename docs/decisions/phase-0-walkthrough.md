@@ -77,7 +77,7 @@ The worst findings were a code bug being fed to the model as if it were a correc
 
 During Task 5, a failing live test printed about 87 of the key's 106 characters into one agent's transcript. It isn't in the repo or git history. The cause is fixed, `tests/conftest.py` now scrubs pytest reports, and the architecture tests restrict who may read the key.
 
-You chose to rotate the key later. It's an open item in the [phase spec](../specs/phase-0-foundations.md), and I'll remind you before publishing.
+You rotated the key on 2026-11-02, so the leaked one no longer works.
 
 ## What's still untested
 
