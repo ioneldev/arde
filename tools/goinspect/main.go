@@ -15,7 +15,8 @@ import (
 )
 
 const usage = "usage: goinspect compare --old DIR --new DIR | goinspect declarations DIR | " +
-	"goinspect match --patterns FILE DIR | goinspect fingerprints --roots a,b DIR"
+	"goinspect match --patterns FILE DIR | goinspect fingerprints --roots a,b DIR | " +
+	"goinspect routes --patterns FILE --main PKG DIR"
 
 type command func(args []string) (any, error)
 
@@ -24,6 +25,7 @@ var commands = map[string]command{
 	"declarations": runDeclarations,
 	"fingerprints": runFingerprints,
 	"match":        runMatch,
+	"routes":       runRoutes,
 }
 
 func main() {
@@ -78,6 +80,19 @@ func runMatch(args []string) (any, error) {
 		return nil, errors.New(usage)
 	}
 	return findMatches(flags.Arg(0), *patternsPath)
+}
+
+func runRoutes(args []string) (any, error) {
+	flags := newFlagSet("routes")
+	patternsPath := flags.String("patterns", "", "JSON file holding the call patterns")
+	mainPackage := flags.String("main", "", "the package that holds func main, as go list reads it")
+	if err := parseFlags(flags, args); err != nil {
+		return nil, err
+	}
+	if *patternsPath == "" || *mainPackage == "" || flags.NArg() != 1 {
+		return nil, errors.New(usage)
+	}
+	return findRoutes(routeRequest{dir: flags.Arg(0), patternsPath: *patternsPath, mainPackage: *mainPackage})
 }
 
 func runFingerprints(args []string) (any, error) {

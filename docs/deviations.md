@@ -11,5 +11,6 @@ Where the work breaks a project rule or convention on purpose, and what that cos
 - **No framework.** The agent loop is hand-written, although the brief lists frameworks, because a framework would add nothing this design needs.
 - **Large image.** About 980 MB, because it holds both toolchains. That is the cost of needing nothing else on the host.
 - **Paid evals.** The classifier eval costs a small amount and runs on demand, because agent behaviour cannot be covered by fast unit tests alone.
+- **A fifth `goinspect` command.** The phase spec first listed four. `routes` lists every `net/http` registration through the type checker, because a regex on callee text cannot tell a missed spelling from no route. The cost is that `extract_inventory` now needs a repo that compiles, which the pipeline's baseline checks prove first.
 
 New deviations go here as the work introduces them, with the reason and the cost.

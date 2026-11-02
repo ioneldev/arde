@@ -87,7 +87,7 @@ func loadModuleProgram(dir string) (moduleProgram, error) {
 	if err := requireGoMod(resolved); err != nil {
 		return moduleProgram{}, err
 	}
-	loaded, err := loadPackages(resolved)
+	loaded, err := loadPackages(resolved, []string{"./..."})
 	if err != nil {
 		return moduleProgram{}, err
 	}
@@ -126,9 +126,9 @@ func requireGoMod(dir string) error {
 
 // loadPackages checks each package's Errors as well as packages.Load's own error, because Load
 // reports a package that does not compile as data and returns no error at all.
-func loadPackages(dir string) ([]*packages.Package, error) {
+func loadPackages(dir string, patterns []string) ([]*packages.Package, error) {
 	config := &packages.Config{Mode: packages.LoadSyntax | packages.NeedModule, Dir: dir, ParseFile: parseWithoutComments}
-	loaded, err := packages.Load(config, "./...")
+	loaded, err := packages.Load(config, patterns...)
 	if err != nil {
 		return nil, fmt.Errorf("cannot load the packages under %s: %w", dir, err)
 	}

@@ -21,10 +21,11 @@ Give ARDE reliable eyes on a Go repo before any agent uses them. At the end, cod
 
 ## What it delivers
 
-- **`tools/goinspect`:** a small Go helper with four commands, all printing JSON.
+- **`tools/goinspect`:** a small Go helper with five commands, all printing JSON.
   - `compare` says which files changed, ignoring comments, formatting and the two struct tags ARDE adds.
   - `declarations` hashes every top-level declaration and lists struct fields.
-  - `match` applies the repo profile's patterns to find routes, params, errors and env vars.
+  - `match` applies the repo profile's patterns to find params, errors and env vars.
+  - `routes` lists the service's route registrations through the type checker, so it needs a repo that compiles. [Deviations](../deviations.md) records why it was added.
   - `fingerprints` hashes everything each route's handler can reach.
 - **`GoAdapter`:** the Python side, behind the `LanguageAdapter` interface. It holds every Go idiom, including the directive check and the build, vet and test commands.
 - **`tests/fixtures/shop`:** a small `net/http` service that tests can build and run.
