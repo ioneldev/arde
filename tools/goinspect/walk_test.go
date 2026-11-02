@@ -212,3 +212,22 @@ func TestWalkKeepsGoFilesTheGoToolIgnoresWhenOnlyGitIsSkipped(t *testing.T) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 }
+
+func TestWalkSkipsTestFilesOnTopOfWhatTheGoToolIgnores(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"keep.go":           emptyPackage,
+		"keep_test.go":      emptyPackage,
+		"pkg/inner_test.go": emptyPackage,
+		"pkg/testing.go":    emptyPackage,
+		"vendor/lib.go":     emptyPackage,
+		"_gen.go":           emptyPackage,
+	})
+
+	got, err := listGoFiles(root, skipTestsAndWhatTheGoToolIgnores)
+
+	assertNoError(t, err)
+	want := []string{"keep.go", "pkg/testing.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}

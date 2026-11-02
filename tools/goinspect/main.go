@@ -10,15 +10,20 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"strings"
 )
 
-const usage = "usage: goinspect compare --old DIR --new DIR | goinspect declarations DIR"
+const usage = "usage: goinspect compare --old DIR --new DIR | goinspect declarations DIR | " +
+	"goinspect match --patterns FILE DIR | goinspect fingerprints --roots a,b DIR"
 
 type command func(args []string) (any, error)
 
 var commands = map[string]command{
 	"compare":      runCompare,
 	"declarations": runDeclarations,
+	"fingerprints": runFingerprints,
+	"match":        runMatch,
 }
 
 func main() {
@@ -51,17 +56,65 @@ func execute(args []string) (any, error) {
 }
 
 func runCompare(args []string) (any, error) {
-	flags := flag.NewFlagSet("compare", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
+	flags := newFlagSet("compare")
 	oldRoot := flags.String("old", "", "directory holding the tree before the change")
 	newRoot := flags.String("new", "", "directory holding the tree after the change")
-	if err := flags.Parse(args); err != nil {
-		return nil, fmt.Errorf("%v; %s", err, usage)
+	if err := parseFlags(flags, args); err != nil {
+		return nil, err
 	}
 	if *oldRoot == "" || *newRoot == "" || flags.NArg() != 0 {
 		return nil, errors.New(usage)
 	}
 	return compareDirs(*oldRoot, *newRoot)
+}
+
+func runMatch(args []string) (any, error) {
+	flags := newFlagSet("match")
+	patternsPath := flags.String("patterns", "", "JSON file holding the call patterns")
+	if err := parseFlags(flags, args); err != nil {
+		return nil, err
+	}
+	if *patternsPath == "" || flags.NArg() != 1 {
+		return nil, errors.New(usage)
+	}
+	return findMatches(flags.Arg(0), *patternsPath)
+}
+
+func runFingerprints(args []string) (any, error) {
+	flags := newFlagSet("fingerprints")
+	rootsText := flags.String("roots", "", "comma-separated names of the functions or methods to fingerprint")
+	if err := parseFlags(flags, args); err != nil {
+		return nil, err
+	}
+	if flags.NArg() != 1 {
+		return nil, errors.New(usage)
+	}
+	roots, err := splitRoots(*rootsText)
+	if err != nil {
+		return nil, err
+	}
+	return fingerprintRoots(flags.Arg(0), roots)
+}
+
+func splitRoots(rootsText string) ([]string, error) {
+	roots := strings.Split(rootsText, ",")
+	if slices.Contains(roots, "") {
+		return nil, fmt.Errorf("--roots %q holds an empty name; pass function or method names separated by commas", rootsText)
+	}
+	return roots, nil
+}
+
+func newFlagSet(command string) *flag.FlagSet {
+	flags := flag.NewFlagSet(command, flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	return flags
+}
+
+func parseFlags(flags *flag.FlagSet, args []string) error {
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("%v; %s", err, usage)
+	}
+	return nil
 }
 
 func runDeclarations(args []string) (any, error) {

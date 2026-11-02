@@ -75,6 +75,7 @@ func TestBadInputExitsOneWithAMessageAndNothingOnStdout(t *testing.T) {
 	goodRoot := writeTree(t, map[string]string{"a.go": "package p\n"})
 	halfBrokenRoot := writeTree(t, map[string]string{"a.go": "package p\nvar fine = 1\n", "z.go": "package p\nfunc ("})
 	missing := goodRoot + "/does-not-exist"
+	goodPatterns := writeTree(t, map[string]string{"p.json": "[]"}) + "/p.json"
 
 	cases := map[string][]string{
 		"no command":                                                   {},
@@ -92,6 +93,15 @@ func TestBadInputExitsOneWithAMessageAndNothingOnStdout(t *testing.T) {
 		"compare with an empty --old":                                  {"compare", "--old", "", "--new", goodRoot},
 		"compare with an empty --new":                                  {"compare", "--old", goodRoot, "--new", ""},
 		"declarations, a file that does not parse after one that does": {"declarations", halfBrokenRoot},
+		"match without arguments":                                      {"match"},
+		"match without --patterns":                                     {"match", goodRoot},
+		"match without a directory":                                    {"match", "--patterns", goodPatterns},
+		"match with two directories":                                   {"match", "--patterns", goodPatterns, goodRoot, goodRoot},
+		"match with an empty directory":                                {"match", "--patterns", goodPatterns, ""},
+		"match with a missing directory":                               {"match", "--patterns", goodPatterns, missing},
+		"match with an empty --patterns":                               {"match", "--patterns", "", goodRoot},
+		"match with a missing patterns file":                           {"match", "--patterns", missing, goodRoot},
+		"match with the flag after the directory":                      {"match", goodRoot, "--patterns", goodPatterns},
 	}
 
 	for name, args := range cases {

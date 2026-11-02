@@ -32,6 +32,15 @@ var skipWhatTheGoToolIgnores = walkPolicy{
 	skipsFile: startsWithUnderscoreOrDot,
 }
 
+// skipTestsAndWhatTheGoToolIgnores is for callers that read the service itself: a _test.go file
+// is never part of it.
+var skipTestsAndWhatTheGoToolIgnores = walkPolicy{
+	skipsDirectory: skipWhatTheGoToolIgnores.skipsDirectory,
+	skipsFile: func(name string) bool {
+		return skipWhatTheGoToolIgnores.skipsFile(name) || strings.HasSuffix(name, "_test.go")
+	},
+}
+
 func startsWithUnderscoreOrDot(name string) bool {
 	return strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".")
 }
