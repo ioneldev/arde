@@ -70,9 +70,10 @@ class ResponseField(Frozen):
     json_name: NameText
     declared_type: TypeText
     omitempty: bool
-    # The file that declares the struct, so two structs with one name in different packages stay
-    # apart. It comes last so that the model sorts by struct and name first.
+    # The file and package that declare the struct, so two structs with one name stay apart. They
+    # come last so that the model sorts by struct and name first.
     file: FileText
+    package: NameText
 
 
 class Inventory(Frozen):

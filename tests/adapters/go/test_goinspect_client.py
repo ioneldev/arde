@@ -110,10 +110,12 @@ def test_declarations_are_read_with_their_fields(stand_in: StandIn, folder: Path
                 "fields": [
                     {
                         "file": "a.go",
+                        "package": "shop",
                         "struct": "S",
                         "name": "Id",
                         "line": 7,
                         "tag": 'json:"id"',
+                        "json_tag": "id",
                         "go_type": "int",
                         "embedded": False,
                     }

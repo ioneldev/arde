@@ -5,7 +5,9 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"reflect"
 	"strconv"
+	"unicode/utf8"
 )
 
 type declaration struct {
@@ -17,13 +19,16 @@ type declaration struct {
 }
 
 type structField struct {
-	File     string `json:"file"`
-	Struct   string `json:"struct"`
-	Name     string `json:"name"`
-	Line     int    `json:"line"`
-	Tag      string `json:"tag"`
-	GoType   string `json:"go_type"`
-	Embedded bool   `json:"embedded"`
+	File    string `json:"file"`
+	Package string `json:"package"`
+	Struct  string `json:"struct"`
+	Name    string `json:"name"`
+	Line    int    `json:"line"`
+	Tag     string `json:"tag"`
+	// JSONTag is the value of the tag's json key, and null when the tag has none.
+	JSONTag  *string `json:"json_tag"`
+	GoType   string  `json:"go_type"`
+	Embedded bool    `json:"embedded"`
 }
 
 type declarationReport struct {
@@ -249,11 +254,14 @@ type fieldReader struct {
 func (reader fieldReader) fieldsOf(structName string, structType *ast.StructType) []structField {
 	fields := []structField{}
 	for _, field := range structType.Fields.List {
+		tag := tagText(field)
 		template := structField{
-			File:   reader.path,
-			Struct: structName,
-			Tag:    tagText(field),
-			GoType: boundedExprString(field.Type),
+			File:    reader.path,
+			Package: reader.source.syntax.Name.Name,
+			Struct:  structName,
+			Tag:     tag,
+			JSONTag: jsonKeyOf(tag),
+			GoType:  boundedExprString(field.Type),
 		}
 		fields = append(fields, reader.namedAs(template, field)...)
 	}
@@ -293,6 +301,17 @@ func tagText(field *ast.Field) string {
 		return field.Tag.Value
 	}
 	return text
+}
+
+// jsonKeyOf reads the tag the way encoding/json does, through reflect, so an escape in it decodes
+// and text that only looks like a json key is passed over. A value that is not UTF-8 counts as no
+// key: JSON cannot carry it, and encoding/json refuses such a name and uses the field's own.
+func jsonKeyOf(tag string) *string {
+	value, found := reflect.StructTag(tag).Lookup("json")
+	if !found || !utf8.ValidString(value) {
+		return nil
+	}
+	return &value
 }
 
 // typeBaseName is the name Go gives a method's receiver type or an embedded field: the type's

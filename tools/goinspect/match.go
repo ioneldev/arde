@@ -259,7 +259,8 @@ func (source *parsedSource) argumentTexts(call *ast.CallExpr, positions map[stri
 }
 
 // literalValues leaves out a name whose argument is not one string literal: a name, a sum, a
-// call and a parenthesised literal all have no value to read without evaluating code.
+// call and a parenthesised literal all have no value to read without evaluating code. A value that
+// is not UTF-8 is left out too, because JSON would replace its bytes and two values would merge.
 func literalValues(call *ast.CallExpr, positions map[string]int) map[string]string {
 	values := map[string]string{}
 	for name, position := range positions {
@@ -271,7 +272,7 @@ func literalValues(call *ast.CallExpr, positions map[string]int) map[string]stri
 			continue
 		}
 		// The scanner has already accepted the literal, so Unquote is not expected to fail.
-		if value, err := strconv.Unquote(literal.Value); err == nil {
+		if value, err := strconv.Unquote(literal.Value); err == nil && utf8.ValidString(value) {
 			values[name] = value
 		}
 	}

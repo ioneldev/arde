@@ -37,6 +37,7 @@ def a_field(**changes: object) -> ResponseField:
         "json_name": "total_cents",
         "declared_type": "int64",
         "omitempty": False,
+        "package": "web",
         "file": "web/payloads.go",
     }
     return ResponseField.model_validate({**fields, **changes})

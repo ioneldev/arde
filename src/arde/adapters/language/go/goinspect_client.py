@@ -62,10 +62,13 @@ class DeclarationReply(Frozen):
 
 class FieldReply(Frozen):
     file: str
+    package: str
     struct: str
     name: str
     line: int
     tag: str
+    # The value of the tag's json key as Go reads it, or None when it has none.
+    json_tag: str | None
     go_type: str
     embedded: bool
 

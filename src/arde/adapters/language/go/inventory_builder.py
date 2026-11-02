@@ -38,7 +38,6 @@ _HTTP_VERBS = frozenset(
 )
 _METHOD_THEN_PATH = re.compile(r"([A-Z]+)[ \t]+(.*)", re.DOTALL)
 _PLAIN_NAME = re.compile(r"[^\W\d]\w*(?:\.[^\W\d]\w*)*")
-_TAG_ENTRY = re.compile(r' *([^\s:"\x7f]+):"((?:[^"\\]|\\.)*)"')
 # Where the text of an argument is cut when it goes into a message, and into a dropped line.
 _SHOWN_LENGTH = 80
 _DROPPED_TEXT_LENGTH = 40
@@ -417,7 +416,7 @@ def _literal(match: CallMatch, name: str) -> str:
 def _listed_fields(fields: Iterable[FieldReply]) -> list[FieldReply]:
     in_service = [field for field in fields if not field.file.endswith("_test.go")]
     response_structs = {
-        (field.file, field.struct) for field in in_service if _may_hold_a_json_key(field.tag)
+        (field.file, field.struct) for field in in_service if _may_hold_a_json_key(field)
     }
     return [
         field
@@ -427,22 +426,23 @@ def _listed_fields(fields: Iterable[FieldReply]) -> list[FieldReply]:
 
 
 # A tag too long to print may hold a json key, and passing over it would lose the struct silently.
-def _may_hold_a_json_key(tag: str) -> bool:
-    return tag == TOO_LONG_TO_PRINT or _json_tag(tag) is not None
+def _may_hold_a_json_key(field: FieldReply) -> bool:
+    return field.tag == TOO_LONG_TO_PRINT or field.json_tag is not None
 
 
 # An embedded field is left out: its own fields are promoted into the parent's JSON, and the
 # inventory has no way to say so. docs/limitations.md lists this.
 def _is_listed(field: FieldReply) -> bool:
-    return field.name[:1].isupper() and not field.embedded and _json_tag(field.tag) != "-"
+    return field.name[:1].isupper() and not field.embedded and field.json_tag != "-"
 
 
 def _response_field(field: FieldReply) -> ResponseField:
     if TOO_LONG_TO_PRINT in (field.tag, field.go_type):
         raise _Unreadable(f"field {field.struct}.{field.name} has a tag or type too long to read")
-    name, *options = (_json_tag(field.tag) or "").split(",")
+    name, *options = (field.json_tag or "").split(",")
     return ResponseField(
         file=field.file,
+        package=field.package,
         struct=field.struct,
         name=field.name,
         json_name=name or field.name,
@@ -450,14 +450,3 @@ def _response_field(field: FieldReply) -> ResponseField:
         # omitzero also drops the key, so the field may be absent from the reply.
         omitempty="omitempty" in options or "omitzero" in options,
     )
-
-
-# Reads the value of the json key the way Go's reflect does: entry by entry, so text that looks
-# like a json key inside another key's quoted value is not mistaken for one.
-def _json_tag(tag: str) -> str | None:
-    position = 0
-    while entry := _TAG_ENTRY.match(tag, position):
-        if entry.group(1) == "json":
-            return entry.group(2)
-        position = entry.end()
-    return None

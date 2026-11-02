@@ -77,18 +77,22 @@ def registering(
 def field(
     struct: str,
     name: str,
-    tag: str = "",
+    json_tag: str | None = None,
     go_type: str = "string",
     *,
     embedded: bool = False,
     file: str = "dto.go",
+    tag: str = "",
+    package: str = "billing",
 ) -> FieldReply:
     return FieldReply(
         file=file,
+        package=package,
         struct=struct,
         name=name,
         line=1,
         tag=tag,
+        json_tag=json_tag,
         go_type=go_type,
         embedded=embedded,
     )
@@ -575,7 +579,7 @@ def test_a_file_at_the_root_belongs_to_the_folder_named_by_a_dot() -> None:
 def test_a_response_field_outside_the_service_is_left_out_and_reported() -> None:
     inventory = inventory_of(
         registering(Lit("GET /x")),
-        fields=(field("WipeReply", "Done", 'json:"done"', file="cmd/admin/main.go"),),
+        fields=(field("WipeReply", "Done", "done", file="cmd/admin/main.go"),),
         folders=("cmd/api",),
     )
 
@@ -588,7 +592,7 @@ def test_a_response_field_outside_the_service_is_left_out_and_reported() -> None
 def test_a_field_that_is_no_response_field_says_nothing_from_outside_the_service() -> None:
     inventory = inventory_of(
         registering(Lit("GET /x")),
-        fields=(field("Config", "Port", 'yaml:"port"', file="cmd/admin/main.go"),),
+        fields=(field("Config", "Port", tag='yaml:"port"', file="cmd/admin/main.go"),),
         folders=("cmd/api",),
     )
 
@@ -978,10 +982,11 @@ def with_one_route_and(fields: tuple[FieldReply, ...]) -> Inventory:
 
 
 def test_a_tagged_field_keeps_the_go_name_the_json_name_and_the_declared_type() -> None:
-    [found] = fields_of(field("Quote", "TotalCents", 'json:"total_cents"', "int64"))
+    [found] = fields_of(field("Quote", "TotalCents", "total_cents", "int64"))
 
     assert found == ResponseField(
         file="dto.go",
+        package="billing",
         struct="Quote",
         name="TotalCents",
         json_name="total_cents",
@@ -990,49 +995,52 @@ def test_a_tagged_field_keeps_the_go_name_the_json_name_and_the_declared_type() 
     )
 
 
+def test_a_field_keeps_the_package_that_declares_it() -> None:
+    [found] = fields_of(field("Quote", "Total", "total", package="pricing"))
+
+    assert found.package == "pricing"
+
+
+def test_two_structs_of_one_name_in_two_packages_stay_apart() -> None:
+    found = fields_of(
+        field("Item", "ID", "id", file="a/item.go", package="a"),
+        field("Item", "ID", "id", file="b/item.go", package="b"),
+    )
+
+    assert [f.package for f in found] == ["a", "b"]
+
+
 def test_omitempty_is_read_from_the_options_of_the_tag() -> None:
     found = fields_of(
-        field("Quote", "Note", 'json:"note,omitempty"'),
-        field("Quote", "Id", 'json:"id"'),
+        field("Quote", "Note", "note,omitempty"),
+        field("Quote", "Id", "id"),
     )
 
     assert {f.name: f.omitempty for f in found} == {"Note": True, "Id": False}
 
 
 def test_omitzero_also_marks_a_field_that_may_be_absent() -> None:
-    [found] = fields_of(field("Quote", "Note", 'json:"note,omitzero"'))
+    [found] = fields_of(field("Quote", "Note", "note,omitzero"))
 
     assert found.omitempty is True
 
 
 def test_a_tag_with_options_and_no_name_uses_the_go_name() -> None:
-    [found] = fields_of(field("Quote", "Note", 'json:",omitempty"'))
+    [found] = fields_of(field("Quote", "Note", ",omitempty"))
 
     assert (found.json_name, found.omitempty) == ("Note", True)
 
 
 def test_a_field_of_type_any_is_kept_as_written() -> None:
-    [found] = fields_of(field("Quote", "Details", 'json:"details"', "any"))
+    [found] = fields_of(field("Quote", "Details", "details", "any"))
 
     assert found.declared_type == "any"
 
 
-def test_the_json_tag_is_found_among_other_keys() -> None:
-    [found] = fields_of(field("Quote", "Qty", 'binding:"required" json:"qty,omitempty" db:"q"'))
-
-    assert (found.json_name, found.omitempty) == ("qty", True)
-
-
-def test_a_json_text_inside_another_tags_value_is_not_the_json_tag() -> None:
-    [found] = fields_of(field("Quote", "Qty", 'doc:"see json:" json:"qty"'))
-
-    assert found.json_name == "qty"
-
-
 def test_a_field_with_a_dash_name_is_left_out_and_dash_comma_is_a_field_named_dash() -> None:
     found = fields_of(
-        field("Quote", "Secret", 'json:"-"'),
-        field("Quote", "Minus", 'json:"-,"'),
+        field("Quote", "Secret", "-"),
+        field("Quote", "Minus", "-,"),
     )
 
     assert [f.json_name for f in found] == ["-"]
@@ -1040,41 +1048,45 @@ def test_a_field_with_a_dash_name_is_left_out_and_dash_comma_is_a_field_named_da
 
 
 def test_an_unexported_field_is_left_out() -> None:
-    found = fields_of(field("Quote", "Id", 'json:"id"'), field("Quote", "cache", 'json:"cache"'))
+    found = fields_of(field("Quote", "Id", "id"), field("Quote", "cache", "cache"))
 
     assert [f.name for f in found] == ["Id"]
 
 
 def test_an_embedded_field_is_left_out() -> None:
     found = fields_of(
-        field("Quote", "Id", 'json:"id"'),
-        field("Quote", "Stamp", "", "Stamp", embedded=True),
-        field("Quote", "Meta", 'json:"meta"', "Meta", embedded=True),
+        field("Quote", "Id", "id"),
+        field("Quote", "Stamp", None, "Stamp", embedded=True),
+        field("Quote", "Meta", "meta", "Meta", embedded=True),
     )
 
     assert [f.name for f in found] == ["Id"]
 
 
 def test_an_exported_field_with_no_tag_in_a_tagged_struct_is_listed_under_its_go_name() -> None:
-    found = {
-        f.name: f for f in fields_of(field("Quote", "Id", 'json:"id"'), field("Quote", "Currency"))
-    }
+    found = {f.name: f for f in fields_of(field("Quote", "Id", "id"), field("Quote", "Currency"))}
 
     untagged = found["Currency"]
     assert (untagged.json_name, untagged.omitempty) == ("Currency", False)
 
 
+def test_an_empty_json_value_still_makes_a_struct_a_response() -> None:
+    [found] = fields_of(field("Quote", "Total", ""))
+
+    assert found.json_name == "Total"
+
+
 def test_a_struct_with_no_json_tag_at_all_is_not_a_response() -> None:
     found = fields_of(
-        field("Settings", "Port", 'yaml:"port"'),
-        field("Settings", "Verbose", ""),
+        field("Settings", "Port", tag='yaml:"port"'),
+        field("Settings", "Verbose"),
     )
 
     assert found == ()
 
 
 def test_a_struct_in_a_test_file_is_not_a_response() -> None:
-    found = fields_of(field("decoded", "Total", 'json:"total"', file="web/handlers_test.go"))
+    found = fields_of(field("decoded", "Total", "total", file="web/handlers_test.go"))
 
     assert found == ()
 
@@ -1084,12 +1096,10 @@ def fields_and_dropped(*fields: FieldReply) -> tuple[tuple[ResponseField, ...], 
     return inventory.response_fields, inventory.dropped
 
 
-@pytest.mark.parametrize(
-    "tag", ['json:"a\nb"', 'json:"a\x1bb"', 'json:"' + "x" * (NAME_LIMIT + 1) + '"']
-)
-def test_a_json_name_that_cannot_be_read_goes_to_dropped(tag: str) -> None:
+@pytest.mark.parametrize("json_tag", ["a\nb", "a\x1bb", "x" * (NAME_LIMIT + 1)])
+def test_a_json_name_that_cannot_be_read_goes_to_dropped(json_tag: str) -> None:
     found, dropped = fields_and_dropped(
-        field("Quote", "Id", 'json:"id"'), field("Quote", "Note", tag)
+        field("Quote", "Id", "id"), field("Quote", "Note", json_tag)
     )
 
     assert [f.name for f in found] == ["Id"]
@@ -1098,7 +1108,7 @@ def test_a_json_name_that_cannot_be_read_goes_to_dropped(tag: str) -> None:
 
 def test_a_declared_type_that_cannot_be_read_goes_to_dropped() -> None:
     found, dropped = fields_and_dropped(
-        field("Quote", "Note", 'json:"note"', "[len(`a\nb`)]byte", file="dto.go")
+        field("Quote", "Note", "note", "[len(`a\nb`)]byte", file="dto.go")
     )
 
     assert found == ()
@@ -1108,7 +1118,7 @@ def test_a_declared_type_that_cannot_be_read_goes_to_dropped() -> None:
 
 
 def test_a_field_in_a_file_with_a_hostile_name_goes_to_dropped_and_is_printed_safely() -> None:
-    found, dropped = fields_and_dropped(field("Quote", "Id", 'json:"id"', file="e\x1bvil.go"))
+    found, dropped = fields_and_dropped(field("Quote", "Id", "id", file="e\x1bvil.go"))
 
     assert found == ()
     [line] = dropped
@@ -1117,7 +1127,7 @@ def test_a_field_in_a_file_with_a_hostile_name_goes_to_dropped_and_is_printed_sa
 
 def test_a_field_whose_tag_was_too_long_to_print_goes_to_dropped_and_is_not_renamed() -> None:
     found, dropped = fields_and_dropped(
-        field("Quote", "Id", 'json:"id"'), field("Quote", "Note", TOO_LONG_TO_PRINT)
+        field("Quote", "Id", "id"), field("Quote", "Note", tag=TOO_LONG_TO_PRINT)
     )
 
     assert [f.name for f in found] == ["Id"]
@@ -1126,14 +1136,14 @@ def test_a_field_whose_tag_was_too_long_to_print_goes_to_dropped_and_is_not_rena
 
 
 def test_a_struct_whose_only_tag_was_too_long_to_print_is_reported_and_not_lost() -> None:
-    found, dropped = fields_and_dropped(field("Quote", "Note", TOO_LONG_TO_PRINT))
+    found, dropped = fields_and_dropped(field("Quote", "Note", tag=TOO_LONG_TO_PRINT))
 
     assert found == ()
     assert len(dropped) == 1
 
 
 def test_a_field_whose_type_was_too_long_to_print_goes_to_dropped() -> None:
-    found, dropped = fields_and_dropped(field("Quote", "Note", 'json:"note"', TOO_LONG_TO_PRINT))
+    found, dropped = fields_and_dropped(field("Quote", "Note", "note", TOO_LONG_TO_PRINT))
 
     assert found == ()
     assert len(dropped) == 1
@@ -1151,10 +1161,10 @@ def test_a_make_target_past_its_limit_goes_to_dropped() -> None:
 
 def test_fields_are_sorted_by_struct_then_name_and_listed_once() -> None:
     found = fields_of(
-        field("Quote", "Total", 'json:"total"'),
-        field("Listing", "Items", 'json:"items"'),
-        field("Quote", "Id", 'json:"id"'),
-        field("Quote", "Id", 'json:"id"'),
+        field("Quote", "Total", "total"),
+        field("Listing", "Items", "items"),
+        field("Quote", "Id", "id"),
+        field("Quote", "Id", "id"),
     )
 
     assert [(f.struct, f.name) for f in found] == [
@@ -1166,9 +1176,9 @@ def test_fields_are_sorted_by_struct_then_name_and_listed_once() -> None:
 
 def test_two_structs_with_one_name_in_different_files_are_both_listed_and_told_apart() -> None:
     found = fields_of(
-        field("Item", "ID", 'json:"id"', "int", file="v1/item.go"),
-        field("Item", "ID", 'json:"item_id"', "string", file="v2/item.go"),
-        field("Item", "ID", 'json:"uid"', "int", file="v3/item.go"),
+        field("Item", "ID", "id", "int", file="v1/item.go"),
+        field("Item", "ID", "item_id", "string", file="v2/item.go"),
+        field("Item", "ID", "uid", "int", file="v3/item.go"),
     )
 
     assert [(f.file, f.json_name) for f in found] == [
@@ -1180,10 +1190,10 @@ def test_two_structs_with_one_name_in_different_files_are_both_listed_and_told_a
 
 def test_the_order_of_fields_does_not_depend_on_the_order_they_came_in() -> None:
     replies = [
-        field("Item", "ID", 'json:"id"', "int", file="v1/item.go"),
-        field("Item", "ID", 'json:"item_id"', "string", file="v2/item.go"),
-        field("Item", "ID", 'json:"uid"', "int", file="v3/item.go"),
-        field("Item", "Name", 'json:"name"', file="v1/item.go"),
+        field("Item", "ID", "id", "int", file="v1/item.go"),
+        field("Item", "ID", "item_id", "string", file="v2/item.go"),
+        field("Item", "ID", "uid", "int", file="v3/item.go"),
+        field("Item", "Name", "name", file="v1/item.go"),
     ]
 
     orders = {fields_of(*arrangement) for arrangement in itertools.permutations(replies)}
@@ -1193,9 +1203,9 @@ def test_the_order_of_fields_does_not_depend_on_the_order_they_came_in() -> None
 
 def test_fields_that_differ_in_any_way_are_all_kept() -> None:
     found = fields_of(
-        field("Item", "ID", 'json:"id"', "int", file="item.go"),
-        field("Item", "ID", 'json:"id,omitempty"', "int", file="item.go"),
-        field("Item", "ID", 'json:"id"', "int64", file="item.go"),
+        field("Item", "ID", "id", "int", file="item.go"),
+        field("Item", "ID", "id,omitempty", "int", file="item.go"),
+        field("Item", "ID", "id", "int64", file="item.go"),
     )
 
     assert len(found) == 3

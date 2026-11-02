@@ -253,8 +253,8 @@ func TestAFieldTagPastTheCapIsNotPrintedForEachName(t *testing.T) {
 		t.Fatalf("got %d fields", len(fields))
 	}
 	for _, field := range fields {
-		if field.Tag != tooLongToPrint {
-			t.Fatalf("got a tag of %d bytes", len(field.Tag))
+		if field.Tag != tooLongToPrint || field.JSONTag != nil {
+			t.Fatalf("got a tag of %d bytes and a json key of %v", len(field.Tag), field.JSONTag)
 		}
 	}
 }

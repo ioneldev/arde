@@ -252,6 +252,41 @@ func TestMatchPrintsAnEmptyListWhenEveryPatternMatched(t *testing.T) {
 	}
 }
 
+func TestALiteralThatIsNotUTF8IsNoLiteral(t *testing.T) {
+	source := `package p
+
+import "os"
+
+func f() {
+	os.Getenv("caf\xe9")
+	os.Getenv("caf\xe8")
+	os.Getenv("café")
+	os.Getenv("caf\u00e9")
+}
+`
+	patterns := `[{"kind":"env","call":"^os\\.Getenv$","args":{"name":0}}]`
+
+	literals := literalsOf(t, source, patterns)
+	calls := matchesIn(t, map[string]string{"main.go": source}, patterns)
+
+	if len(literals) != 4 {
+		t.Fatalf("got %d matches, want 4", len(literals))
+	}
+	for index, literal := range literals[:2] {
+		if value, isLiteral := literal["name"]; isLiteral {
+			t.Errorf("match %d: JSON would turn these bytes into another text, got %q", index, value)
+		}
+		if !strings.Contains(calls[index].Args["name"], `\xe`) {
+			t.Errorf("match %d: the text as written must stay, got %q", index, calls[index].Args["name"])
+		}
+	}
+	for index, literal := range literals[2:] {
+		if literal["name"] != "café" {
+			t.Errorf("match %d: got %+v", index+2, literal)
+		}
+	}
+}
+
 func TestMatchFailsOnAFileThatDoesNotParseAndNamesIt(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"good.go":       stdlibStyleService,

@@ -225,16 +225,86 @@ func TestFieldsReportTagAndLine(t *testing.T) {
 
 	report := inspectOneFile(t, source)
 
+	id, rating, tags := "id", "rating", "tags"
 	want := []structField{
-		{File: "shop.go", Struct: "Product", Name: "ID", Line: 4, Tag: `json:"id"`, GoType: "string"},
-		{File: "shop.go", Struct: "Product", Name: "Rating", Line: 5, Tag: `json:"rating" oneOf:"a,b"`, GoType: "float64"},
-		{File: "shop.go", Struct: "Product", Name: "Notes", Line: 6, Tag: "", GoType: "[]string"},
-		{File: "shop.go", Struct: "Product", Name: "Tags", Line: 7, Tag: `json:"tags"`, GoType: "map[string]*int"},
-		{File: "shop.go", Struct: "Product", Name: "Low", Line: 8, Tag: "", GoType: "int"},
-		{File: "shop.go", Struct: "Product", Name: "High", Line: 8, Tag: "", GoType: "int"},
+		{File: "shop.go", Package: "shop", Struct: "Product", Name: "ID", Line: 4, Tag: `json:"id"`, JSONTag: &id, GoType: "string"},
+		{File: "shop.go", Package: "shop", Struct: "Product", Name: "Rating", Line: 5, Tag: `json:"rating" oneOf:"a,b"`, JSONTag: &rating, GoType: "float64"},
+		{File: "shop.go", Package: "shop", Struct: "Product", Name: "Notes", Line: 6, Tag: "", GoType: "[]string"},
+		{File: "shop.go", Package: "shop", Struct: "Product", Name: "Tags", Line: 7, Tag: `json:"tags"`, JSONTag: &tags, GoType: "map[string]*int"},
+		{File: "shop.go", Package: "shop", Struct: "Product", Name: "Low", Line: 8, Tag: "", GoType: "int"},
+		{File: "shop.go", Package: "shop", Struct: "Product", Name: "High", Line: 8, Tag: "", GoType: "int"},
 	}
 	if !reflect.DeepEqual(report.Fields, want) {
 		t.Fatalf("got\n%+v\nwant\n%+v", report.Fields, want)
+	}
+}
+
+// jsonTagOfField declares one field with the tag as written and reads back its json key.
+func jsonTagOfField(t *testing.T, tag string) *string {
+	t.Helper()
+	source := "package shop\n\ntype Line struct {\n\tItem string " + tag + "\n}\n"
+	return inspectOneFile(t, source).Fields[0].JSONTag
+}
+
+func TestTheJSONKeyIsReadAsReflectReadsIt(t *testing.T) {
+	cases := map[string]struct {
+		tag  string
+		want string
+	}{
+		"a name":                           {"`json:\"id\"`", "id"},
+		"a name and options":               {"`json:\"note,omitempty\"`", "note,omitempty"},
+		"options and no name":              {"`json:\",omitempty\"`", ",omitempty"},
+		"among other keys":                 {"`binding:\"required\" json:\"qty,omitempty\" db:\"q\"`", "qty,omitempty"},
+		"after text that looks like a key": {"`doc:\"see json:\" json:\"qty\"`", "qty"},
+		"a Unicode escape in the tag":      {"`json:\"caf\\u00e9\"`", "café"},
+		"an escaped quote in the tag":      {"`json:\"a\\\"b\"`", `a"b`},
+		"a dash":                           {"`json:\"-\"`", "-"},
+		"a dash that names a field":        {"`json:\"-,\"`", "-,"},
+		"an empty value":                   {"`json:\"\"`", ""},
+		"a tag in a quoted Go string":      {`"json:\"id\""`, "id"},
+	}
+
+	for name, test := range cases {
+		got := jsonTagOfField(t, test.tag)
+
+		if got == nil || *got != test.want {
+			t.Errorf("%s: got %v, want %q", name, got, test.want)
+		}
+	}
+}
+
+func TestATagWithNoJSONKeyHasNone(t *testing.T) {
+	cases := map[string]string{
+		"another key":                       "`yaml:\"port\"`",
+		"a key not quoted":                  "`json:port`",
+		"a key after text reflect stops at": "`broken json:\"id\"`",
+		"bytes that are not UTF-8":          "`json:\"caf\\xe9\"`",
+	}
+
+	for name, tag := range cases {
+		if got := jsonTagOfField(t, tag); got != nil {
+			t.Errorf("%s: got %q, want no json key", name, *got)
+		}
+	}
+}
+
+func TestAFieldWithNoTagHasNoJSONKey(t *testing.T) {
+	report := inspectOneFile(t, "package shop\n\ntype Line struct {\n\tItem string\n}\n")
+
+	if report.Fields[0].JSONTag != nil {
+		t.Fatalf("got %q", *report.Fields[0].JSONTag)
+	}
+}
+
+func TestTheReplyGivesNullForNoJSONKeyAndNamesThePackage(t *testing.T) {
+	root := writeTree(t, map[string]string{"line.go": "package billing\n\ntype Line struct {\n\tItem string\n}\n"})
+
+	_, stdout, _ := runCommand(t, "declarations", root)
+
+	for _, want := range []string{`"json_tag":null`, `"package":"billing"`} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("want %s in %s", want, stdout)
+		}
 	}
 }
 

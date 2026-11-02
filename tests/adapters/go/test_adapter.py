@@ -69,6 +69,7 @@ def field(
 ) -> ResponseField:
     return ResponseField(
         file=file,
+        package="web",
         struct=struct,
         name=name,
         json_name=json_name,
@@ -342,6 +343,76 @@ def test_a_file_with_an_escape_in_its_name_is_printed_safely(
 
     assert [line for line in dropped if line.startswith("web/e\\u001b[31mvil.go:5: ")]
     assert not [line for line in dropped if "\x1b" in line]
+
+
+def test_literals_that_are_not_utf8_do_not_merge_into_one_name(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    (shop / "web" / "odd.go").write_text(
+        'package web\n\nimport "os"\n\nfunc init() {\n'
+        '\tos.Getenv("A\\xe9")\n\tos.Getenv("A\\xe8")\n}\n',
+        encoding="utf-8",
+    )
+
+    inventory = adapter.extract_inventory(shop, shop_profile())
+
+    assert not [name for name in inventory.env_vars if name.startswith("A")]
+    assert [line for line in inventory.dropped if line.startswith("web/odd.go:6: ")]
+    assert [line for line in inventory.dropped if line.startswith("web/odd.go:7: ")]
+
+
+def response_fields_of(adapter: GoAdapter, shop: Path, source: str) -> dict[str, ResponseField]:
+    (shop / "web" / "tagged.go").write_text(source, encoding="utf-8")
+    inventory = adapter.extract_inventory(shop, shop_profile())
+    return {found.name: found for found in inventory.response_fields if found.struct == "Tagged"}
+
+
+def test_a_json_name_is_read_as_go_reads_it(adapter: GoAdapter, shop: Path) -> None:
+    source = (
+        "package web\n\ntype Tagged struct {\n"
+        '\tAccent string `json:"caf\\u00e9,omitempty"`\n'
+        '\tQuoted string `doc:"see json:" json:"qty"`\n'
+        "}\n"
+    )
+
+    fields = response_fields_of(adapter, shop, source)
+
+    assert (fields["Accent"].json_name, fields["Accent"].omitempty) == ("café", True)
+    assert fields["Quoted"].json_name == "qty"
+
+
+def test_a_field_says_which_package_declares_it(adapter: GoAdapter, shop: Path) -> None:
+    source = 'package web\n\ntype Tagged struct {\n\tNote string `json:"note"`\n}\n'
+
+    assert response_fields_of(adapter, shop, source)["Note"].package == "web"
+
+
+def test_a_tag_that_is_not_utf8_gives_the_field_its_own_name_as_encoding_json_does(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    source = (
+        "package web\n\ntype Tagged struct {\n"
+        '\tPlain string `json:"plain"`\n'
+        '\tOdd   string `json:"caf\\xe9"`\n'
+        "}\n"
+    )
+
+    assert response_fields_of(adapter, shop, source)["Odd"].json_name == "Odd"
+
+
+@pytest.mark.skipif(shutil.which("cc") is None, reason="cgo needs a C compiler")
+def test_a_struct_in_a_cgo_file_keeps_its_json_names_and_its_package(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    source = (
+        'package web\n\n// int two(void) { return 2; }\nimport "C"\n\n'
+        'type Tagged struct {\n\tNote string `json:"no\\u0074e"`\n}\n\n'
+        "var two = int(C.two())\n"
+    )
+
+    found = response_fields_of(adapter, shop, source)["Note"]
+
+    assert (found.json_name, found.package) == ("note", "web")
 
 
 def test_a_tag_past_goinspects_cap_is_reported_by_the_inventory(
