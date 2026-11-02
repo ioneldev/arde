@@ -1,5 +1,7 @@
 """What goinspect reports becomes the inventory. Nothing here runs Go: replies are written out."""
 
+import itertools
+
 import pytest
 
 from arde.adapters.language.go.goinspect_client import CallMatch, FieldReply
@@ -271,14 +273,80 @@ def test_one_code_raised_in_many_places_is_listed_once_and_with_each_status() ->
     )
 
 
-def test_an_error_whose_code_or_status_cannot_be_read_is_left_out() -> None:
+def test_an_error_whose_code_or_status_cannot_be_read_is_left_out_and_reported() -> None:
     inventory = with_one_route(
-        call("error", "refuse", code="problem.Code", status="400"),
-        call("error", "refuse", status="400"),
-        call("error", "refuse", code=Lit("no_status")),
+        call("error", "refuse", line=11, code="problem.Code", status="400"),
+        call("error", "refuse", line=12, status="400"),
+        call("error", "refuse", line=13, code=Lit("no_status")),
     )
 
     assert inventory.error_codes == ()
+    assert inventory.dropped == (
+        "main.go:11: error argument `code` is `problem.Code`, not a string literal",
+        "main.go:12: error argument `code` is missing",
+        "main.go:13: error argument `status` is missing",
+    )
+
+
+def test_a_param_whose_name_cannot_be_read_is_reported() -> None:
+    inventory = with_one_route(
+        call("param", "q.Get", line=5, name="key"),
+        call("param", "q.Get", line=6, name='"a" + suffix'),
+        call("param", "q.Get", line=7),
+        call("param", "q.Get", line=8, name=Lit("")),
+    )
+
+    assert inventory.dropped == (
+        "main.go:5: param argument `name` is `key`, not a string literal",
+        'main.go:6: param argument `name` is `"a" + suffix`, not a string literal',
+        "main.go:7: param argument `name` is missing",
+        "main.go:8: param argument `name` is an empty string",
+    )
+
+
+def test_an_env_var_read_through_a_variable_is_reported() -> None:
+    inventory = with_one_route(call("env", "os.Getenv", line=59, name="key"))
+
+    assert inventory.dropped == ("main.go:59: env argument `name` is `key`, not a string literal",)
+
+
+def test_what_is_read_in_full_is_not_reported_as_dropped() -> None:
+    inventory = with_one_route(
+        call("param", "q.Get", name=Lit("qty")),
+        call("env", "os.Getenv", name=Lit("PORT")),
+        call("error", "refuse", code=Lit("bad"), status="statusFor(err)"),
+    )
+
+    assert inventory.dropped == ()
+
+
+def test_a_long_argument_is_cut_in_the_dropped_line() -> None:
+    inventory = with_one_route(call("param", "q.Get", name="prefix + " + "x" * 200))
+
+    [line] = inventory.dropped
+    assert len(line) < 120
+
+
+def test_dropped_lines_are_sorted_by_file_and_line_and_listed_once() -> None:
+    inventory = with_one_route(
+        call("env", "os.Getenv", line=30, name="b"),
+        call("env", "os.Getenv", line=4, name="a"),
+        call("env", "os.Getenv", line=4, name="a"),
+        CallMatch(
+            kind="env", call="os.Getenv", file="a.go", line=100, args={"name": "c"}, literals={}
+        ),
+    )
+
+    assert [line.split(" ")[0] for line in inventory.dropped] == [
+        "a.go:100:",
+        "main.go:4:",
+        "main.go:30:",
+    ]
+
+
+def test_a_route_never_goes_to_dropped_because_an_unreadable_one_stops_the_run() -> None:
+    with pytest.raises(RouteNotUnderstoodError):
+        routes_of(call("route", "app.handle", path="prefix", handler="s.show"))
 
 
 def test_env_vars_are_the_literal_names_sorted_and_listed_once() -> None:
@@ -315,6 +383,7 @@ def test_a_tagged_field_keeps_the_go_name_the_json_name_and_the_declared_type() 
     [found] = fields_of(field("Quote", "TotalCents", 'json:"total_cents"', "int64"))
 
     assert found == ResponseField(
+        file="dto.go",
         struct="Quote",
         name="TotalCents",
         json_name="total_cents",
@@ -425,3 +494,40 @@ def test_fields_are_sorted_by_struct_then_name_and_listed_once() -> None:
         ("Quote", "Id"),
         ("Quote", "Total"),
     ]
+
+
+def test_two_structs_with_one_name_in_different_files_are_both_listed_and_told_apart() -> None:
+    found = fields_of(
+        field("Item", "ID", 'json:"id"', "int", file="v1/item.go"),
+        field("Item", "ID", 'json:"item_id"', "string", file="v2/item.go"),
+        field("Item", "ID", 'json:"uid"', "int", file="v3/item.go"),
+    )
+
+    assert [(f.file, f.json_name) for f in found] == [
+        ("v1/item.go", "id"),
+        ("v2/item.go", "item_id"),
+        ("v3/item.go", "uid"),
+    ]
+
+
+def test_the_order_of_fields_does_not_depend_on_the_order_they_came_in() -> None:
+    replies = [
+        field("Item", "ID", 'json:"id"', "int", file="v1/item.go"),
+        field("Item", "ID", 'json:"item_id"', "string", file="v2/item.go"),
+        field("Item", "ID", 'json:"uid"', "int", file="v3/item.go"),
+        field("Item", "Name", 'json:"name"', file="v1/item.go"),
+    ]
+
+    orders = {fields_of(*arrangement) for arrangement in itertools.permutations(replies)}
+
+    assert len(orders) == 1
+
+
+def test_fields_that_differ_in_any_way_are_all_kept() -> None:
+    found = fields_of(
+        field("Item", "ID", 'json:"id"', "int", file="item.go"),
+        field("Item", "ID", 'json:"id,omitempty"', "int", file="item.go"),
+        field("Item", "ID", 'json:"id"', "int64", file="item.go"),
+    )
+
+    assert len(found) == 3

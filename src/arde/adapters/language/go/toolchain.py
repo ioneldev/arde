@@ -44,6 +44,7 @@ class BadTestCommandError(ArdeError):
 
 
 def build_service(repo: Path, profile: RepoProfile) -> Path:
+    _require_one_main_package(repo, profile.main_package)
     folder = Path(tempfile.mkdtemp(prefix="arde-service-"))
     try:
         _build_into(folder / SERVICE_BINARY_NAME, repo, profile)
@@ -51,6 +52,33 @@ def build_service(repo: Path, profile: RepoProfile) -> Path:
         shutil.rmtree(folder, ignore_errors=True)
         raise
     return folder / SERVICE_BINARY_NAME
+
+
+# Building any other package writes an archive that looks like a binary and cannot be run, and the
+# caller finds out far from the cause.
+def _require_one_main_package(repo: Path, main_package: str) -> None:
+    arguments = ("list", "-buildvcs=false", "-f", "{{.Name}}", "--", main_package)
+    listing = _go(repo, arguments, GO_LIST_TIMEOUT_S)
+    if not listing.succeeded:
+        raise GoCommandError(
+            f"main_package {main_package} cannot be loaded: {listing.output.strip()}",
+            next_action="Correct main_package in the profile to name a package, then run again.",
+        )
+    names = listing.stdout.split()
+    if names != ["main"]:
+        raise GoCommandError(
+            f"main_package {main_package} {_what_it_names(names)}, "
+            "and a service is one package main.",
+            next_action="Correct main_package in the profile to the package that holds func main.",
+        )
+
+
+def _what_it_names(names: list[str]) -> str:
+    if not names:
+        return "names no package"
+    if len(names) == 1:
+        return f"is package {names[0]}"
+    return f"names {len(names)} packages ({', '.join(names)})"
 
 
 # The package comes after "--" so that no text from the profile can be read as a flag, and
@@ -69,10 +97,12 @@ def _build_into(binary: Path, repo: Path, profile: RepoProfile) -> None:
 
 
 def run_checks(repo: Path, profile: RepoProfile) -> CheckResult:
-    build = _go(repo, ("build", "-buildvcs=false", "./..."), GO_BUILD_TIMEOUT_S)
+    # -o /dev/null: a repo of one main package would otherwise get its binary written into it.
+    build = _go(repo, ("build", "-buildvcs=false", "-o", os.devnull, "./..."), GO_BUILD_TIMEOUT_S)
     vet = _go(repo, ("vet", "./..."), GO_VET_TIMEOUT_S)
     test = _go(repo, ("test", "./..."), GO_TEST_TIMEOUT_S)
     extras = [(command, _run_extra(repo, command)) for command in profile.extra_test_commands]
+    listing = _go(repo, ("test", "-list", ".*", "./..."), GO_TEST_TIMEOUT_S)
     sections = [("build", build), ("vet", vet), ("test", test)]
     sections += [(f"extra: {command}", outcome) for command, outcome in extras]
     return CheckResult(
@@ -80,7 +110,7 @@ def run_checks(repo: Path, profile: RepoProfile) -> CheckResult:
         vet_ok=vet.succeeded,
         test_ok=test.succeeded and all(outcome.succeeded for _, outcome in extras),
         output="\n".join(_section(title, outcome) for title, outcome in sections),
-        test_count=_count_tests(repo),
+        test_count=_count_listed_tests(listing, tests_passed=test.succeeded),
         ignored_files=_ignored_files(repo),
     )
 
@@ -89,14 +119,34 @@ def _section(title: str, outcome: ChildOutcome) -> str:
     return f"== {title} (exit {outcome.exit_code}) ==\n{outcome.output.strip()}\n"
 
 
-def _count_tests(repo: Path) -> int:
-    listing = _go(repo, ("test", "-list", ".*", "./..."), GO_TEST_TIMEOUT_S)
+# Zero must mean zero tests. A listing that failed after the tests passed would read as zero, and
+# so would one that was cut short, so both stop the run.
+def _count_listed_tests(listing: ChildOutcome, *, tests_passed: bool) -> int:
+    _require_whole(listing, "the list of tests")
+    if tests_passed and not listing.succeeded:
+        raise GoCommandError(
+            f"The tests passed, but listing them failed, so they cannot be counted: "
+            f"{listing.output.strip()}",
+            next_action="Run the list command by hand in the repo to see why, then run again.",
+        )
     return sum(1 for line in listing.stdout.splitlines() if _LISTED_TEST.fullmatch(line))
 
 
+def _require_whole(listing: ChildOutcome, what: str) -> None:
+    if listing.output_was_cut:
+        raise GoCommandError(
+            f"{what} is too long to read in full.",
+            next_action="Split the repo's packages, or report this to the ARDE maintainers.",
+        )
+
+
 def _ignored_files(repo: Path) -> tuple[str, ...]:
-    arguments = ("list", "-e", "-f", _IGNORED_FILES_TEMPLATE, "./...")
+    folders = _folders_with_go_files(repo)
+    if not folders:
+        return ()
+    arguments = ("list", "-e", "-f", _IGNORED_FILES_TEMPLATE, *folders)
     listing = _go(repo, arguments, GO_LIST_TIMEOUT_S)
+    _require_whole(listing, "the list of files the build leaves out")
     if not listing.succeeded:
         raise GoCommandError(
             f"Cannot list the files the build leaves out: {listing.output.strip()}",
@@ -104,7 +154,28 @@ def _ignored_files(repo: Path) -> tuple[str, ...]:
         )
     root = os.path.realpath(repo)
     paths = (os.path.relpath(os.path.realpath(line), root) for line in listing.stdout.splitlines())
-    return tuple(sorted(Path(path).as_posix() for path in paths))
+    return tuple(sorted({Path(path).as_posix() for path in paths}))
+
+
+# Named one by one, because "./..." leaves out a package whose every file is behind a build tag,
+# and its tests are the ones that nothing else shows. The folders the Go tool passes over, and
+# those of another module, are left out as ./... leaves them out.
+def _folders_with_go_files(repo: Path) -> list[str]:
+    folders: list[str] = []
+    for current, subfolders, files in os.walk(repo):
+        here = Path(current)
+        subfolders[:] = sorted(name for name in subfolders if not _is_passed_over(here / name))
+        if any(name.endswith(".go") for name in files):
+            folders.append("./" + here.relative_to(repo).as_posix() if here != repo else ".")
+    return folders
+
+
+def _is_passed_over(folder: Path) -> bool:
+    return (
+        folder.name in ("vendor", "testdata")
+        or folder.name.startswith(("_", "."))
+        or (folder / "go.mod").is_file()
+    )
 
 
 # No shell: the words are split and run as they are, so a command in the profile cannot chain

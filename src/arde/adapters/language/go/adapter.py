@@ -59,11 +59,11 @@ class GoAdapter(LanguageAdapter):
         return build_inventory(reading)
 
     def route_fingerprints(self, repo: Path, routes: Sequence[Route]) -> dict[str, str]:
-        roots = {route: _root_of(route) for route in routes if route.handler != INLINE_HANDLER}
+        roots = _one_root_per_key(routes)
         reply = self._goinspect.fingerprints(repo, sorted(set(roots.values())))
         return {
-            _route_key(route): reply.fingerprints[root]
-            for route, root in roots.items()
+            key: reply.fingerprints[root]
+            for key, root in roots.items()
             if root in reply.fingerprints
         }
 
@@ -92,3 +92,18 @@ def _root_of(route: Route) -> str:
 
 def _route_key(route: Route) -> str:
     return f"{route.method} {route.path}"
+
+
+# Two routes can share a key: "GET /{$}" and "GET /" both read as "GET /", and one path can sit on
+# two muxes. A hash of one handler would then stand for both, and an edit to the other would not
+# move it. A key with more than one handler, an inline one included, is left out like any route
+# with no hash, and the caller counts a missing route as changed.
+def _one_root_per_key(routes: Sequence[Route]) -> dict[str, str]:
+    roots_by_key: dict[str, set[str]] = {}
+    for route in routes:
+        roots_by_key.setdefault(_route_key(route), set()).add(_root_of(route))
+    return {
+        key: next(iter(roots))
+        for key, roots in roots_by_key.items()
+        if len(roots) == 1 and INLINE_HANDLER not in roots
+    }

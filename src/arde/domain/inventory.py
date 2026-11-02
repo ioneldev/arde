@@ -29,6 +29,9 @@ class ResponseField(Frozen):
     json_name: str
     declared_type: str
     omitempty: bool
+    # The file that declares the struct, so two structs with one name in different packages stay
+    # apart. It comes last so that the model sorts by struct and name first.
+    file: str
 
 
 class Inventory(Frozen):
@@ -38,3 +41,6 @@ class Inventory(Frozen):
     response_fields: tuple[ResponseField, ...]
     env_vars: tuple[str, ...]
     make_targets: tuple[str, ...]
+    # One short line for each call that matched a pattern and gave nothing, because an argument was
+    # not a string literal. Without it a repo with constant error codes looks like one with none.
+    dropped: tuple[str, ...] = ()

@@ -47,9 +47,16 @@ def edit(path: Path, old: str, new: str) -> None:
 
 
 def field(
-    struct: str, name: str, json_name: str, declared_type: str, *, omitempty: bool = False
+    struct: str,
+    name: str,
+    json_name: str,
+    declared_type: str,
+    *,
+    omitempty: bool = False,
+    file: str = "web/payloads.go",
 ) -> ResponseField:
     return ResponseField(
+        file=file,
         struct=struct,
         name=name,
         json_name=json_name,
@@ -105,6 +112,9 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
     )
     assert inventory.env_vars == ("SHOP_PORT", "SHOP_VERBOSE")
     assert inventory.make_targets == ("lint", "serve", "smoke", "unit")
+    assert inventory.dropped == (
+        "settings.go:7: env argument `name` is `name`, not a string literal",
+    )
     assert inventory.response_fields == (
         field("ItemView", "Name", "name", "string"),
         field("ItemView", "PriceCents", "price_cents", "int64"),
@@ -116,7 +126,7 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
         field("Quote", "SKU", "sku", "string"),
         field("Quote", "TotalCents", "total_cents", "int64"),
         field("Stamp", "IssuedBy", "issued_by", "string"),
-        field("problem", "Code", "code", "string"),
+        field("problem", "Code", "code", "string", file="web/failures.go"),
     )
 
 
@@ -359,6 +369,51 @@ def test_output_that_was_cut_says_so_in_the_result(adapter: GoAdapter, shop: Pat
     assert "done" in result.output
 
 
+def test_run_checks_writes_nothing_into_a_one_package_service(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    (tmp_path / "go.mod").write_text("module example.com/bare\n\ngo 1.22\n", encoding="utf-8")
+    (tmp_path / "main.go").write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
+
+    result = adapter.run_checks(tmp_path, shop_profile())
+
+    assert result.build_ok
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["go.mod", "main.go"]
+
+
+def test_a_package_with_every_file_behind_a_tag_still_shows_its_files_as_left_out(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    (shop / "e2e").mkdir()
+    for name, test in (("a_test.go", "TestA"), ("b_test.go", "TestB")):
+        body = (
+            f'//go:build e2e\n\npackage e2e\n\nimport "testing"\n\nfunc {test}(t *testing.T) {{}}\n'
+        )
+        (shop / "e2e" / name).write_text(body, encoding="utf-8")
+
+    result = adapter.run_checks(shop, shop_profile())
+
+    assert result.ignored_files == (
+        "e2e/a_test.go",
+        "e2e/b_test.go",
+        "web/smoke_integration_test.go",
+    )
+    assert result.test_count == 3
+
+
+def test_folders_the_go_tool_never_looks_in_add_nothing_to_the_left_out_files(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    for folder in ("vendor/dep", "testdata", "_scratch", ".hidden", "nested"):
+        (shop / folder).mkdir(parents=True)
+        (shop / folder / "x_test.go").write_text("//go:build e2e\n\npackage x\n", encoding="utf-8")
+    (shop / "nested" / "go.mod").write_text("module example.com/nested\n", encoding="utf-8")
+
+    assert adapter.run_checks(shop, shop_profile()).ignored_files == (
+        "web/smoke_integration_test.go",
+    )
+
+
 def test_run_checks_builds_without_a_version_control_stamp(adapter: GoAdapter, shop: Path) -> None:
     (shop / ".git").mkdir()
 
@@ -545,6 +600,16 @@ def test_a_build_that_fails_names_the_error_and_the_next_action(
     assert list(binaries_in_tmp.iterdir()) == []
 
 
+def test_a_package_that_is_not_main_is_refused_and_main_package_is_named(
+    adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
+) -> None:
+    with pytest.raises(GoCommandError) as refused:
+        adapter.build_service(shop, shop_profile(main_package="./pricing"))
+
+    assert "main_package ./pricing is package pricing" in str(refused.value)
+    assert list(binaries_in_tmp.iterdir()) == []
+
+
 def test_a_package_that_does_not_exist_is_an_error(
     adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
 ) -> None:
@@ -584,6 +649,29 @@ def test_each_route_gets_a_fingerprint_keyed_by_method_and_path(adapter: GoAdapt
     assert sorted(fingerprints) == ["GET /", "GET /items/{sku}"]
     assert all(SHA256_HEX.fullmatch(value) for value in fingerprints.values())
     assert fingerprints["GET /"] != fingerprints["GET /items/{sku}"]
+
+
+def test_two_routes_that_share_a_key_and_not_a_handler_are_left_out_and_not_merged(
+    adapter: GoAdapter,
+) -> None:
+    routes = [
+        Route(method="GET", path="/", handler="s.listing"),
+        Route(method="GET", path="/", handler="s.quote"),
+        Route(method="GET", path="/items/{sku}", handler="s.quote"),
+    ]
+
+    assert sorted(adapter.route_fingerprints(SHOP, routes)) == ["GET /items/{sku}"]
+
+
+def test_two_routes_that_share_a_key_and_a_handler_keep_their_fingerprint(
+    adapter: GoAdapter,
+) -> None:
+    routes = [
+        Route(method="GET", path="/", handler="s.listing"),
+        Route(method="GET", path="/", handler="other.listing"),
+    ]
+
+    assert sorted(adapter.route_fingerprints(SHOP, routes)) == ["GET /"]
 
 
 def test_two_routes_that_share_a_handler_share_a_fingerprint(adapter: GoAdapter) -> None:

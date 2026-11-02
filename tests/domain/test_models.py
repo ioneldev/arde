@@ -410,6 +410,41 @@ PROFILE_FIELDS: dict[str, Any] = {
 }
 
 
+@pytest.mark.parametrize(
+    ("kind", "args"),
+    [
+        ("route", {"path": 0, "handler": 1}),
+        ("param", {"name": 0}),
+        ("env", {"name": 0}),
+        ("error", {"status": 1, "code": 2}),
+        ("route", {"path": 0, "handler": 1, "middleware": 2}),
+    ],
+)
+def test_a_pattern_that_names_the_arguments_its_kind_needs_is_accepted(
+    kind: str, args: dict[str, int]
+) -> None:
+    assert ExtractionPattern(kind=kind, call="^f$", args=args).args == args  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("kind", "args", "missing"),
+    [
+        ("route", {"path": 0}, "handler"),
+        ("route", {"pat": 0, "handler": 1}, "path"),
+        ("param", {"nam": 0}, "name"),
+        ("param", {}, "name"),
+        ("env", {"key": 0}, "name"),
+        ("error", {"cod": 2, "status": 1}, "code"),
+        ("error", {"code": 2}, "status"),
+    ],
+)
+def test_a_pattern_missing_an_argument_its_kind_needs_is_refused_and_names_it(
+    kind: str, args: dict[str, int], missing: str
+) -> None:
+    with pytest.raises(ValidationError, match=missing):
+        ExtractionPattern(kind=kind, call="^f$", args=args)  # type: ignore[arg-type]
+
+
 def test_repo_profile_defaults_to_no_test_commands() -> None:
     profile = RepoProfile(**PROFILE_FIELDS)
 

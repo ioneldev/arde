@@ -2,7 +2,7 @@
 
 import re
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import Any, NamedTuple
 
 from arde.adapters.language.go.goinspect_client import CallMatch, FieldReply
 from arde.domain.base import Frozen
@@ -23,8 +23,9 @@ _HTTP_VERBS = frozenset(
 _METHOD_THEN_PATH = re.compile(r"([A-Z]+)[ \t]+(.*)", re.DOTALL)
 _PLAIN_NAME = re.compile(r"[^\W\d]\w*(?:\.[^\W\d]\w*)*")
 _TAG_ENTRY = re.compile(r' *([^\s:"\x7f]+):"((?:[^"\\]|\\.)*)"')
-# Where the text of an argument is cut when it goes into a message.
+# Where the text of an argument is cut when it goes into a message, and into a dropped line.
 _SHOWN_LENGTH = 80
+_DROPPED_TEXT_LENGTH = 40
 
 
 class SourceReading(Frozen):
@@ -64,18 +65,23 @@ def build_inventory(reading: SourceReading) -> Inventory:
     )
     if not routes:
         raise NoRoutesError
+    params, params_dropped = _read_all(reading.matches, "param", _param)
+    error_codes, errors_dropped = _read_all(reading.matches, "error", _error_code)
+    env_vars, env_dropped = _read_all(reading.matches, "env", _env_var)
     return Inventory(
         routes=routes,
-        params=_sorted_unique(_params(reading.matches), key=lambda param: param.name),
-        error_codes=_sorted_unique(
-            _error_codes(reading.matches), key=lambda error: (error.code, error.status)
-        ),
-        response_fields=_sorted_unique(
-            _response_fields(reading.fields), key=lambda field: (field.struct, field.name)
-        ),
-        env_vars=_sorted_unique(_env_vars(reading.matches), key=str),
+        params=_sorted_unique(params, key=lambda param: param.name),
+        error_codes=_sorted_unique(error_codes, key=lambda error: (error.code, error.status)),
+        response_fields=_sorted_unique(_response_fields(reading.fields), key=_whole_model),
+        env_vars=_sorted_unique(env_vars, key=str),
         make_targets=tuple(sorted(set(reading.make_targets))),
+        dropped=_dropped_lines([*params_dropped, *errors_dropped, *env_dropped]),
     )
+
+
+# Every field takes part, so nothing that differs merges and ties never fall back on set order.
+def _whole_model(model: Frozen) -> tuple[object, ...]:
+    return tuple(model.model_dump().values())
 
 
 def _sorted_unique[T](items: Iterable[T], *, key: Callable[[T], Any]) -> tuple[T, ...]:
@@ -86,12 +92,8 @@ def _of_kind(matches: Iterable[CallMatch], kind: str) -> list[CallMatch]:
     return [match for match in matches if match.kind == kind]
 
 
-def _literal_argument(match: CallMatch, name: str) -> str | None:
-    return match.literals.get(name)
-
-
 def _route_from(match: CallMatch) -> Route:
-    pattern = _literal_argument(match, "path")
+    pattern = match.literals.get("path")
     if pattern is None:
         shown = match.args.get("path")
         problem = (
@@ -127,23 +129,62 @@ def _handler_name(match: CallMatch) -> str:
     return handler if _PLAIN_NAME.fullmatch(handler) else INLINE_HANDLER
 
 
-def _params(matches: Iterable[CallMatch]) -> list[Param]:
-    names = (_literal_argument(match, "name") for match in _of_kind(matches, "param"))
-    return [Param(name=name) for name in names if name is not None]
+class _Unreadable(Exception):
+    """A call that matched a pattern and gives nothing. The message says which argument failed."""
 
 
-def _env_vars(matches: Iterable[CallMatch]) -> list[str]:
-    names = (_literal_argument(match, "name") for match in _of_kind(matches, "env"))
-    return [name for name in names if name is not None]
+class _Dropped(NamedTuple):
+    file: str
+    line: int
+    why: str
+
+
+def _read_all[T](
+    matches: Iterable[CallMatch], kind: str, read: Callable[[CallMatch], T]
+) -> tuple[list[T], list[_Dropped]]:
+    items: list[T] = []
+    dropped: list[_Dropped] = []
+    for match in _of_kind(matches, kind):
+        try:
+            items.append(read(match))
+        except _Unreadable as problem:
+            dropped.append(_Dropped(match.file, match.line, str(problem)))
+    return items, dropped
+
+
+def _dropped_lines(dropped: list[_Dropped]) -> tuple[str, ...]:
+    return tuple(f"{one.file}:{one.line}: {one.why}" for one in sorted(set(dropped)))
+
+
+def _param(match: CallMatch) -> Param:
+    return Param(name=_literal(match, "name"))
+
+
+def _env_var(match: CallMatch) -> str:
+    return _literal(match, "name")
 
 
 # The status is kept as written: a constant, a number or a call all say something to a reader.
-def _error_codes(matches: Iterable[CallMatch]) -> list[ErrorCode]:
-    found = [
-        (_literal_argument(match, "code"), match.args.get("status"))
-        for match in _of_kind(matches, "error")
-    ]
-    return [ErrorCode(code=code, status=status) for code, status in found if code and status]
+def _error_code(match: CallMatch) -> ErrorCode:
+    status = match.args.get("status")
+    code = _literal(match, "code")
+    if status is None:
+        raise _Unreadable(f"{match.kind} argument `status` is missing")
+    return ErrorCode(code=code, status=status)
+
+
+def _literal(match: CallMatch, name: str) -> str:
+    value = match.literals.get(name)
+    if value:
+        return value
+    if value == "":
+        raise _Unreadable(f"{match.kind} argument `{name}` is an empty string")
+    shown = match.args.get(name)
+    if shown is None:
+        raise _Unreadable(f"{match.kind} argument `{name}` is missing")
+    raise _Unreadable(
+        f"{match.kind} argument `{name}` is `{shown[:_DROPPED_TEXT_LENGTH]}`, not a string literal"
+    )
 
 
 def _response_fields(fields: Iterable[FieldReply]) -> list[ResponseField]:
@@ -168,6 +209,7 @@ def _is_listed(field: FieldReply) -> bool:
 def _response_field(field: FieldReply) -> ResponseField:
     name, *options = (_json_tag(field.tag) or "").split(",")
     return ResponseField(
+        file=field.file,
         struct=field.struct,
         name=field.name,
         json_name=name or field.name,
