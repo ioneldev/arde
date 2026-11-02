@@ -10,8 +10,8 @@ This spec says what this phase delivers and how we know it's done. The reasoning
 |---|---|---|
 | 6 | `goinspect`: compare and declarations | Done |
 | 7 | `goinspect`: patterns and call graph | Done |
-| 8 | `GoAdapter` and the `shop` fixture | In review |
-| 9 | Service runner | Not started |
+| 8 | `GoAdapter` and the `shop` fixture | Done |
+| 9 | Service runner | In progress |
 | Review | Architecture, code, bug hunters, security | Not started |
 | Gate | Ionel reviews, understands and tests | Not started |
 
