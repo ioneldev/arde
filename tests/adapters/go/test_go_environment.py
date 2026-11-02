@@ -274,14 +274,26 @@ def test_the_probe_does_not_get_what_could_change_the_answer_or_run_a_program(
 ) -> None:
     clean_environment.setenv("GOFLAGS", "-toolexec=/tmp/run-me")
     clean_environment.setenv("GOPROXY", "http://elsewhere.invalid")
-    clean_environment.setenv("GOTOOLCHAIN", "go9.9")
     go = stand_in(clean_environment)
 
     read_go_environment()
 
     [asked] = go.asked
-    for name in ("GOFLAGS", "GOPROXY", "GOTOOLCHAIN"):
+    for name in ("GOFLAGS", "GOPROXY"):
         assert name not in asked.env
+
+
+def test_the_probe_runs_with_the_local_toolchain_whatever_is_exported(
+    clean_environment: pytest.MonkeyPatch,
+) -> None:
+    clean_environment.setenv("GOTOOLCHAIN", "go9.9")
+    go = stand_in(clean_environment)
+
+    environment = read_go_environment()
+
+    [asked] = go.asked
+    assert asked.env["GOTOOLCHAIN"] == "local"
+    assert environment["GOTOOLCHAIN"] == "go9.9", "a normal command still gets what is exported"
 
 
 @pytest.mark.parametrize(
@@ -459,3 +471,42 @@ def test_every_command_still_runs_with_the_go_env_file_switched_off(
     assert read_go_environment()["GOENV"] == "off"
     assert seen["GOFLAGS"] == ""
     assert "evil.invalid" not in seen["GOPROXY"]
+
+
+NAMED_TOOLCHAIN = "go1.28.0"
+
+
+@pytest.mark.integration
+def test_a_gotoolchain_in_the_file_cannot_start_a_program_found_on_path(
+    go_env_file: Path,
+    clean_environment: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ran = tmp_path / "the-program-ran"
+    program = tmp_path / "bin" / NAMED_TOOLCHAIN
+    program.parent.mkdir()
+    program.write_text(
+        f'#!/bin/sh\ntouch {ran}\necho \'{{"GOPRIVATE": "", "GONOPROXY": "", "GONOSUMDB": ""}}\'\n',
+        encoding="utf-8",
+    )
+    program.chmod(0o755)
+    clean_environment.setenv("PATH", f"{program.parent}{os.pathsep}{REAL_PATH}")
+    write_the_file(go_env_file, GOTOOLCHAIN=NAMED_TOOLCHAIN, GOPRIVATE="corp.example/*")
+    control = subprocess.run(
+        ["go", "env", "GOPRIVATE"],
+        env={
+            "HOME": os.environ["HOME"],
+            "PATH": os.environ["PATH"],
+            "GOENV": str(go_env_file),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert ran.exists(), f"the control must start the program: {control.stdout} {control.stderr}"
+    ran.unlink()
+
+    environment = read_go_environment()
+
+    assert not ran.exists(), "the program named by the file's GOTOOLCHAIN was run"
+    assert environment["GOPRIVATE"] == "corp.example/*"

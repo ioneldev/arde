@@ -25,6 +25,8 @@ from arde.domain.profile import RepoProfile
 from arde.domain.report import ExitCode
 
 SERVICE_BINARY_NAME = "service"
+# A repo of thousands of folders would overrun the length of one command line.
+FOLDERS_PER_LIST = 1000
 
 # Every name that "go test -list" prints. Its other lines start with ok, ? or FAIL.
 _LISTED_TEST = re.compile(r"(Test|Benchmark|Fuzz|Example)\w*")
@@ -50,7 +52,7 @@ def build_service(repo: Path, profile: RepoProfile) -> Path:
     _require_one_main_package(repo, profile.main_package)
     folder = Path(tempfile.mkdtemp(prefix="arde-service-"))
     try:
-        _build_into(folder / SERVICE_BINARY_NAME, repo, profile)
+        _build_into(repo, profile, binary=folder / SERVICE_BINARY_NAME)
     except BaseException:
         shutil.rmtree(folder, ignore_errors=True)
         raise
@@ -86,7 +88,7 @@ def _what_it_names(names: list[str]) -> str:
 
 # The package comes after "--" so that no text from the profile can be read as a flag, and
 # -buildvcs=false because the copy may carry a .git folder the build cannot read.
-def _build_into(binary: Path, repo: Path, profile: RepoProfile) -> None:
+def _build_into(repo: Path, profile: RepoProfile, *, binary: Path) -> None:
     arguments = ("build", "-buildvcs=false", "-o", str(binary), "--", profile.main_package)
     outcome = _go(repo, GoStep(arguments, GO_BUILD_TIMEOUT_S))
     if not outcome.succeeded:
@@ -149,8 +151,16 @@ def _require_whole(listing: ChildOutcome, what: str) -> None:
 
 def _ignored_files(repo: Path) -> tuple[str, ...]:
     folders = _folders_with_go_files(repo)
-    if not folders:
-        return ()
+    root = os.path.realpath(repo)
+    found: set[str] = set()
+    for start in range(0, len(folders), FOLDERS_PER_LIST):
+        chunk = folders[start : start + FOLDERS_PER_LIST]
+        for line in _list_ignored_files(repo, chunk).splitlines():
+            found.add(Path(os.path.relpath(os.path.realpath(line), root)).as_posix())
+    return tuple(sorted(found))
+
+
+def _list_ignored_files(repo: Path, folders: list[str]) -> str:
     arguments = ("list", "-e", "-f", _IGNORED_FILES_TEMPLATE, *folders)
     listing = _go(repo, GoStep(arguments, GO_LIST_TIMEOUT_S))
     _require_whole(listing, "the list of files the build leaves out")
@@ -159,9 +169,7 @@ def _ignored_files(repo: Path) -> tuple[str, ...]:
             f"Cannot list the files the build leaves out: {listing.output.strip()}",
             next_action="Run the same list command by hand in the repo to see why, then run again.",
         )
-    root = os.path.realpath(repo)
-    paths = (os.path.relpath(os.path.realpath(line), root) for line in listing.stdout.splitlines())
-    return tuple(sorted({Path(path).as_posix() for path in paths}))
+    return listing.stdout
 
 
 # Named one by one, because "./..." leaves out a package whose every file is behind a build tag,

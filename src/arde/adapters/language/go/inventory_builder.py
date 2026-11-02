@@ -74,9 +74,9 @@ def build_inventory(reading: SourceReading) -> Inventory:
     )
     if not routes:
         raise NoRoutesError
-    params, params_dropped = _read_all(reading.matches, "param", _param)
-    error_codes, errors_dropped = _read_all(reading.matches, "error", _error_code)
-    env_vars, env_dropped = _read_all(reading.matches, "env", _env_var)
+    params, params_dropped = _read_all(reading.matches, "param", read=_param)
+    error_codes, errors_dropped = _read_all(reading.matches, "error", read=_error_code)
+    env_vars, env_dropped = _read_all(reading.matches, "env", read=_env_var)
     return Inventory(
         routes=routes,
         params=_sorted_unique(params, key=lambda param: param.name),
@@ -151,7 +151,7 @@ class _Dropped(NamedTuple):
 
 
 def _read_all[T](
-    matches: Iterable[CallMatch], kind: str, read: Callable[[CallMatch], T]
+    matches: Iterable[CallMatch], kind: str, *, read: Callable[[CallMatch], T]
 ) -> tuple[list[T], list[_Dropped]]:
     items: list[T] = []
     dropped: list[_Dropped] = []

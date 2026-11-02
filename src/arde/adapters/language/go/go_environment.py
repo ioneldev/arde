@@ -37,11 +37,16 @@ TOOLCHAIN_VARIABLES = (
 # for them once and its answer is used as it stands: Go decides which value wins, and derives
 # GONOPROXY and GONOSUMDB from GOPRIVATE when neither is set. Without them a private repo fails
 # to build, or its module paths go to the public proxy and checksum database. The file's GOPROXY,
-# GOSUMDB and GOTOOLCHAIN are not taken, so a poisoned file cannot redirect downloads.
+# GOSUMDB and GOTOOLCHAIN are not taken, so a poisoned file cannot redirect downloads or switch
+# the toolchain of a command.
 USER_SETTINGS = ("GOPRIVATE", "GONOPROXY", "GONOSUMDB")
 
 # Only the probe gets these, to look where the user's own go command looks. No other child does.
 PROBE_ONLY_VARIABLES = ("XDG_CONFIG_HOME", "GOENV")
+
+# The probe never switches toolchain. A GOTOOLCHAIN in the file or a go.mod above the temporary
+# folder could otherwise start a program found on PATH, or download one.
+PROBE_FIXED_VARIABLES = {"GOTOOLCHAIN": "local"}
 
 # Every command is told to read no file: HOME is allowed, and the file can hold a GOFLAGS.
 FIXED_VARIABLES = {"GOENV": "off"}
@@ -80,10 +85,8 @@ def _user_settings() -> dict[str, str]:
 
 def _probe_environment() -> dict[str, str]:
     given = (*USER_SETTINGS, *PROBE_ONLY_VARIABLES)
-    return {
-        **child_environment(),
-        **{name: os.environ[name] for name in given if name in os.environ},
-    }
+    exported = {name: os.environ[name] for name in given if name in os.environ}
+    return {**child_environment(), **exported, **PROBE_FIXED_VARIABLES}
 
 
 def _the_three_settings(reply_text: str) -> dict[str, str]:

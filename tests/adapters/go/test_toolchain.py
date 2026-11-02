@@ -1,5 +1,6 @@
 """The checks and the build around the Go toolchain, with the toolchain played by a stand-in."""
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -19,7 +20,7 @@ LISTING = (
 class StandInGo:
     """Answers each go command the way the test says, and records what it was asked."""
 
-    def __init__(self, **answers: ChildOutcome) -> None:
+    def __init__(self, **answers: ChildOutcome | Callable[[tuple[str, ...]], ChildOutcome]) -> None:
         self.answers = answers
         self.asked: list[tuple[str, ...]] = []
         self.environments: list[dict[str, str]] = []
@@ -27,9 +28,10 @@ class StandInGo:
     def __call__(self, command: ChildCommand) -> ChildOutcome:
         self.asked.append(command.argv)
         self.environments.append(command.env)
-        return self.answers.get(
+        answer = self.answers.get(
             self._which(command.argv), ChildOutcome(exit_code=0, stdout="", stderr="")
         )
+        return answer(command.argv) if callable(answer) else answer
 
     @staticmethod
     def _which(argv: tuple[str, ...]) -> str:
@@ -207,3 +209,41 @@ def test_every_go_command_and_every_extra_command_runs_with_the_go_environment(
     assert len(go.asked) >= 8
     assert go.environments == [GO_ENVIRONMENT] * len(go.asked)
     assert ("make", "smoke") in go.asked
+
+
+def test_the_files_the_build_leaves_out_are_asked_for_in_chunks_of_a_thousand_folders(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    for number in range(2500):
+        folder = repo / f"p{number:04d}"
+        folder.mkdir()
+        (folder / "a.go").write_text("package p\n", encoding="utf-8")
+
+    def hidden_file_of_the_first_folder(argv: tuple[str, ...]) -> ChildOutcome:
+        return outcome(stdout=f"{repo.resolve()}/{argv[5][2:]}/hidden_test.go\n")
+
+    go = use(monkeypatch, StandInGo(ignored_files=hidden_file_of_the_first_folder))
+
+    result = run_checks(repo, shop_profile())
+
+    listings = [argv for argv in go.asked if argv[1:3] == ("list", "-e")]
+    assert [len(argv) - 5 for argv in listings] == [1000, 1000, 500]
+    assert result.ignored_files == (
+        "p0000/hidden_test.go",
+        "p1000/hidden_test.go",
+        "p2000/hidden_test.go",
+    )
+
+
+def test_a_failure_in_one_chunk_stops_the_run_with_the_toolchains_words(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    for number in range(1500):
+        folder = repo / f"p{number:04d}"
+        folder.mkdir()
+        (folder / "a.go").write_text("package p\n", encoding="utf-8")
+    failing = ChildOutcome(exit_code=1, stdout="", stderr="go: broken\n")
+    use(monkeypatch, StandInGo(ignored_files=failing))
+
+    with pytest.raises(GoCommandError, match="go: broken"):
+        run_checks(repo, shop_profile())

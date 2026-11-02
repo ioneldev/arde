@@ -204,8 +204,8 @@ def wait_until_gone(pid: int) -> bool:
     return not is_running(pid)
 
 
-def kill_leftover(folder: Path) -> None:
-    pid_file = folder / "grandchild.pid"
+def kill_leftover(folder: Path, name: str = "grandchild.pid") -> None:
+    pid_file = folder / name
     if pid_file.exists():
         with contextlib.suppress(ProcessLookupError):
             os.kill(int(pid_file.read_text()), signal.SIGKILL)
@@ -348,3 +348,26 @@ def test_no_temporary_file_is_left_behind(monkeypatch: pytest.MonkeyPatch, tmp_p
         run_child(python_command("import time; time.sleep(60)", cwd=tmp_path, timeout_s=0.3))
 
     assert list(scratch.iterdir()) == []
+
+
+def test_a_process_the_child_left_running_in_its_group_is_stopped_when_the_child_exits(
+    tmp_path: Path,
+) -> None:
+    code = (
+        "import subprocess, sys\n"
+        "left = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "open('left.pid', 'w').write(str(left.pid))\n"
+    )
+
+    started = time.monotonic()
+    try:
+        outcome = run_child(python_command(code, cwd=tmp_path))
+        waited = time.monotonic() - started
+        left = int((tmp_path / "left.pid").read_text())
+        gone = wait_until_gone(left)
+    finally:
+        kill_leftover(tmp_path, "left.pid")
+
+    assert outcome.succeeded
+    assert waited < 10
+    assert gone, "the extra command left a process behind, as a server would keep its port"

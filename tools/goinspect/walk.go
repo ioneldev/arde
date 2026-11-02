@@ -151,34 +151,75 @@ func requiresTheIgnoreTag(expression constraint.Expr) bool {
 	return false
 }
 
-// leadingBuildConstraints returns the //go:build line if the file has one, else its // +build
-// lines. Both must come before the package clause with nothing but blank lines and line comments
-// above them, and a // +build line counts only if a blank line follows it.
+// leadingBuildConstraints reads the top of a file the way go/build does. A //go:build line counts
+// anywhere before the first line of code, whatever block comments sit above it. A // +build line
+// counts only among the line comments and blank lines at the very top, before the first block
+// comment or code, and only if a blank line follows it. The //go:build line wins if both exist.
 func leadingBuildConstraints(content []byte) []constraint.Expr {
 	content = bytes.TrimPrefix(content, []byte("\ufeff"))
 	var goBuild constraint.Expr
 	var confirmed, pending []constraint.Expr
+	headerEnded, inBlockComment := false, false
 	for _, raw := range strings.Split(string(content), "\n") {
 		line := strings.TrimSpace(raw)
-		if line == "" {
+		if line == "" && !headerEnded {
 			confirmed, pending = append(confirmed, pending...), nil
 			continue
 		}
 		if !strings.HasPrefix(line, "//") {
-			break
+			headerEnded = true
 		}
-		if constraint.IsGoBuild(line) && goBuild == nil {
-			goBuild = parseConstraint(line)
-		} else if constraint.IsPlusBuild(line) {
-			if expression := parseConstraint(line); expression != nil {
-				pending = append(pending, expression)
-			}
+		if !inBlockComment {
+			goBuild, pending = readConstraintLine(line, goBuild, pending, headerEnded)
+		}
+		var reachedCode bool
+		inBlockComment, reachedCode = afterComments(line, inBlockComment)
+		if reachedCode {
+			break
 		}
 	}
 	if goBuild != nil {
 		return []constraint.Expr{goBuild}
 	}
 	return confirmed
+}
+
+func readConstraintLine(
+	line string, goBuild constraint.Expr, pending []constraint.Expr, headerEnded bool,
+) (constraint.Expr, []constraint.Expr) {
+	if constraint.IsGoBuild(line) && goBuild == nil {
+		return parseConstraint(line), pending
+	}
+	if !headerEnded && constraint.IsPlusBuild(line) {
+		if expression := parseConstraint(line); expression != nil {
+			pending = append(pending, expression)
+		}
+	}
+	return goBuild, pending
+}
+
+// afterComments skips the comments at the start of the line, and says whether a block comment is
+// still open at its end and whether code came first.
+func afterComments(line string, inBlockComment bool) (stillInBlock, reachedCode bool) {
+	for line != "" {
+		switch {
+		case inBlockComment:
+			end := strings.Index(line, "*/")
+			if end < 0 {
+				return true, false
+			}
+			inBlockComment = false
+			line = strings.TrimSpace(line[end+2:])
+		case strings.HasPrefix(line, "//"):
+			return false, false
+		case strings.HasPrefix(line, "/*"):
+			inBlockComment = true
+			line = strings.TrimSpace(line[2:])
+		default:
+			return false, true
+		}
+	}
+	return inBlockComment, false
 }
 
 func parseConstraint(line string) constraint.Expr {

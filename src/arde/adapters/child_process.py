@@ -68,7 +68,7 @@ class ChildTimeoutError(ArdeError):
 
 
 class ChildOutputTooLongError(ArdeError):
-    def __init__(self, command: ChildCommand, stream: str, size: int) -> None:
+    def __init__(self, command: ChildCommand, *, stream: str, size: int) -> None:
         super().__init__(
             f"`{' '.join(command.argv)}` wrote {size} bytes to {stream}, past the limit of "
             f"{command.output.max_bytes} bytes.",
@@ -94,10 +94,12 @@ class ChildStartError(ArdeError):
 
 def run_child(command: ChildCommand) -> ChildOutcome:
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
-        process = _start(command, stdout_file, stderr_file)
+        process = _start(command, stdout_file=stdout_file, stderr_file=stderr_file)
         _wait_for_exit(process, command)
-        stdout, stdout_was_cut = _read_back(stdout_file, "stdout", command)
-        stderr, stderr_was_cut = _read_back(stderr_file, "stderr", command)
+        # What the child started in its group is not left running after it, such as a server.
+        _kill_group(process)
+        stdout, stdout_was_cut = _read_back(stdout_file, command, stream="stdout")
+        stderr, stderr_was_cut = _read_back(stderr_file, command, stream="stderr")
     return ChildOutcome(
         exit_code=process.returncode,
         stdout=stdout,
@@ -108,7 +110,7 @@ def run_child(command: ChildCommand) -> ChildOutcome:
 
 # Its own session, so a timeout can stop what the child started as well.
 def _start(
-    command: ChildCommand, stdout_file: IO[bytes], stderr_file: IO[bytes]
+    command: ChildCommand, *, stdout_file: IO[bytes], stderr_file: IO[bytes]
 ) -> subprocess.Popen[bytes]:
     try:
         return subprocess.Popen(
@@ -145,22 +147,26 @@ def _wait_for_exit(process: subprocess.Popen[bytes], command: ChildCommand) -> N
 # A grandchild that started its own session is out of reach of the group, and the wait is bounded
 # so that nothing it does can hold the caller.
 def _stop(process: subprocess.Popen[bytes]) -> None:
-    with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(process.pid, signal.SIGKILL)
+    _kill_group(process)
     with contextlib.suppress(ProcessLookupError):
         process.kill()
     with contextlib.suppress(subprocess.TimeoutExpired):
         process.wait(timeout=WAIT_AFTER_KILL_S)
 
 
-def _read_back(file: IO[bytes], stream: str, command: ChildCommand) -> tuple[str, bool]:
+def _kill_group(process: subprocess.Popen[bytes]) -> None:
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(process.pid, signal.SIGKILL)
+
+
+def _read_back(file: IO[bytes], command: ChildCommand, *, stream: str) -> tuple[str, bool]:
     limit = command.output
     size = file.seek(0, os.SEEK_END)
     if size <= limit.max_bytes:
         file.seek(0)
         return file.read().decode("utf-8", errors="replace"), False
     if limit.when_longer == "fail":
-        raise ChildOutputTooLongError(command, stream, size)
+        raise ChildOutputTooLongError(command, stream=stream, size=size)
     file.seek(size - limit.max_bytes)
     note = (
         f"[ARDE kept only the last {limit.max_bytes} bytes of this output; {size} were written]\n"
