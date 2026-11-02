@@ -1,35 +1,27 @@
-"""Comments that are code. The AST comparison ignores every comment, so these are checked here.
+"""The comment-only rule, as an allow-list.
 
-Doubt answers "this may change behaviour": a wrong answer of that kind costs a fraction of a cent
-in a model call, and the opposite wrong answer ignores a real change.
+Take the ordinary comment lines and the tags ARDE adds out of both versions, and what is left must
+match. A list of dangerous comment forms can never be complete (two rounds of patches left 26
+wrong answers), so every other difference counts as real: a block comment, a trailing comment, a
+blank line, a directive. A wrong "real" costs a fraction of a cent in a model call, and a wrong
+"comment-only" ignores a change.
 """
 
 import re
 from pathlib import Path
 
-# Wider than the compiler's own list, from the directive experiment. It is searched for, not
-# matched from the start of the line, so a trailing //go:noinline and a /*line*/ in the middle of
-# a line count too. The forms: //go:build and the other //word:word, //line, //export, // +build,
-# /*line, // #cgo, and the // Output: lines that decide whether an example runs.
-_DIRECTIVE = re.compile(
-    r"//[a-z0-9]+:[a-z0-9]|//(line|export)\s|//\s*\+build|/\*line\s|//\s*#cgo"
-    r"|//\s*(unordered\s+)?output:",
-    re.IGNORECASE,
+# A whole line: optional indentation, //, then whitespace or the end of the line. "//word" with no
+# space is how every directive is written, so it is not ordinary.
+_LINE_COMMENT = re.compile(r"[ \t]*//(?:[ \t].*)?")
+# The directive forms that do have a space, which the compiler or go test read all the same.
+_SPACED_DIRECTIVE = re.compile(
+    r"[ \t]*//\s*(?:\+build|#cgo|(?:unordered\s+)?output:)", re.IGNORECASE
 )
-# go/build reads a // +build block only when a blank line follows it.
-_PLUS_BUILD = re.compile(r"//\s*\+build")
 
-# go test reads the expected output of an example from comments inside its body, and a note
-# beside them can change what it reads. Any comment edit in such a file is treated as real.
-_EXAMPLE_FUNCTION = re.compile(r"^func\s+Example", re.MULTILINE)
-
-# The comment before this import is C source that cgo compiles. Any "C" or `C` in the file is
-# enough to doubt every comment in it: the import can share a line with other code or comments.
-_C_IMPORT_TEXT = re.compile(r'"C"|`C`')
-
-
-def is_directive(line: str) -> bool:
-    return _DIRECTIVE.search(line) is not None
+# The tags ARDE adds. A field that had no tag is left with empty backticks, and gofmt realigns the
+# columns of its neighbours, which the whitespace collapse takes care of.
+_ALLOWED_TAG = re.compile(r'oneOf:"[^"]*"|binding:"optional"')
+_PADDED_BACKTICKS = re.compile(r"`\s*(.*?)\s*`")
 
 
 def read_source(path: Path) -> str:
@@ -37,36 +29,45 @@ def read_source(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig", errors="replace")
 
 
-def holds_example(source: str) -> bool:
-    return _EXAMPLE_FUNCTION.search(source) is not None
-
-
-def may_import_c(source: str) -> bool:
-    return _C_IMPORT_TEXT.search(source) is not None
-
-
-def comment_edit_may_change_behaviour(old_source: str, new_source: str) -> bool:
-    """True when a difference that the AST comparison ignores could still matter."""
+def is_ordinary_comment(line: str) -> bool:
     return (
-        any(holds_example(source) or may_import_c(source) for source in (old_source, new_source))
-        or anchored_directives(old_source) != anchored_directives(new_source)
-        # A new /* can swallow code and directives up to the next */, wherever it closes.
-        or old_source.count("/*") != new_source.count("/*")
+        _LINE_COMMENT.fullmatch(line) is not None
+        and _SPACED_DIRECTIVE.match(line) is None
+        and "/*" not in line
+        and "*/" not in line
     )
 
 
-# A directive means something only for the code it sits above: the same //go:embed line moved from
-# one variable to the next embeds another file. So the line is kept with the code it applies to.
-def anchored_directives(source: str) -> list[tuple[str, str]]:
-    lines = [line.strip() for line in source.replace("\r\n", "\n").split("\n")]
-    return [
-        (line, _anchor_of(line, lines[number + 1 :]))
-        for number, line in enumerate(lines)
-        if is_directive(line)
-    ]
+def only_ordinary_comments_differ(old_source: str, new_source: str, *, is_test_file: bool) -> bool:
+    """True when nothing differs except ordinary comment lines and ARDE's tags."""
+    if any(
+        _may_change_what_a_comment_means(source, is_test_file)
+        for source in (old_source, new_source)
+    ):
+        return False
+    return _without_ordinary_comments(old_source) == _without_ordinary_comments(new_source)
 
 
-def _anchor_of(directive: str, lines_below: list[str]) -> str:
-    if _PLUS_BUILD.search(directive):
-        return lines_below[0] if lines_below else ""
-    return next((line for line in lines_below if line and not line.startswith("//")), "")
+# Any comment edit counts as real in a file that may import C, whose preamble is C source, and in
+# a test file with an example, whose expected output is read from comments. Plain substrings,
+# because a pattern for either would be one more list that can miss a form.
+def _may_change_what_a_comment_means(source: str, is_test_file: bool) -> bool:
+    return '"C"' in source or "`C`" in source or (is_test_file and "Example" in source)
+
+
+def _without_ordinary_comments(source: str) -> list[str]:
+    lines = source.replace("\r\n", "\n").split("\n")
+    return [_kept(line) for line in lines if not is_ordinary_comment(line)]
+
+
+def _kept(line: str) -> str:
+    if line.lstrip().startswith(("//", "/*")):
+        return line
+    return _collapsed(_ALLOWED_TAG.sub("", line))
+
+
+def _collapsed(code_line: str) -> str:
+    without_empty_tags = _PADDED_BACKTICKS.sub(
+        lambda tag: f"`{tag[1]}`" if tag[1] else "", code_line
+    )
+    return " ".join(without_empty_tags.split())

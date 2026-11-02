@@ -1,20 +1,26 @@
-"""Comments the compiler or a tool reads. An edit to one is a change, however it looks."""
+"""The comment-only rule: take out ordinary comment lines and the tags ARDE adds, and what is left
+must match. A list of dangerous forms can never be complete, so everything else counts as real."""
 
 from pathlib import Path
 
 import pytest
-from doubtful_edits import BOM, EVERY_DOUBTFUL_EDIT, ORDINARY_EDITS, DoubtfulEdit
+from doubtful_edits import (
+    BOM,
+    DELIBERATELY_REAL_EDITS,
+    EVERY_DOUBTFUL_EDIT,
+    ORDINARY_EDITS,
+    RAW_STRING_EDIT,
+    TAG_EDITS,
+    Edit,
+)
 
 from arde.adapters.language.go.directives import (
-    anchored_directives,
-    comment_edit_may_change_behaviour,
-    holds_example,
-    is_directive,
-    may_import_c,
+    is_ordinary_comment,
+    only_ordinary_comments_differ,
     read_source,
 )
 
-EVERY_FORM_THE_DESIGN_NAMES = (
+EVERY_FORM_THE_PLAN_NAMES = (
     "//go:build ignore",
     "//go:debug x=1",
     "//go:embed a.txt",
@@ -29,218 +35,216 @@ EVERY_FORM_THE_DESIGN_NAMES = (
 )
 
 
-@pytest.mark.parametrize("line", EVERY_FORM_THE_DESIGN_NAMES)
+@pytest.mark.parametrize("line", EVERY_FORM_THE_PLAN_NAMES)
 def test_directive_pattern_catches_all_spec_forms(line: str) -> None:
-    assert is_directive(line)
+    assert not is_ordinary_comment(line)
 
 
-@pytest.mark.parametrize("line", [f"\t{line}" for line in EVERY_FORM_THE_DESIGN_NAMES])
-def test_a_directive_may_be_indented(line: str) -> None:
-    assert is_directive(line)
+@pytest.mark.parametrize("line", [f"\t{line}" for line in EVERY_FORM_THE_PLAN_NAMES])
+def test_a_directive_may_be_indented_and_is_still_no_ordinary_comment(line: str) -> None:
+    assert not is_ordinary_comment(line)
 
 
-@pytest.mark.parametrize("line", ["//GO:BUILD ignore", "// OUTPUT: 1", "//EXPORT F"])
-def test_a_directive_is_matched_whatever_its_case(line: str) -> None:
-    assert is_directive(line)
+@pytest.mark.parametrize(
+    "line",
+    [
+        "//GO:BUILD ignore",
+        "//   +build x",
+        "//\t+build x",
+        "//+build x",
+        "// +BUILD x",
+        "//  #CGO LDFLAGS: -lm",
+        "//\t#cgo LDFLAGS: -lm",
+        "// OUTPUT: 1",
+        "//   output: 1",
+        "//  Unordered   Output: 1",
+        "// UNORDERED OUTPUT: 1",
+        "//\tunordered\toutput: 1",
+    ],
+)
+def test_a_directive_form_is_caught_whatever_its_spacing_and_case(line: str) -> None:
+    assert not is_ordinary_comment(line)
 
 
 @pytest.mark.parametrize(
     "line",
     [
         "// ordinary comment",
+        "//",
+        "// ",
+        "//\tordinary comment",
+        "\t// indented ordinary comment",
+        "    // spaces before the comment",
         "// TODO: fix this",
         "//  see https://example.com/x",
         "// Outputs are written once",
-        "x := 1 // go:build",
-        "func main() {",
-        "",
+        "// @Summary Show one item",
+        '// @Param qty query int false "Units to price" minimum(1) maximum(10) default(1)',
+        "// go:build looks like a directive and is not one",
+        "// F returns //go:noinline text in a sentence",
     ],
 )
-def test_an_ordinary_line_is_not_a_directive(line: str) -> None:
-    assert not is_directive(line)
+def test_an_ordinary_comment_is_a_whole_line_that_starts_with_two_slashes_and_a_space(
+    line: str,
+) -> None:
+    assert is_ordinary_comment(line)
 
 
 @pytest.mark.parametrize(
     "line",
     [
-        "var X = 1 //go:noinline",
-        "func /*line a.go:1*/ f() {}",
-        "x := 1 // +build linux",
-        "x := 1 // #cgo LDFLAGS: -lm",
+        "//word",
+        "//TODO",
+        "/* a block comment */",
+        "/*",
+        "*/",
+        " * a line inside a block comment",
+        "// a note that opens a /* block",
+        "// a note that closes a block */",
+        "// /*",
+        "// */",
+        "x := 1 // trailing",
+        "x := 1",
+        "",
+        "   ",
+        "func main() {",
+        "}",
     ],
 )
-def test_a_directive_form_in_the_middle_or_at_the_end_of_a_line_is_a_directive(line: str) -> None:
-    assert is_directive(line)
+def test_a_line_that_is_not_a_whole_ordinary_comment_is_not_taken_out(line: str) -> None:
+    assert not is_ordinary_comment(line)
 
 
-def test_a_directive_is_paired_with_the_code_it_applies_to() -> None:
-    source = "//go:build linux\n\npackage main\n\n//go:noinline\nfunc f() {}\n"
-
-    assert anchored_directives(source) == [
-        ("//go:build linux", "package main"),
-        ("//go:noinline", "func f() {}"),
-    ]
+def differ(old: str, new: str, *, is_test_file: bool = False) -> bool:
+    return only_ordinary_comments_differ(old, new, is_test_file=is_test_file)
 
 
-def test_comments_and_blank_lines_between_a_directive_and_its_code_are_skipped() -> None:
-    source = "//go:noinline\n// a doc line\n\n// another\nfunc f() {}\n"
+def test_a_file_compared_with_itself_differs_in_nothing() -> None:
+    source = "package p\n\n// a\nfunc F() {}\n"
 
-    assert anchored_directives(source) == [("//go:noinline", "func f() {}")]
-
-
-def test_a_directive_at_the_end_of_a_file_applies_to_nothing() -> None:
-    assert anchored_directives("package p\n//go:noinline\n") == [("//go:noinline", "")]
+    assert differ(source, source)
 
 
-def test_the_line_ending_and_the_indentation_do_not_matter() -> None:
-    crlf = "//go:build a\r\npackage p\r\n"
-    indented = "\t//go:build a\n  package p\n"
-
-    assert anchored_directives(crlf) == anchored_directives(indented)
-
-
-def test_an_ordinary_comment_added_next_to_a_directive_changes_nothing() -> None:
-    before = "//go:embed a.txt\nvar data string\n"
-    after = "// data holds the file.\n//go:embed a.txt\n// It is read once.\nvar data string\n"
-
-    assert anchored_directives(before) == anchored_directives(after)
-
-
-def test_a_trailing_directive_is_listed_with_its_line() -> None:
-    assert anchored_directives("var X = 1 //go:noinline\nvar Y = 2\n") == [
-        ("var X = 1 //go:noinline", "var Y = 2")
-    ]
-
-
-def test_a_plus_build_line_is_paired_with_the_raw_line_after_it() -> None:
-    with_blank_line = "// +build ignore\n\npackage p\n"
-    without = "// +build ignore\npackage p\n"
-
-    assert anchored_directives(with_blank_line) == [("// +build ignore", "")]
-    assert anchored_directives(with_blank_line) != anchored_directives(without)
-
-
-def test_a_go_build_line_is_paired_with_the_next_code_line_as_go_ignores_the_blank_line() -> None:
-    with_blank_line = "//go:build ignore\n\npackage p\n"
-    without = "//go:build ignore\npackage p\n"
-
-    assert anchored_directives(with_blank_line) == anchored_directives(without)
-
-
-def test_directives_that_swap_places_between_identical_code_lines_are_a_different_list() -> None:
-    before = "// Output: a\n}\n// Output: b\n}\n"
-    after = "// Output: b\n}\n// Output: a\n}\n"
-
-    assert anchored_directives(before) != anchored_directives(after)
-    assert sorted(anchored_directives(before)) == sorted(anchored_directives(after))
-
-
-def test_a_changed_directive_is_a_different_list() -> None:
-    assert anchored_directives("//go:embed a.txt\nvar d string\n") != anchored_directives(
-        "//go:embed b.txt\nvar d string\n"
-    )
-
-
-def test_a_directive_moved_to_other_code_is_a_different_list() -> None:
-    before = "//go:embed a.txt\nvar first string\nvar second string\n"
-    after = "var first string\n//go:embed a.txt\nvar second string\n"
-
-    assert anchored_directives(before) != anchored_directives(after)
-
-
-def test_two_directives_that_swap_places_are_a_different_list() -> None:
-    before = "//go:embed a.txt\nvar a string\n//go:embed b.txt\nvar b string\n"
-    after = "//go:embed b.txt\nvar a string\n//go:embed a.txt\nvar b string\n"
-
-    assert anchored_directives(before) != anchored_directives(after)
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        'import "C"',
-        'import "C" // the preamble is above',
-        'import (\n\t"fmt"\n\t"C"\n)',
-        'import C "C"',
-        "import `C`",
-        '\timport "C"',
-        'import "C"; import "fmt"',
-        'import "C" /* a note */',
-        'import /* a note */ "C"',
-        'import ("fmt"; "C")',
-        'name := "C"',
-        '// import "C" is described here',
-    ],
-)
-def test_text_that_may_import_c_is_taken_for_a_cgo_file(source: str) -> None:
-    assert may_import_c(f"package p\n\n{source}\n")
-
-
-@pytest.mark.parametrize("source", ['import "fmt"', 'import "Cx"', 'import "pkg/C"', ""])
-def test_a_file_with_no_c_import_text_is_not_a_cgo_file(source: str) -> None:
-    assert not may_import_c(f"package p\n\n{source}\n")
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        "func ExampleHi() {",
-        "func Example() {",
-        "func ExampleServer_start() {",
-        "func  ExampleHi() {",
-        "func Examples() {",
-    ],
-)
-def test_a_file_with_an_example_function_holds_an_example(source: str) -> None:
-    assert holds_example(f"package p\n\n{source}\n}}\n")
-
-
-@pytest.mark.parametrize(
-    "source",
-    [
-        "func Run() {",
-        "func (s *S) ExampleHi() {",
-        "// func ExampleHi() {",
-        "\tfunc ExampleHi() {",
-        'var s = "func ExampleHi"',
-    ],
-)
-def test_a_file_with_no_example_function_holds_no_example(source: str) -> None:
-    assert not holds_example(f"package p\n\n{source}\n")
-
-
-def written_as_files(tmp_path: Path, edit: DoubtfulEdit) -> tuple[str, str]:
-    old, new = tmp_path / "old.go", tmp_path / "new.go"
+def written_as_files(tmp_path: Path, edit: Edit) -> tuple[str, str, bool]:
+    old, new = tmp_path / "old", tmp_path / "new"
     old.write_text(edit.old, encoding="utf-8")
     new.write_text(edit.new, encoding="utf-8")
-    return read_source(old), read_source(new)
+    return read_source(old), read_source(new), edit.file_name.endswith("_test.go")
 
 
 @pytest.mark.parametrize("doubtful", EVERY_DOUBTFUL_EDIT, ids=lambda edit: edit.name)
-def test_doubt_about_an_edit_is_answered_as_a_change(
-    tmp_path: Path, doubtful: DoubtfulEdit
+def test_every_edit_that_changed_behaviour_is_answered_as_a_real_change(
+    tmp_path: Path, doubtful: Edit
 ) -> None:
-    assert comment_edit_may_change_behaviour(*written_as_files(tmp_path, doubtful))
+    old, new, is_test_file = written_as_files(tmp_path, doubtful)
+
+    assert not differ(old, new, is_test_file=is_test_file)
 
 
 @pytest.mark.parametrize("ordinary", ORDINARY_EDITS, ids=lambda edit: edit.name)
-def test_an_ordinary_comment_edit_raises_no_doubt(tmp_path: Path, ordinary: DoubtfulEdit) -> None:
-    assert not comment_edit_may_change_behaviour(*written_as_files(tmp_path, ordinary))
+def test_an_edit_of_ordinary_comment_lines_is_comment_only(tmp_path: Path, ordinary: Edit) -> None:
+    old, new, is_test_file = written_as_files(tmp_path, ordinary)
+
+    assert differ(old, new, is_test_file=is_test_file)
 
 
-def test_a_new_block_comment_raises_doubt_because_it_may_swallow_code() -> None:
-    assert comment_edit_may_change_behaviour("// a\nfunc f() {}\n", "/* a */\nfunc f() {}\n")
+@pytest.mark.parametrize("tags", TAG_EDITS, ids=lambda edit: edit.name)
+def test_the_tags_ARDE_adds_are_taken_out_and_the_realigned_columns_do_not_count(
+    tmp_path: Path, tags: Edit
+) -> None:
+    old, new, is_test_file = written_as_files(tmp_path, tags)
+
+    assert differ(old, new, is_test_file=is_test_file)
 
 
-def test_a_block_comment_that_is_only_reworded_raises_no_doubt() -> None:
-    assert not comment_edit_may_change_behaviour("/* a */\nvar x = 1\n", "/* b */\nvar x = 1\n")
+@pytest.mark.parametrize("real", DELIBERATELY_REAL_EDITS, ids=lambda edit: edit.name)
+def test_these_are_real_on_purpose(tmp_path: Path, real: Edit) -> None:
+    old, new, is_test_file = written_as_files(tmp_path, real)
+
+    assert not differ(old, new, is_test_file=is_test_file)
+
+
+def test_a_line_in_a_raw_string_looks_ordinary_so_the_syntax_tree_must_catch_it() -> None:
+    assert differ(RAW_STRING_EDIT.old, RAW_STRING_EDIT.new)
+
+
+def test_a_code_line_is_compared_after_its_whitespace_is_collapsed() -> None:
+    assert differ("package p\n\nvar  X   =  1\n", "package p\n\nvar X = 1\n")
+
+
+def test_an_ordinary_comment_line_removed_leaves_the_rest_in_order() -> None:
+    old = "package p\n\n// a\nvar X = 1\n// b\nvar Y = 2\n"
+    new = "package p\n\nvar X = 1\nvar Y = 2\n"
+
+    assert differ(old, new)
+    assert not differ(old, "package p\n\nvar Y = 2\nvar X = 1\n")
+
+
+def test_lines_a_comment_leaves_out_are_kept_in_order_with_their_blank_lines() -> None:
+    old = "package p\n\n// a\n\nvar X = 1\n"
+
+    assert differ(old, "package p\n\n\nvar X = 1\n")
+    assert not differ(old, "package p\n\nvar X = 1\n")
+
+
+@pytest.mark.parametrize(
+    "c_text", ['import "C"', "import `C`", 'x := "C"', '// import "C" in a note']
+)
+def test_any_comment_edit_in_a_file_with_c_text_is_real(c_text: str) -> None:
+    old = f"package p\n\n{c_text}\n\n// a\nfunc F() {{}}\n"
+    new = f"package p\n\n{c_text}\n\n// b\nfunc F() {{}}\n"
+
+    assert not differ(old, new)
+
+
+def test_c_text_in_either_version_is_enough() -> None:
+    plain = "package p\n\n// a\nfunc F() {}\n"
+    with_c = 'package p\n\nimport "C"\n\n// b\nfunc F() {}\n'
+
+    assert not differ(plain, with_c)
+    assert not differ(with_c, plain)
+
+
+def test_the_word_example_matters_only_in_a_test_file() -> None:
+    old = "package p\n\n// ExampleHi is shown.\nfunc ExampleHi() {}\n"
+    new = "package p\n\n// ExampleHi is described.\nfunc ExampleHi() {}\n"
+
+    assert differ(old, new, is_test_file=False)
+    assert not differ(old, new, is_test_file=True)
+
+
+@pytest.mark.parametrize("word", ["Example", "func ExampleHi", "ExampleOfTheBoss", "an Example"])
+def test_the_word_is_a_plain_substring_anywhere_in_a_test_file(word: str) -> None:
+    old = f"package p\n\n// {word}\nvar X = 1\n"
+    new = f"package p\n\n// {word} again\nvar X = 1\n"
+
+    assert not differ(old, new, is_test_file=True)
+
+
+def test_a_test_file_without_the_word_example_is_judged_like_any_other() -> None:
+    old = "package p\n\n// a\nvar X = 1\n"
+    new = "package p\n\n// b\nvar X = 1\n"
+
+    assert differ(old, new, is_test_file=True)
+
+
+def test_line_endings_are_normalised_even_for_a_line_that_is_kept_raw() -> None:
+    crlf = "package p\r\n\r\n//go:noinline\r\nfunc F() {}\r\n"
+
+    assert differ(crlf, "package p\n\n//go:noinline\nfunc F() {}\n")
+
+
+def test_the_line_ending_does_not_matter() -> None:
+    crlf = "package p\r\n\r\n// a\r\nvar X = 1\r\n"
+
+    assert differ(crlf, "package p\n\nvar X = 1\n")
 
 
 def test_a_byte_order_mark_does_not_hide_the_first_line(tmp_path: Path) -> None:
     path = tmp_path / "x.go"
     path.write_text(BOM + "//go:build ignore\n\npackage p\n", encoding="utf-8")
 
-    assert anchored_directives(read_source(path)) == [("//go:build ignore", "package p")]
+    assert read_source(path).startswith("//go:build ignore")
 
 
 def test_a_file_that_is_not_utf8_is_still_read(tmp_path: Path) -> None:

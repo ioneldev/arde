@@ -2,7 +2,7 @@
 
 Terms as ARDE uses them.
 
-**Directive**: A comment that a compiler or a tool reads, such as `//go:build`, `//go:embed`, a cgo preamble or an example's `// Output:` line. Changing one can change behaviour, so a change that leaves every directive as it was, with the code each applies to, is the only kind that counts as comment-only.
+**Directive**: A comment that a compiler or a tool reads, such as `//go:build`, `//go:embed`, a cgo preamble or an example's `// Output:` line. Changing one can change behaviour, so the comment-only rule never takes one out of the comparison: it takes out only ordinary comment lines, a whole line that starts `// ` and is none of these, and the tags ARDE adds. A line like `//go:build` has no space after the slashes, which is how every directive is written.
 
 **Fact**: One checked statement about the target service, with an id, evidence (a code quote or a citation of a recorded request and response) and links to the declarations, routes or files it depends on. Facts are what the docs agent writes from.
 
