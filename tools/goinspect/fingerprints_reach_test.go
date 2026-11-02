@@ -205,12 +205,61 @@ func TestFingerprintKeepsARootThatReachesAFunctionDeclaredWithoutABody(t *testin
 	}
 }
 
-// Starting a generic root from its instances must not pull in instances of anything else.
-func TestFingerprintStaysTheSameWhenAnUnrelatedFunctionInstantiatesAGeneric(t *testing.T) {
-	source := "package shop\n\ntype product struct{}\n\nfunc (product) Validate() string { return \"ok\" }\n\ntype validator interface{ Validate() string }\n\n" +
-		"func detail[T validator](x T) string { return x.Validate() }\n\nfunc Run() string { return detail(product{}) }\n\n" +
-		"func Pick[T any](x T) T { return x }\n\nfunc other() int { return Pick[int](1) }\n"
+const genericTypes = "package shop\n\ntype validator interface{ Validate() string }\n\n" +
+	"type product struct{}\n\nfunc (product) Validate() string { return \"ok\" }\n\n" +
+	"type other struct{}\n\nfunc (other) Validate() string { return \"other\" }\n\n" +
+	"type extra struct{}\n\nfunc (extra) Validate() string { return \"extra\" }\n\n"
 
-	assertEditKeepsTheFingerprint(t, "a new instance of an unrelated generic", source,
-		"return Pick[int](1)", "return Pick[int](1) + len(Pick[string](\"a\"))")
+// Starting a generic root from its instances must not pull in the instances of anything else. An
+// instance enters a hash only through its callees, so these edits add an instance that calls a
+// method no route reaches: a walk that took in more instances than the root's own would move.
+func TestFingerprintStaysTheSameWhenAnUnrelatedInstanceAppears(t *testing.T) {
+	source := genericTypes +
+		"func check[T validator](x T) string { return x.Validate() }\n\n" +
+		"func detail[T validator](x T) string { return check(x) }\n\n" +
+		"func Run() string { return detail(product{}) }\n\n" +
+		"func lonely[T validator](x T) string { return x.Validate() }\n\n" +
+		"func unrelated() string { return lonely(other{}) + check(other{}) }\n"
+	cases := map[string]sourceEdit{
+		"a generic no route reaches gets an instance with a type of its own": {
+			source: source, old: "lonely(other{})", new: "lonely(other{}) + lonely(extra{})",
+		},
+		"a generic the root reaches gets an instance elsewhere, with a type of its own": {
+			source: source, old: "check(other{})", new: "check(other{}) + check(extra{})",
+		},
+	}
+
+	for name, test := range cases {
+		assertEditKeepsTheFingerprint(t, name, test.source, test.old, test.new)
+	}
+}
+
+// A generic root is walked once per instance. The instances come out of a map, so a walk that
+// took only the first would miss the second type's method on some runs and not on others. Every
+// run must agree, and the edit must show.
+func TestFingerprintOfAGenericRootSeesEveryInstanceWhateverTheOrder(t *testing.T) {
+	const runs = 8
+	source := genericTypes +
+		"func detail[T validator](x T) string { return x.Validate() }\n\n" +
+		"func Run() string { return detail(product{}) + detail(other{}) }\n"
+	edited := editedSource(t, "the second type's method", source, "return \"other\"", "return \"changed\"")
+
+	unedited := distinctFingerprints(t, source, runs)
+	afterEdit := distinctFingerprints(t, edited, runs)
+
+	if len(unedited) != 1 || len(afterEdit) != 1 {
+		t.Fatalf("%d runs of each source gave %d and %d distinct fingerprints, and each must give 1", runs, len(unedited), len(afterEdit))
+	}
+	if reflect.DeepEqual(unedited, afterEdit) {
+		t.Fatal("editing the method of the second type left the fingerprint unchanged")
+	}
+}
+
+func distinctFingerprints(t *testing.T, source string, runs int) map[string]bool {
+	t.Helper()
+	distinct := map[string]bool{}
+	for range runs {
+		distinct[fingerprintOfSource(t, source)] = true
+	}
+	return distinct
 }

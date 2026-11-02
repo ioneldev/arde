@@ -28,6 +28,7 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 - **Code the module's `./...` does not load has no body to hash.** That is any package whose path starts with the module path but that `./...` does not load: a nested module, a `testdata/` or `_`-prefixed directory that something imports, a module that a `replace` points at, a plain dependency under the same path prefix, and a `go.work` member. A route that reaches one gets no fingerprint and is listed as unresolved, so it counts as changed on every run.
 - **A package const used only as an array length inside a type declared in a function is not in that function's fingerprint.** SSA prints the type by name, and the syntax holds only the const's name. `declarations` still reports the const.
 - **Adding `oneOf` or `binding:"optional"` to an anonymous struct moves a fingerprint**, because the SSA listing prints the type with its tags. This only over-reports, and ARDE writes those tags on named structs.
+- **A new instantiation of a generic handler moves that handler's fingerprint.** The walk starts from every instance of a generic root, so a new type argument adds code to it. This only over-reports.
 - **Any edit to a cgo file can move a route that calls C**, even a comment, because cgo names its symbols from a hash of the file. This only over-reports.
 - **Patterns match the callee as text.** An unanchored regex can match text inside a chained call, so anchor them.
 - **Hand-edited `@` lines are overwritten** from the wiki on the next run.
