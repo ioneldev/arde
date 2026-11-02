@@ -59,6 +59,36 @@ def test_a_variable_that_is_not_set_is_not_invented(
     assert child_environment() == {}
 
 
+@pytest.mark.parametrize(
+    ("path", "kept"),
+    [
+        ("/usr/local/bin:/usr/bin", "/usr/local/bin:/usr/bin"),
+        (".:/usr/bin", "/usr/bin"),
+        ("/usr/bin:.", "/usr/bin"),
+        ("/usr/bin::/bin", "/usr/bin:/bin"),
+        (":/usr/bin", "/usr/bin"),
+        ("/usr/bin:", "/usr/bin"),
+        ("bin:/usr/bin:./tools:../up", "/usr/bin"),
+    ],
+)
+def test_a_relative_path_entry_is_removed_because_a_child_starts_in_the_repo(
+    clean_environment: pytest.MonkeyPatch, path: str, kept: str
+) -> None:
+    clean_environment.setenv("PATH", path)
+
+    assert child_environment()["PATH"] == kept
+
+
+# An empty PATH reads as the current folder, so it would keep the very thing it removes.
+@pytest.mark.parametrize("path", ["", ".", "bin:.", ":"])
+def test_a_path_with_nothing_absolute_is_left_out_and_not_passed_on_empty(
+    clean_environment: pytest.MonkeyPatch, path: str
+) -> None:
+    clean_environment.setenv("PATH", path)
+
+    assert "PATH" not in child_environment()
+
+
 @pytest.mark.parametrize("name", SECRETS_AND_RISKS)
 def test_nothing_outside_the_allow_list_reaches_a_child(
     clean_environment: pytest.MonkeyPatch, name: str

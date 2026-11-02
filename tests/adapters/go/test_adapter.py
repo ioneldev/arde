@@ -1,6 +1,7 @@
 """The Go adapter against real Go: goinspect, the toolchain and the shop fixture service."""
 
 import json
+import os
 import re
 import shutil
 import socket
@@ -450,6 +451,77 @@ def test_a_repos_own_go_work_still_chooses_its_modules(adapter: GoAdapter, tmp_p
 
     assert (result.build_ok, result.test_ok) == (True, True)
     assert "workspace dep" in ran.stderr
+
+
+def test_a_file_name_with_a_line_break_is_one_left_out_file(adapter: GoAdapter, shop: Path) -> None:
+    (shop / "pricing" / "odd\nname_windows.go").write_text("package pricing\n", encoding="utf-8")
+
+    left_out = adapter.run_checks(shop, shop_profile()).ignored_files
+
+    assert "pricing/odd\nname_windows.go" in left_out
+
+
+def test_run_checks_never_runs_the_repos_git_settings(
+    adapter: GoAdapter, shop: Path, tmp_path: Path
+) -> None:
+    ran = tmp_path / "fsmonitor-ran"
+    monitor = tmp_path / "fsmonitor.sh"
+    monitor.write_text(f"#!/bin/sh\ntouch {ran}\n", encoding="utf-8")
+    monitor.chmod(0o755)
+    subprocess.run(["git", "init", "-q", str(shop)], check=True)
+    subprocess.run(["git", "-C", str(shop), "add", "-A"], check=True)
+    identity = ("-c", "user.email=a@example.com", "-c", "user.name=a")
+    subprocess.run(["git", "-C", str(shop), *identity, "commit", "-qm", "x"], check=True)
+    subprocess.run(["git", "-C", str(shop), "config", "core.fsmonitor", str(monitor)], check=True)
+
+    adapter.run_checks(shop, shop_profile())
+
+    assert not ran.exists()
+
+
+def test_a_relative_path_entry_cannot_run_a_go_the_repo_planted(
+    adapter: GoAdapter, shop: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran = tmp_path / "planted-go-ran"
+    planted = shop / "go"
+    planted.write_text(f"#!/bin/sh\ntouch {ran}\nexit 1\n", encoding="utf-8")
+    planted.chmod(0o755)
+    monkeypatch.setenv("PATH", f".{os.pathsep}{os.environ['PATH']}")
+
+    adapter.run_checks(shop, shop_profile())
+
+    assert not ran.exists()
+
+
+def test_a_toolchain_named_in_go_mod_is_not_started(
+    adapter: GoAdapter, shop: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran = tmp_path / "toolchain-ran"
+    program = tmp_path / "bin" / "go1.99.2"
+    program.parent.mkdir()
+    program.write_text(f"#!/bin/sh\ntouch {ran}\nexit 1\n", encoding="utf-8")
+    program.chmod(0o755)
+    monkeypatch.delenv("GOTOOLCHAIN", raising=False)
+    monkeypatch.setenv("GOPROXY", "off")
+    monkeypatch.setenv("PATH", f"{program.parent}{os.pathsep}{os.environ['PATH']}")
+    with (shop / "go.mod").open("a", encoding="utf-8") as go_mod:
+        go_mod.write("\ntoolchain go1.99.2\n")
+
+    result = adapter.run_checks(shop, shop_profile())
+
+    assert not ran.exists()
+    assert result.build_ok
+
+
+def test_a_repo_that_needs_a_newer_go_stops_with_gos_own_words(
+    adapter: GoAdapter, shop: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GOTOOLCHAIN", raising=False)
+    monkeypatch.setenv("GOPROXY", "off")
+    edit(shop / "go.mod", "go 1.22", "go 1.99.0")
+
+    with pytest.raises(GoCommandError, match=r"go >= 1\.99\.0"):
+        adapter.build_service(shop, shop_profile())
 
 
 NOISY_TEST = """package noisy

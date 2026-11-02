@@ -15,7 +15,9 @@ from doubtful_edits import (
     Edit,
 )
 
+from arde.adapters.language.go import directives
 from arde.adapters.language.go.directives import (
+    SOURCE_BYTES_LIMIT,
     files_differ_only_in_ordinary_comments,
     is_ordinary_comment,
     only_ordinary_comments_differ,
@@ -263,3 +265,38 @@ def test_a_long_run_of_spaces_after_a_backtick_that_never_closes_is_read_at_once
 
     assert result
     assert time.monotonic() - started < 1, "a pattern that backtracks would take many seconds"
+
+
+def a_pair_that_differs_in_one_comment(folder: Path, *, size: int) -> tuple[Path, Path]:
+    old_file, new_file = folder / "old.go", folder / "new.go"
+    for file, comment in ((old_file, b"// first\n"), (new_file, b"// second\n")):
+        body = b"package p\n" + comment
+        file.write_bytes(body + b" " * (size - len(body)))
+    return old_file, new_file
+
+
+def test_a_file_past_the_limit_counts_as_real_and_is_never_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_file, new_file = a_pair_that_differs_in_one_comment(tmp_path, size=SOURCE_BYTES_LIMIT + 1)
+
+    def must_not_be_called(path: Path) -> str:
+        raise AssertionError(f"{path} was read")
+
+    monkeypatch.setattr(directives, "read_source", must_not_be_called)
+
+    assert not files_differ_only_in_ordinary_comments(old_file, new_file)
+
+
+def test_one_file_past_the_limit_is_enough(tmp_path: Path) -> None:
+    old_file, new_file = a_pair_that_differs_in_one_comment(tmp_path, size=100)
+    with new_file.open("ab") as file:
+        file.truncate(SOURCE_BYTES_LIMIT + 1)
+
+    assert not files_differ_only_in_ordinary_comments(old_file, new_file)
+
+
+def test_a_file_of_exactly_the_limit_is_read(tmp_path: Path) -> None:
+    old_file, new_file = a_pair_that_differs_in_one_comment(tmp_path, size=SOURCE_BYTES_LIMIT)
+
+    assert files_differ_only_in_ordinary_comments(old_file, new_file)

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 import pytest
+from tree_support import a_tree_too_deep_for_one_path
 
 from arde.adapters.language.go.adapter import GoAdapter
 from arde.adapters.repo_links import (
@@ -229,6 +230,17 @@ def test_a_folder_that_cannot_be_read_stops_the_gate_and_is_not_passed_over(repo
 
     assert isinstance(stopped.value, ArdeError)
     assert stopped.value.exit_code == ExitCode.BAD_USAGE
+    assert stopped.value.next_action
+
+
+def test_a_tree_too_deep_for_one_path_stops_the_gate_because_it_could_hide_a_link(
+    repo: Path,
+) -> None:
+    a_tree_too_deep_for_one_path(repo)
+
+    with pytest.raises(RepoNotReadableError) as stopped:
+        require_no_link_leaves(repo)
+
     assert stopped.value.next_action
 
 

@@ -424,3 +424,28 @@ def test_a_too_long_output_message_stays_short_and_clean_whatever_the_command_na
 
     assert "\x1b" not in str(refused.value)
     assert len(str(refused.value)) < 2 * MESSAGE_TAIL_BYTES
+
+
+@pytest.mark.parametrize("path", [".", ""])
+def test_a_program_in_the_repo_is_not_found_through_a_relative_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, path: str
+) -> None:
+    ran = tmp_path / "the-program-ran"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    planted = repo / "planted-tool"
+    planted.write_text(f"#!/bin/sh\ntouch {ran}\n", encoding="utf-8")
+    planted.chmod(0o755)
+    monkeypatch.setenv("PATH", path)
+    command = ChildCommand(
+        argv=("planted-tool",),
+        cwd=repo,
+        timeout_s=5,
+        output=ROOMY,
+        env=child_environment(),
+    )
+
+    with pytest.raises(ChildStartError):
+        run_child(command)
+
+    assert not ran.exists()

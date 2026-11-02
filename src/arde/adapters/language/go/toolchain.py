@@ -1,12 +1,16 @@
 """The Go toolchain: building the service, and the repo's own build, vet and test."""
 
+import json
 import os
 import re
 import shlex
 import shutil
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
+
+from pydantic import BaseModel, Field
 
 from arde.adapters.child_process import ChildCommand, ChildOutcome, run_child
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text, visible_text
@@ -20,6 +24,7 @@ from arde.adapters.language.go.timeouts import (
     GO_TEST_TIMEOUT_S,
     GO_VET_TIMEOUT_S,
 )
+from arde.adapters.repo_links import is_inside
 from arde.application.ports import CheckResult
 from arde.domain.errors import ArdeError
 from arde.domain.profile import RepoProfile
@@ -31,13 +36,19 @@ FOLDERS_PER_LIST = 1000
 
 # Every name that "go test -list" prints. Its other lines start with ok, ? or FAIL.
 _LISTED_TEST = re.compile(r"(Test|Benchmark|Fuzz|Example)\w*")
-# One absolute path per line. A test file behind a build tag is listed here with the others.
-_IGNORED_FILES_TEMPLATE = '{{range .IgnoredGoFiles}}{{$.Dir}}/{{.}}{{"\\n"}}{{end}}'
 
 
 class GoStep(NamedTuple):
     arguments: tuple[str, ...]
     timeout_s: float
+
+
+class _ListedPackage(BaseModel):
+    """One package from go list -json, which leaves out a field with nothing in it."""
+
+    folder: str = Field(alias="Dir")
+    # A test file behind a build tag is listed here with the others.
+    left_out: tuple[str, ...] = Field(alias="IgnoredGoFiles", default=())
 
 
 class BadTestCommandError(ArdeError):
@@ -163,13 +174,41 @@ def _ignored_files(repo: Path) -> tuple[str, ...]:
     found: set[str] = set()
     for start in range(0, len(folders), FOLDERS_PER_LIST):
         chunk = folders[start : start + FOLDERS_PER_LIST]
-        for line in _list_ignored_files(repo, chunk).splitlines():
-            found.add(Path(os.path.relpath(os.path.realpath(line), root)).as_posix())
+        for package in _packages_in(_list_ignored_files(repo, chunk)):
+            found.update(_left_out_files_inside(package, root))
     return tuple(sorted(found))
 
 
+# A file keeps its own name, and only its real path decides whether it counts as inside.
+def _left_out_files_inside(package: _ListedPackage, root: str) -> Iterator[str]:
+    folder = os.path.realpath(package.folder)
+    for name in package.left_out:
+        path = os.path.join(folder, name)
+        if is_inside(os.path.realpath(path), root):
+            yield Path(os.path.relpath(path, root)).as_posix()
+
+
+# go list -json prints one object after another, with nothing around them. A bad object raises a
+# ValueError, from the decoder or from the model.
+def _packages_in(stream: str) -> list[_ListedPackage]:
+    decoder = json.JSONDecoder()
+    packages: list[_ListedPackage] = []
+    rest = stream.strip()
+    try:
+        while rest:
+            package, end = decoder.raw_decode(rest)
+            packages.append(_ListedPackage.model_validate(package))
+            rest = rest[end:].lstrip()
+    except ValueError as error:
+        raise GoCommandError(
+            "go list printed something other than the packages that were asked for.",
+            next_action="Run the same list command by hand in the repo to see why, then run again.",
+        ) from error
+    return packages
+
+
 def _list_ignored_files(repo: Path, folders: list[str]) -> str:
-    arguments = ("list", "-e", "-f", _IGNORED_FILES_TEMPLATE, *folders)
+    arguments = ("list", "-e", "-buildvcs=false", "-json=Dir,IgnoredGoFiles", *folders)
     listing = _go(repo, GoStep(arguments, GO_LIST_TIMEOUT_S))
     _require_whole(listing, "the list of files the build leaves out")
     if not listing.succeeded:
@@ -197,7 +236,7 @@ def _is_passed_over(folder: Path) -> bool:
     return (
         folder.name in ("vendor", "testdata")
         or folder.name.startswith(("_", "."))
-        or (folder / "go.mod").is_file()
+        or os.path.isfile(folder / "go.mod")
     )
 
 

@@ -1,10 +1,18 @@
 """Make targets come from a regex over the top-level Makefile, and a repo without one has none."""
 
+import os
 from pathlib import Path
 
 import pytest
 
-from arde.adapters.language.go.makefile import make_targets, make_targets_of
+from arde.adapters.language.go.makefile import (
+    MAKEFILE_BYTES_LIMIT,
+    MakefileNotReadableError,
+    make_targets,
+    make_targets_of,
+)
+from arde.domain.errors import ArdeError
+from arde.domain.report import ExitCode
 
 
 def test_a_target_is_a_name_before_a_colon() -> None:
@@ -84,3 +92,41 @@ def test_a_directory_named_makefile_is_not_a_makefile(tmp_path: Path) -> None:
     (tmp_path / "Makefile").mkdir()
 
     assert make_targets_of(tmp_path) == ()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads every file")
+def test_a_makefile_that_cannot_be_read_stops_with_a_next_action_and_no_raw_error(
+    tmp_path: Path,
+) -> None:
+    makefile = tmp_path / "Makefile"
+    makefile.write_text("serve:\n\tx\n", encoding="utf-8")
+    makefile.chmod(0o000)
+    try:
+        with pytest.raises(MakefileNotReadableError) as stopped:
+            make_targets_of(tmp_path)
+    finally:
+        makefile.chmod(0o644)
+
+    assert isinstance(stopped.value, ArdeError)
+    assert stopped.value.exit_code == ExitCode.BAD_USAGE
+    assert stopped.value.next_action
+    # A case-insensitive disk finds this file under the name make tries first.
+    assert "makefile" in str(stopped.value).lower()
+
+
+def test_a_makefile_past_the_limit_is_refused_before_it_is_read(tmp_path: Path) -> None:
+    with (tmp_path / "Makefile").open("wb") as makefile:
+        makefile.truncate(MAKEFILE_BYTES_LIMIT + 1)
+
+    with pytest.raises(MakefileNotReadableError) as stopped:
+        make_targets_of(tmp_path)
+
+    assert str(MAKEFILE_BYTES_LIMIT + 1) in str(stopped.value)
+
+
+def test_a_makefile_of_exactly_the_limit_is_read(tmp_path: Path) -> None:
+    rule = b"serve:\n\tx\n"
+    padding = b"#" * (MAKEFILE_BYTES_LIMIT - len(rule) - 1) + b"\n"
+    (tmp_path / "Makefile").write_bytes(padding + rule)
+
+    assert make_targets_of(tmp_path) == ("serve",)

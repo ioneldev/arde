@@ -20,6 +20,10 @@ _ALLOWED_TAG = re.compile(r'oneOf:"[^"]*"|binding:"optional"')
 _BACKTICKS = re.compile(r"`([^`]*)`")
 _BYTE_ORDER_MARK = b"\xef\xbb\xbf"
 
+# Far past any file a person writes. ARDE reads these itself, with no timeout to stop it, and a
+# wrong "real" costs a fraction of a cent.
+SOURCE_BYTES_LIMIT = 8 * 1024 * 1024
+
 
 def read_source(path: Path) -> str:
     # Bytes, because read_text would end a line at a lone carriage return, which Go does not.
@@ -28,6 +32,8 @@ def read_source(path: Path) -> str:
 
 
 def files_differ_only_in_ordinary_comments(old_file: Path, new_file: Path) -> bool:
+    if _is_too_big_to_read(old_file) or _is_too_big_to_read(new_file):
+        return False
     # A byte order mark on one side only moves a //line directive off column 1.
     if _starts_with_byte_order_mark(old_file) != _starts_with_byte_order_mark(new_file):
         return False
@@ -36,6 +42,10 @@ def files_differ_only_in_ordinary_comments(old_file: Path, new_file: Path) -> bo
         read_source(new_file),
         is_test_file=old_file.name.endswith("_test.go") or new_file.name.endswith("_test.go"),
     )
+
+
+def _is_too_big_to_read(path: Path) -> bool:
+    return path.stat().st_size > SOURCE_BYTES_LIMIT
 
 
 def _starts_with_byte_order_mark(path: Path) -> bool:

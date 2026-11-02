@@ -8,7 +8,12 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from arde.adapters.child_process import ChildCommand, ChildOutcome, run_child
+from arde.adapters.child_process import (
+    ChildCommand,
+    ChildOutcome,
+    describe_os_error,
+    run_child,
+)
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text
 from arde.adapters.language.go.go_environment import go_environment
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT, GOINSPECT_REPLY_LIMIT
@@ -90,7 +95,7 @@ def build_goinspect(bin_dir: Path) -> Path:
     binary = bin_dir.resolve() / HELPER_NAME
     if binary in _built and binary.is_file():
         return binary
-    bin_dir.mkdir(parents=True, exist_ok=True)
+    _make_the_folder(bin_dir)
     command = ChildCommand(
         argv=("go", "build", "-buildvcs=false", "-o", str(binary), "."),
         cwd=GOINSPECT_SOURCE,
@@ -110,6 +115,16 @@ def build_goinspect(bin_dir: Path) -> Path:
         )
     _built.add(binary)
     return binary
+
+
+def _make_the_folder(bin_dir: Path) -> None:
+    try:
+        bin_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise GoinspectError(
+            f"Cannot make a folder for {HELPER_NAME}: {describe_os_error(error)}.",
+            next_action="Fix that path or its permissions, then run again.",
+        ) from error
 
 
 class GoinspectClient:

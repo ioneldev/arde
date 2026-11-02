@@ -134,6 +134,7 @@ def test_an_exported_goprivate_reaches_a_command_with_the_generic_variables(
         "GONOSUMDB": "corp.example/*",
         "GOENV": "off",
         "GOWORK": "off",
+        "GOTOOLCHAIN": "local",
     }
 
 
@@ -164,7 +165,12 @@ def test_nothing_is_invented_for_a_variable_that_is_not_set(
 ) -> None:
     stand_in(clean_environment)
 
-    assert read_go_environment(repo) == {"PATH": "/usr/bin", "GOENV": "off", "GOWORK": "off"}
+    assert read_go_environment(repo) == {
+        "PATH": "/usr/bin",
+        "GOENV": "off",
+        "GOWORK": "off",
+        "GOTOOLCHAIN": "local",
+    }
 
 
 @pytest.mark.parametrize("name", USER_SETTINGS)
@@ -223,7 +229,8 @@ def test_settings_that_could_redirect_downloads_are_never_taken_from_the_file(
     environment = read_go_environment(repo)
 
     assert environment["GOPRIVATE"] == "corp.example/*"
-    for name in ("GOPROXY", "GOSUMDB", "GOTOOLCHAIN", "GOFLAGS", "GOINSECURE"):
+    assert environment["GOTOOLCHAIN"] == "local"
+    for name in ("GOPROXY", "GOSUMDB", "GOFLAGS", "GOINSECURE"):
         assert name not in environment
 
 
@@ -390,6 +397,33 @@ def test_a_failure_is_not_remembered(clean_environment: pytest.MonkeyPatch, repo
     stand_in(clean_environment, file={"GOPRIVATE": "corp.example/*"})
 
     assert read_go_environment(repo)["GOPRIVATE"] == "corp.example/*"
+
+
+def test_a_repo_cannot_choose_a_toolchain_unless_the_user_allows_it(
+    clean_environment: pytest.MonkeyPatch, repo: Path
+) -> None:
+    stand_in(clean_environment)
+
+    assert read_go_environment(repo)["GOTOOLCHAIN"] == "local"
+
+
+def test_a_toolchain_setting_the_user_exports_wins_over_the_default(
+    clean_environment: pytest.MonkeyPatch, repo: Path
+) -> None:
+    stand_in(clean_environment)
+    clean_environment.setenv("GOTOOLCHAIN", "auto")
+
+    assert read_go_environment(repo)["GOTOOLCHAIN"] == "auto"
+
+
+# Go reads an empty value as unset, which means auto, so passing it on would undo the default.
+def test_an_empty_export_is_no_choice_and_keeps_the_default(
+    clean_environment: pytest.MonkeyPatch, repo: Path
+) -> None:
+    stand_in(clean_environment)
+    clean_environment.setenv("GOTOOLCHAIN", "")
+
+    assert read_go_environment(repo)["GOTOOLCHAIN"] == "local"
 
 
 def test_a_repo_with_no_go_work_of_its_own_gets_no_workspace(

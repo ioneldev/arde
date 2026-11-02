@@ -1,10 +1,12 @@
 """The checks and the build around the Go toolchain, with the toolchain played by a stand-in."""
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 from shop_support import shop_profile
+from tree_support import a_tree_too_deep_for_one_path
 
 from arde.adapters.child_process import ChildCommand, ChildOutcome
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES
@@ -47,6 +49,14 @@ class StandInGo:
 
 def outcome(exit_code: int = 0, stdout: str = "", *, cut: bool = False) -> ChildOutcome:
     return ChildOutcome(exit_code=exit_code, stdout=stdout, stderr="", output_was_cut=cut)
+
+
+def listed(folder: Path, *ignored_files: str) -> str:
+    """One package as go list -json prints it, and it leaves out a field with nothing in it."""
+    package: dict[str, object] = {"Dir": str(folder)}
+    if ignored_files:
+        package["IgnoredGoFiles"] = list(ignored_files)
+    return json.dumps(package, indent="\t") + "\n"
 
 
 GO_ENVIRONMENT = {"PATH": "/usr/bin", "GOPRIVATE": "corp.example/*", "GOENV": "off"}
@@ -222,7 +232,7 @@ def test_the_files_the_build_leaves_out_are_asked_for_in_chunks_of_a_thousand_fo
         (folder / "a.go").write_text("package p\n", encoding="utf-8")
 
     def hidden_file_of_the_first_folder(argv: tuple[str, ...]) -> ChildOutcome:
-        return outcome(stdout=f"{repo.resolve()}/{argv[5][2:]}/hidden_test.go\n")
+        return outcome(stdout=listed(repo.resolve() / argv[5][2:], "hidden_test.go"))
 
     go = use(monkeypatch, StandInGo(ignored_files=hidden_file_of_the_first_folder))
 
@@ -341,3 +351,89 @@ def test_a_forged_section_header_changes_no_boolean(
     use(monkeypatch, StandInGo(test=outcome(1, forged)))
 
     assert run_checks(repo, shop_profile()).test_ok is False
+
+
+def a_repo_with_one_folder_of_go(repo: Path) -> Path:
+    (repo / "main.go").write_text("package main\n", encoding="utf-8")
+    return repo.resolve()
+
+
+def test_the_files_left_out_are_read_from_every_package_in_the_stream(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    root = a_repo_with_one_folder_of_go(repo)
+    stream = listed(root, "b_windows.go") + listed(root / "empty") + listed(root / "sub", "a.go")
+    use(monkeypatch, StandInGo(ignored_files=outcome(stdout=stream)))
+
+    assert run_checks(repo, shop_profile()).ignored_files == ("b_windows.go", "sub/a.go")
+
+
+def test_a_file_name_with_a_line_break_stays_one_file(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    root = a_repo_with_one_folder_of_go(repo)
+    stream = listed(root, "odd\nname_windows.go")
+    use(monkeypatch, StandInGo(ignored_files=outcome(stdout=stream)))
+
+    assert run_checks(repo, shop_profile()).ignored_files == ("odd\nname_windows.go",)
+
+
+def test_a_file_outside_the_repo_is_not_listed_as_a_path_from_the_root(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    root = a_repo_with_one_folder_of_go(repo)
+    outside = tmp_path_factory.mktemp("outside").resolve()
+    stream = listed(root, "kept_windows.go") + listed(outside, "elsewhere_windows.go")
+    use(monkeypatch, StandInGo(ignored_files=outcome(stdout=stream)))
+
+    assert run_checks(repo, shop_profile()).ignored_files == ("kept_windows.go",)
+
+
+def test_a_link_that_leaves_the_repo_is_dropped_and_one_that_stays_keeps_its_own_name(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    root = a_repo_with_one_folder_of_go(repo)
+    outside = tmp_path_factory.mktemp("outside").resolve() / "secret"
+    outside.write_text("not go", encoding="utf-8")
+    (root / "leak_windows.go").symlink_to(outside)
+    (root / "real.txt").write_text("package main\n", encoding="utf-8")
+    (root / "kept_windows.go").symlink_to("real.txt")
+    stream = listed(root, "leak_windows.go", "kept_windows.go")
+    use(monkeypatch, StandInGo(ignored_files=outcome(stdout=stream)))
+
+    assert run_checks(repo, shop_profile()).ignored_files == ("kept_windows.go",)
+
+
+@pytest.mark.parametrize("stream", ["not json", '{"Dir": 3}', '{"Dir": "/x"} trailing', "[1]"])
+def test_a_list_that_cannot_be_read_stops_the_run_with_a_next_action(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, stream: str
+) -> None:
+    a_repo_with_one_folder_of_go(repo)
+    use(monkeypatch, StandInGo(ignored_files=outcome(stdout=stream)))
+
+    with pytest.raises(GoCommandError) as failed:
+        run_checks(repo, shop_profile())
+
+    assert failed.value.next_action
+
+
+def test_the_list_of_left_out_files_never_asks_git_for_a_version_stamp(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    a_repo_with_one_folder_of_go(repo)
+    go = use(monkeypatch, StandInGo())
+
+    run_checks(repo, shop_profile())
+
+    [listing] = [argv for argv in go.asked if argv[1:3] == ("list", "-e")]
+    assert "-buildvcs=false" in listing
+
+
+def test_a_tree_too_deep_for_one_path_raises_no_raw_error(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    a_repo_with_one_folder_of_go(repo)
+    a_tree_too_deep_for_one_path(repo)
+    use(monkeypatch, StandInGo())
+
+    assert run_checks(repo, shop_profile()).ignored_files == ()

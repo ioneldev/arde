@@ -291,6 +291,20 @@ def test_a_failed_build_names_the_next_action(
     assert failed.value.next_action
 
 
+def test_a_helper_folder_that_cannot_be_made_stops_with_a_next_action_and_no_raw_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(goinspect_client, "_built", set())
+    (tmp_path / "a-file").write_text("not a folder", encoding="utf-8")
+
+    with pytest.raises(GoinspectError) as failed:
+        build_goinspect(tmp_path / "a-file" / "bin")
+
+    assert isinstance(failed.value, ArdeError)
+    assert failed.value.next_action
+    assert "a-file" in str(failed.value)
+
+
 def test_a_failed_build_gives_a_short_clean_message(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

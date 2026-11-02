@@ -143,7 +143,7 @@ class CheckResult(Frozen):
     # Every test, benchmark, fuzz test and example the toolchain lists. Zero is a valid answer.
     test_count: int
     # Files the build leaves out, such as a test file behind a build tag or one for another
-    # platform, as paths from the repo root.
+    # platform, as paths from the repo root. A file that leads out of the repo is not listed.
     ignored_files: tuple[str, ...]
 
 
@@ -166,7 +166,7 @@ class LanguageAdapter(Protocol):
         An ordinary comment is a whole line that starts with `//` and a space and is no directive.
         Everything else counts as real: a block comment, a trailing comment, a blank line, a
         directive, and any comment edit in a file with C source or a test with an example. A
-        file that is missing, unreadable or not source code answers False.
+        file that is missing, unreadable, too large to read or not source code answers False.
         """
         ...
 

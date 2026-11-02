@@ -52,15 +52,27 @@ PROBE_FIXED_VARIABLES = {"GOTOOLCHAIN": "local"}
 # Every command is told to read no file: HOME is allowed, and the file can hold a GOFLAGS.
 FIXED_VARIABLES = {"GOENV": "off"}
 
+# Used unless the user exports another value, because otherwise a go.mod picks a program to start
+# or to download. A repo that needs a newer Go stops with Go's own clear error.
+DEFAULT_VARIABLES = {"GOTOOLCHAIN": "local"}
+
 
 def go_environment(repo: Path) -> dict[str, str]:
+    # An empty value counts as not exported: Go reads it as unset, which would undo the default.
     exported = {
         name: os.environ[name]
         for name in TOOLCHAIN_VARIABLES
-        if name in os.environ and name not in USER_SETTINGS
+        if os.environ.get(name) and name not in USER_SETTINGS
     }
     settings = {name: value for name, value in _user_settings().items() if value}
-    return {**child_environment(), **exported, **settings, **FIXED_VARIABLES, **_workspace(repo)}
+    return {
+        **child_environment(),
+        **DEFAULT_VARIABLES,
+        **exported,
+        **settings,
+        **FIXED_VARIABLES,
+        **_workspace(repo),
+    }
 
 
 # Go looks for a go.work in every folder above the one it runs in, so a file above the repo could
