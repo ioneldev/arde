@@ -991,7 +991,7 @@ def test_a_tagged_field_keeps_the_go_name_the_json_name_and_the_declared_type() 
         name="TotalCents",
         json_name="total_cents",
         declared_type="int64",
-        omitempty=False,
+        may_be_absent=False,
     )
 
 
@@ -1016,19 +1016,19 @@ def test_omitempty_is_read_from_the_options_of_the_tag() -> None:
         field("Quote", "Id", "id"),
     )
 
-    assert {f.name: f.omitempty for f in found} == {"Note": True, "Id": False}
+    assert {f.name: f.may_be_absent for f in found} == {"Note": True, "Id": False}
 
 
 def test_omitzero_also_marks_a_field_that_may_be_absent() -> None:
     [found] = fields_of(field("Quote", "Note", "note,omitzero"))
 
-    assert found.omitempty is True
+    assert found.may_be_absent is True
 
 
 def test_a_tag_with_options_and_no_name_uses_the_go_name() -> None:
     [found] = fields_of(field("Quote", "Note", ",omitempty"))
 
-    assert (found.json_name, found.omitempty) == ("Note", True)
+    assert (found.json_name, found.may_be_absent) == ("Note", True)
 
 
 def test_a_field_of_type_any_is_kept_as_written() -> None:
@@ -1067,7 +1067,7 @@ def test_an_exported_field_with_no_tag_in_a_tagged_struct_is_listed_under_its_go
     found = {f.name: f for f in fields_of(field("Quote", "Id", "id"), field("Quote", "Currency"))}
 
     untagged = found["Currency"]
-    assert (untagged.json_name, untagged.omitempty) == ("Currency", False)
+    assert (untagged.json_name, untagged.may_be_absent) == ("Currency", False)
 
 
 def test_an_empty_json_value_still_makes_a_struct_a_response() -> None:

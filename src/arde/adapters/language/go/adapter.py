@@ -8,6 +8,7 @@ from pathlib import Path
 
 from arde.adapters.language.go import toolchain
 from arde.adapters.language.go.directives import files_differ_only_in_ordinary_comments
+from arde.adapters.language.go.discovery_guidance import DISCOVERY_GUIDANCE
 from arde.adapters.language.go.goinspect_client import (
     GoinspectClient,
     UnmatchedPattern,
@@ -39,8 +40,15 @@ class GoAdapter(LanguageAdapter):
         require_no_link_leaves(repo)
         return (repo / "go.mod").is_file()
 
-    # The text rule comes first and the syntax trees second. The rule cannot see that a line which
-    # looks like a comment is inside a raw string, and the trees cannot see a comment at all.
+    def discovery_guidance(self) -> str:
+        return DISCOVERY_GUIDANCE
+
+    # The tags ARDE adds are `oneOf` and `binding:"optional"`, and an ordinary comment is a whole
+    # line that starts with `//` and a space and is no directive. Everything else counts as real: a
+    # block comment, a trailing comment, a blank line, a directive, and any comment edit in a file
+    # with C source or a test with an example. The text rule comes first and the syntax trees
+    # second. The rule cannot see that a line which looks like a comment is inside a raw string, and
+    # the trees cannot see a comment at all.
     def is_comment_only(self, old_file: Path, new_file: Path) -> bool:
         try:
             if not (_is_go_source(old_file) and _is_go_source(new_file)):

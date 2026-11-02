@@ -65,11 +65,12 @@ class ErrorCode(Frozen):
 
 class ResponseField(Frozen):
     struct: NameText
-    # The Go field name, which the renderer needs. json_name is the key a client sees.
+    # The field's name in the source, which the renderer needs. json_name is the key a client sees.
     name: NameText
     json_name: NameText
     declared_type: TypeText
-    omitempty: bool
+    # The key can be left out of a reply, so a client may not find it.
+    may_be_absent: bool
     # The file and package that declare the struct, so two structs with one name stay apart. They
     # come last so that the model sorts by struct and name first.
     file: FileText

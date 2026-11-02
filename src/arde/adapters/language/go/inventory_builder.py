@@ -448,5 +448,5 @@ def _response_field(field: FieldReply) -> ResponseField:
         json_name=name or field.name,
         declared_type=field.go_type,
         # omitzero also drops the key, so the field may be absent from the reply.
-        omitempty="omitempty" in options or "omitzero" in options,
+        may_be_absent="omitempty" in options or "omitzero" in options,
     )

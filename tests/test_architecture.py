@@ -33,6 +33,8 @@ CHECKS_MAY_NOT_IMPORT = ("arde.adapters", "arde.cli")
 
 GO_ADAPTER = Path("arde") / "adapters" / "language" / "go"
 GO_COMMANDS = ("build", "vet", "test", "list")
+# Prompts live in these, so a Go idiom in one reaches the application by way of a model.
+SCANNED_SUFFIXES = (".py", ".md")
 # \b treats "_" as part of a word, so it would miss run_goinspect and swag_version. These
 # patterns match inside identifiers. swag may not be followed by a lowercase letter, and SWAG not
 # by an uppercase one, which keeps Swagger and SWAGGER legal.
@@ -40,6 +42,9 @@ GO_SPECIFIC_PATTERNS = {
     "goinspect": re.compile(r"goinspect", re.IGNORECASE),
     "gofmt": re.compile(r"gofmt", re.IGNORECASE),
     "swag": re.compile(r"[Ss]wag(?![a-z])|SWAG(?![A-Z])"),
+    "go.mod": re.compile(r"go\.mod"),
+    "omitempty": re.compile(r"omitempty", re.IGNORECASE),
+    "oneOf": re.compile(r"oneOf"),
     **{
         f"go {command}": re.compile(rf"(?<![a-z])go[\W_]+{command}(?![a-z])", re.IGNORECASE)
         for command in GO_COMMANDS
@@ -254,6 +259,51 @@ def test_go_specific_shapes_inside_the_go_adapter_are_accepted(tmp_path: Path) -
 
 
 @pytest.mark.parametrize(
+    ("text", "name"),
+    [
+        ("A repo with a go.mod file.", "go.mod"),
+        ("a field marked omitempty", "omitempty"),
+        ("may_be_omitempty = True", "omitempty"),
+        ('the tag `oneOf:"a b"`', "oneOf"),
+    ],
+)
+@pytest.mark.parametrize(
+    "file",
+    [
+        "arde/application/prompts/discovery.md",
+        "arde/application/ports.py",
+        "arde/domain/inventory.py",
+        "arde/adapters/repo_links.py",
+    ],
+)
+def test_words_of_the_language_outside_the_go_adapter_are_reported(
+    tmp_path: Path, file: str, text: str, name: str
+) -> None:
+    write(tmp_path, file, f"{text}\n")
+
+    assert go_specific_leaks(tmp_path) == [f"{file}: mentions {name}"]
+
+
+def test_a_prompt_is_scanned_for_the_commands_too(tmp_path: Path) -> None:
+    write(tmp_path, "arde/application/prompts/explore.md", "Run go test ./... first.\n")
+
+    assert go_specific_leaks(tmp_path) == ["arde/application/prompts/explore.md: mentions go test"]
+
+
+def test_a_file_of_another_kind_is_not_scanned(tmp_path: Path) -> None:
+    write(tmp_path, "arde/application/data.txt", "go.mod\n")
+
+    assert go_specific_leaks(tmp_path) == []
+
+
+@pytest.mark.parametrize("file", ["guidance.md", "guidance.py"])
+def test_the_language_may_name_itself_inside_the_go_adapter(tmp_path: Path, file: str) -> None:
+    write(tmp_path, str(GO_ADAPTER / file), "go.mod omitempty oneOf go test\n")
+
+    assert go_specific_leaks(tmp_path) == []
+
+
+@pytest.mark.parametrize(
     "source",
     [
         'SPEC_FILES = ["swagger.json", "swagger.yaml"]',
@@ -371,8 +421,9 @@ def is_inside(module: str, package: str) -> bool:
 
 def go_specific_leaks(source_root: Path) -> list[str]:
     leaks: list[str] = []
-    for path in sorted((source_root / "arde").rglob("*.py")):
-        if path.relative_to(source_root).is_relative_to(GO_ADAPTER):
+    for path in sorted((source_root / "arde").rglob("*")):
+        relative = path.relative_to(source_root)
+        if path.suffix not in SCANNED_SUFFIXES or relative.is_relative_to(GO_ADAPTER):
             continue
         names = go_specific_names(path.read_text(encoding="utf-8"))
         leaks.extend(f"{label(path, source_root)}: mentions {name}" for name in names)

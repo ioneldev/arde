@@ -64,7 +64,7 @@ def field(
     json_name: str,
     declared_type: str,
     *,
-    omitempty: bool = False,
+    may_be_absent: bool = False,
     file: str = "web/payloads.go",
 ) -> ResponseField:
     return ResponseField(
@@ -74,7 +74,7 @@ def field(
         name=name,
         json_name=json_name,
         declared_type=declared_type,
-        omitempty=omitempty,
+        may_be_absent=may_be_absent,
     )
 
 
@@ -146,7 +146,7 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
         field("Listing", "Items", "items", "[]ItemView"),
         field("Quote", "ChargeCents", "charge_cents", "int64"),
         field("Quote", "Details", "details", "any"),
-        field("Quote", "Note", "note", "string", omitempty=True),
+        field("Quote", "Note", "note", "string", may_be_absent=True),
         field("Quote", "Pieces", "pieces", "int"),
         field("Quote", "SKU", "sku", "string"),
         field("Stamp", "IssuedBy", "issued_by", "string"),
@@ -377,7 +377,7 @@ def test_a_json_name_is_read_as_go_reads_it(adapter: GoAdapter, shop: Path) -> N
 
     fields = response_fields_of(adapter, shop, source)
 
-    assert (fields["Accent"].json_name, fields["Accent"].omitempty) == ("café", True)
+    assert (fields["Accent"].json_name, fields["Accent"].may_be_absent) == ("café", True)
     assert fields["Quoted"].json_name == "qty"
 
 

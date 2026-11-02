@@ -193,14 +193,19 @@ class LanguageAdapter(Protocol):
 
     def detects(self, repo: Path) -> bool: ...
 
-    def is_comment_only(self, old_file: Path, new_file: Path) -> bool:
-        """True when the files differ only in ordinary comment lines and the tags ARDE adds.
+    def discovery_guidance(self) -> str:
+        """What the discovery agent must know about the language to fill in a profile.
 
-        Those tags are `oneOf` and `binding:"optional"`, and the syntax trees must also be equal.
-        An ordinary comment is a whole line that starts with `//` and a space and is no directive.
-        Everything else counts as real: a block comment, a trailing comment, a blank line, a
-        directive, and any comment edit in a file with C source or a test with an example. A
-        file that is missing, unreadable, too large to read or not source code answers False.
+        The same text every time, with nothing from any repo in it.
+        """
+        ...
+
+    def is_comment_only(self, old_file: Path, new_file: Path) -> bool:
+        """True when the files differ only in ordinary comments and the annotations ARDE adds.
+
+        Each adapter holds an allow-list of what that means in its language, and anything else
+        counts as real. A file that is missing, unreadable, too large to read or not source code
+        answers False.
         """
         ...
 

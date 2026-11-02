@@ -1,6 +1,6 @@
 """The gate that keeps a repo's links from leading out of it.
 
-The Go tool follows links and quotes a go.mod it cannot parse in its errors, so a link can put any
+A build tool follows links and quotes a file it cannot parse in its errors, so a link can put any
 file the user can read into ARDE's output with no repo code running. Every link is judged, because
 a list of file names would have to know every carrier. This file knows no language.
 """

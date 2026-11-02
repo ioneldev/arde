@@ -36,7 +36,7 @@ def a_field(**changes: object) -> ResponseField:
         "name": "TotalCents",
         "json_name": "total_cents",
         "declared_type": "int64",
-        "omitempty": False,
+        "may_be_absent": False,
         "package": "web",
         "file": "web/payloads.go",
     }
