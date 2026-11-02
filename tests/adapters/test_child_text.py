@@ -2,7 +2,12 @@
 
 import pytest
 
-from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text, visible_text
+from arde.adapters.child_text import (
+    MESSAGE_TAIL_BYTES,
+    bounded_text,
+    visible_text,
+    with_kept_tail,
+)
 
 
 def test_a_message_keeps_the_last_two_thousand_bytes() -> None:
@@ -55,3 +60,19 @@ def test_visible_text_cuts_nothing() -> None:
     long = "x" * 5000 + "\n"
 
     assert visible_text(long) == long
+
+
+def test_text_inside_the_limit_is_kept_as_it_is_with_no_note() -> None:
+    assert with_kept_tail("short", 5) == "short"
+
+
+def test_text_past_the_limit_keeps_its_end_and_says_how_much_was_written() -> None:
+    kept = with_kept_tail("start and end", 3)
+
+    assert kept == "[ARDE kept only the last 3 bytes of this output; 13 were written]\nend"
+
+
+def test_the_limit_is_in_bytes_and_a_cut_character_is_dropped_whole() -> None:
+    kept = with_kept_tail("ééé", 3)
+
+    assert kept.endswith("\né")

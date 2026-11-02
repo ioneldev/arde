@@ -12,6 +12,8 @@ from arde.adapters.child_process import ChildCommand, ChildOutcome
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES
 from arde.adapters.language.go import toolchain
 from arde.adapters.language.go.errors import GoCommandError
+from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
+from arde.adapters.language.go.timeouts import GO_TEST_BINARY_TIMEOUT_S, GO_TEST_TIMEOUT_S
 from arde.adapters.language.go.toolchain import BadTestCommandError, build_service, run_checks
 
 LISTING = (
@@ -26,10 +28,12 @@ class StandInGo:
     def __init__(self, **answers: ChildOutcome | Callable[[tuple[str, ...]], ChildOutcome]) -> None:
         self.answers = answers
         self.asked: list[tuple[str, ...]] = []
+        self.commands: list[ChildCommand] = []
         self.environments: list[dict[str, str]] = []
 
     def __call__(self, command: ChildCommand) -> ChildOutcome:
         self.asked.append(command.argv)
+        self.commands.append(command)
         self.environments.append(command.env)
         answer = self.answers.get(
             self._which(command.argv), ChildOutcome(exit_code=0, stdout="", stderr="")
@@ -80,12 +84,135 @@ def use(monkeypatch: pytest.MonkeyPatch, go: StandInGo) -> StandInGo:
     return go
 
 
+def event(action: str, test: str | None = None, *, output: str | None = None) -> str:
+    fields = {"Action": action, "Package": "example.com/p"}
+    fields.update({"Test": test} if test else {})
+    fields.update({"Output": output} if output else {})
+    return json.dumps(fields) + "\n"
+
+
 def test_the_tests_the_toolchain_lists_are_counted(
     monkeypatch: pytest.MonkeyPatch, repo: Path
 ) -> None:
     use(monkeypatch, StandInGo(listing=outcome(stdout=LISTING)))
 
-    assert run_checks(repo, shop_profile()).test_count == 3
+    assert run_checks(repo, shop_profile()).tests_listed == 3
+
+
+def test_the_tests_are_run_for_their_events_with_no_cache_and_with_gos_own_clock(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    go = use(monkeypatch, StandInGo())
+
+    run_checks(repo, shop_profile())
+
+    [tests] = [argv for argv in go.asked if argv[1] == "test" and "-list" not in argv]
+    assert tests == ("go", "test", "-json", "-count=1", "-timeout", "540s", "./...")
+
+
+# Only Go can name the test that hung, and it does so only when its own clock runs out first.
+def test_gos_clock_runs_out_before_ardes() -> None:
+    assert GO_TEST_BINARY_TIMEOUT_S < GO_TEST_TIMEOUT_S
+
+
+def test_what_ran_is_read_from_the_events_and_not_from_the_exit_code(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    stream = event("pass", "TestA") + event("skip", "TestB") + event("pass")
+    use(monkeypatch, StandInGo(test=outcome(stdout=stream)))
+
+    result = run_checks(repo, shop_profile())
+
+    assert (result.test_ok, result.tests_run) == (True, 1)
+    assert result.tests_skipped == ("example.com/p.TestB",)
+
+
+def test_the_event_stream_stops_the_run_when_it_was_cut(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    use(monkeypatch, StandInGo(test=outcome(stdout=event("pass", "TestA"), cut=True)))
+
+    with pytest.raises(GoCommandError, match="TestA") as stopped:
+        run_checks(repo, shop_profile())
+
+    assert "print" in stopped.value.next_action
+
+
+def test_the_event_stream_stops_a_red_run_too_when_it_was_cut(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    use(monkeypatch, StandInGo(test=outcome(1, stdout=event("fail"), cut=True)))
+
+    with pytest.raises(GoCommandError, match="too much"):
+        run_checks(repo, shop_profile())
+
+
+def test_the_event_stream_may_run_far_past_what_a_check_keeps_of_its_text(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    go = use(monkeypatch, StandInGo())
+
+    run_checks(repo, shop_profile())
+
+    [tests] = [
+        command
+        for command in go.commands
+        if command.argv[1] == "test" and "-list" not in command.argv
+    ]
+    assert tests.output.max_bytes > CHECK_OUTPUT_LIMIT.max_bytes
+
+
+def test_every_other_go_command_keeps_the_limit_of_a_check(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    go = use(monkeypatch, StandInGo())
+
+    run_checks(repo, shop_profile())
+
+    others = [command for command in go.commands if "-json" not in command.argv]
+    assert others
+    assert {command.output for command in others} == {CHECK_OUTPUT_LIMIT}
+
+
+def test_the_text_of_the_tests_is_kept_and_their_events_are_not(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    stream = event("output", "TestA", output="the reason\n") + event("fail", "TestA")
+    use(monkeypatch, StandInGo(test=outcome(1, stdout=stream)))
+
+    output = run_checks(repo, shop_profile()).output
+
+    assert "the reason" in output
+    assert '"Action"' not in output
+
+
+# R90: a check keeps a megabyte per stream, and the repair loop reads the end.
+def test_the_text_of_the_tests_keeps_its_end_and_says_what_was_left_out(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    limit = CHECK_OUTPUT_LIMIT.max_bytes
+    long_text = "the start\n" + "x" * limit + "\nthe real reason\n"
+    stream = event("output", output=long_text)
+    use(monkeypatch, StandInGo(test=outcome(1, stdout=stream)))
+
+    output = run_checks(repo, shop_profile()).output
+
+    assert "the real reason" in output
+    assert "the start" not in output
+    assert f"ARDE kept only the last {limit} bytes" in output
+
+
+def test_what_the_tests_wrote_to_stderr_is_limited_like_the_text(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    limit = CHECK_OUTPUT_LIMIT.max_bytes
+    noisy = ChildOutcome(exit_code=1, stdout="", stderr="the start\n" + "x" * limit + "\nend\n")
+    use(monkeypatch, StandInGo(test=noisy))
+
+    output = run_checks(repo, shop_profile()).output
+
+    assert "the start" not in output
+    assert len(output.encode()) < limit + 1000
 
 
 def test_a_listing_that_failed_after_the_tests_passed_is_an_error_and_not_a_count_of_zero(
@@ -100,14 +227,23 @@ def test_a_listing_that_failed_after_the_tests_passed_is_an_error_and_not_a_coun
     assert failed.value.next_action
 
 
-def test_a_listing_that_failed_along_with_the_tests_is_a_count_of_zero_and_a_failed_test(
+def test_a_listing_that_failed_along_with_the_tests_gives_no_count_at_all(
     monkeypatch: pytest.MonkeyPatch, repo: Path
 ) -> None:
-    use(monkeypatch, StandInGo(test=outcome(1), listing=outcome(1)))
+    partial = outcome(1, stdout=LISTING)
+    use(monkeypatch, StandInGo(test=outcome(1), listing=partial))
 
     result = run_checks(repo, shop_profile())
 
-    assert (result.test_ok, result.test_count) == (False, 0)
+    assert (result.test_ok, result.tests_listed) == (False, None)
+
+
+def test_a_listing_that_worked_is_a_count_even_when_a_test_failed(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    use(monkeypatch, StandInGo(test=outcome(1), listing=outcome(stdout=LISTING)))
+
+    assert run_checks(repo, shop_profile()).tests_listed == 3
 
 
 def test_a_listing_that_was_cut_is_an_error_because_a_count_of_the_rest_would_be_too_low(
@@ -127,6 +263,67 @@ def test_the_files_the_build_leaves_out_are_listed_from_a_list_that_was_not_cut(
 
     with pytest.raises(GoCommandError, match="too long"):
         run_checks(repo, shop_profile())
+
+
+def a_module_at(folder: Path) -> None:
+    folder.mkdir(parents=True)
+    (folder / "go.mod").write_text("module example.com/x\n", encoding="utf-8")
+
+
+def test_a_folder_with_its_own_go_mod_is_named_as_unchecked(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    (repo / "go.mod").write_text("module example.com/root\n", encoding="utf-8")
+    a_module_at(repo / "tools" / "gen")
+    a_module_at(repo / "billing")
+    use(monkeypatch, StandInGo())
+
+    assert run_checks(repo, shop_profile()).unchecked_modules == ("billing", "tools/gen")
+
+
+def test_a_module_inside_a_module_is_covered_by_naming_the_outer_one(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    a_module_at(repo / "billing")
+    a_module_at(repo / "billing" / "plugins")
+    use(monkeypatch, StandInGo())
+
+    assert run_checks(repo, shop_profile()).unchecked_modules == ("billing",)
+
+
+@pytest.mark.parametrize("folder", ["vendor/dep", "testdata/mod", "_old", ".cache/mod"])
+def test_a_module_in_a_folder_the_go_tool_passes_over_is_not_counted_as_unchecked(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, folder: str
+) -> None:
+    a_module_at(repo / folder)
+    use(monkeypatch, StandInGo())
+
+    assert run_checks(repo, shop_profile()).unchecked_modules == ()
+
+
+def test_a_folder_of_a_nested_module_is_not_asked_about_left_out_files(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    a_repo_with_one_folder_of_go(repo)
+    a_module_at(repo / "billing")
+    (repo / "billing" / "b.go").write_text("package billing\n", encoding="utf-8")
+    go = use(monkeypatch, StandInGo())
+
+    run_checks(repo, shop_profile())
+
+    [listing] = [argv for argv in go.asked if argv[1:3] == ("list", "-e")]
+    assert listing[5:] == (".",)
+
+
+def test_a_folder_name_with_a_line_break_stays_one_line_in_unchecked_modules(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    a_module_at(repo / "odd\nname")
+    use(monkeypatch, StandInGo())
+
+    [name] = run_checks(repo, shop_profile()).unchecked_modules
+
+    assert "\n" not in name
 
 
 def test_the_build_check_writes_no_binary_anywhere(

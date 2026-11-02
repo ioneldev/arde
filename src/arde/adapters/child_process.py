@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 from typing import IO, Literal
 
-from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text
+from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text, kept_tail_note
 from arde.domain.base import Frozen
 from arde.domain.errors import ArdeError
 from arde.domain.report import ExitCode
@@ -179,7 +179,5 @@ def _read_back(file: IO[bytes], command: ChildCommand, *, stream: str) -> tuple[
     if limit.when_longer == "fail":
         raise ChildOutputTooLongError(command, stream=stream, size=size)
     file.seek(size - limit.max_bytes)
-    note = (
-        f"[ARDE kept only the last {limit.max_bytes} bytes of this output; {size} were written]\n"
-    )
+    note = kept_tail_note(kept=limit.max_bytes, written=size)
     return note + file.read().decode("utf-8", errors="replace"), True

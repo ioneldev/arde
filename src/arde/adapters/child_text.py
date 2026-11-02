@@ -19,6 +19,20 @@ def bounded_text(text: str, limit: int) -> str:
     return tail.decode("utf-8", errors="ignore")
 
 
+def kept_tail_note(*, kept: int, written: int) -> str:
+    return f"[ARDE kept only the last {kept} bytes of this output; {written} were written]\n"
+
+
+def with_kept_tail(text: str, max_bytes: int) -> str:
+    """The text as it is, or its end in max_bytes with a note saying that the start is gone."""
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= max_bytes:
+        return text
+    # The cut can land inside a character, and "ignore" drops what is left of it.
+    tail = encoded[-max_bytes:].decode("utf-8", errors="ignore")
+    return kept_tail_note(kept=max_bytes, written=len(encoded)) + tail
+
+
 def visible_text(text: str) -> str:
     """The whole text, with each control character written out as \\xNN."""
     return _CONTROL_CHARACTER.sub(_written_out, text)

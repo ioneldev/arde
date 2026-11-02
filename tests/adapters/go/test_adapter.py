@@ -23,7 +23,6 @@ from arde.adapters.language.go.adapter import GoAdapter, go_adapter
 from arde.adapters.language.go.errors import GoCommandError
 from arde.adapters.language.go.goinspect_client import GoinspectError
 from arde.adapters.language.go.inventory_builder import NoRoutesError, RouteNotUnderstoodError
-from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
 from arde.adapters.language.go.toolchain import BadTestCommandError
 from arde.application.ports import RouteHashes
 from arde.domain.errors import ArdeError
@@ -427,18 +426,20 @@ def test_run_checks_counts_tests_and_finds_tagged_files(adapter: GoAdapter, shop
     result = adapter.run_checks(shop, shop_profile())
 
     assert (result.build_ok, result.vet_ok, result.test_ok) == (True, True, True)
-    assert result.test_count == 3
+    assert (result.tests_run, result.tests_listed) == (3, 3)
+    assert result.tests_skipped == ()
+    assert result.unchecked_modules == ()
     assert result.ignored_files == ("web/smoke_integration_test.go",)
 
 
-def test_no_tests_gives_count_zero_not_failure(adapter: GoAdapter, tmp_path: Path) -> None:
+def test_no_tests_gives_counts_of_zero_not_failure(adapter: GoAdapter, tmp_path: Path) -> None:
     (tmp_path / "go.mod").write_text("module example.com/bare\n\ngo 1.22\n", encoding="utf-8")
     (tmp_path / "main.go").write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
 
     result = adapter.run_checks(tmp_path, shop_profile())
 
     assert (result.build_ok, result.vet_ok, result.test_ok) == (True, True, True)
-    assert (result.test_count, result.ignored_files) == (0, ())
+    assert (result.tests_run, result.tests_listed, result.ignored_files) == (0, 0, ())
 
 
 def test_a_failing_test_is_reported_and_not_raised(adapter: GoAdapter, shop: Path) -> None:
@@ -448,7 +449,7 @@ def test_a_failing_test_is_reported_and_not_raised(adapter: GoAdapter, shop: Pat
 
     assert (result.build_ok, result.test_ok) == (True, False)
     assert "FAIL" in result.output
-    assert result.test_count == 3
+    assert (result.tests_run, result.tests_listed) == (3, 3)
 
 
 def test_a_build_error_is_reported_and_not_raised(adapter: GoAdapter, shop: Path) -> None:
@@ -632,18 +633,22 @@ PEAK_MEMORY_OF_RUN_CHECKS = """
 import json, resource, sys
 from pathlib import Path
 from arde.adapters.language.go.adapter import GoAdapter
+from arde.domain.errors import ArdeError
 from arde.domain.profile import RepoProfile
 
 profile = RepoProfile(main_package=".", main_file="main.go", port_env="PORT", patterns=())
-result = GoAdapter(Path("unused")).run_checks(Path(sys.argv[1]), profile)
+try:
+    GoAdapter(Path("unused")).run_checks(Path(sys.argv[1]), profile)
+    stopped_with = ""
+except ArdeError as error:
+    stopped_with = str(error)
 peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 in_megabytes = peak / 2**20 if sys.platform == "darwin" else peak / 1024
-print(json.dumps({"peak_mb": in_megabytes, "output_chars": len(result.output),
-                  "test_ok": result.test_ok, "build_ok": result.build_ok}))
+print(json.dumps({"peak_mb": in_megabytes, "stopped_with": stopped_with}))
 """
 
 
-def test_a_test_that_prints_400_megabytes_costs_the_run_no_memory_and_leaves_a_tail(
+def test_a_test_that_prints_400_megabytes_stops_the_run_and_costs_it_no_memory(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "go.mod").write_text("module example.com/noisy\n\ngo 1.22\n", encoding="utf-8")
@@ -658,8 +663,7 @@ def test_a_test_that_prints_400_megabytes_costs_the_run_no_memory_and_leaves_a_t
     )
     report = json.loads(ran.stdout)
 
-    assert (report["build_ok"], report["test_ok"]) == (True, False)
-    assert report["output_chars"] < 2 * CHECK_OUTPUT_LIMIT.max_bytes
+    assert "too much" in report["stopped_with"]
     assert report["peak_mb"] < 300, f"the run peaked at {report['peak_mb']:.0f} MB"
 
 
@@ -707,7 +711,7 @@ def test_a_package_with_every_file_behind_a_tag_still_shows_its_files_as_left_ou
         "e2e/b_test.go",
         "web/smoke_integration_test.go",
     )
-    assert result.test_count == 3
+    assert result.tests_listed == 3
 
 
 def test_folders_the_go_tool_never_looks_in_add_nothing_to_the_left_out_files(

@@ -134,17 +134,28 @@ class Tool(Frozen):
 
 
 class CheckResult(Frozen):
-    """What the language's own checks said about a repo. A failed check is data, not an error."""
+    """What the language's own checks measured about a repo. A failed check is data, not an error.
+
+    test_ok says that no test failed, which also holds when none ran. tests_run says how many did.
+    """
 
     build_ok: bool
     vet_ok: bool
     test_ok: bool
+    # Readable text. A test chooses every byte of it, so code decides from the fields around it.
     output: str
-    # Every test, benchmark, fuzz test and example the toolchain lists. Zero is a valid answer.
-    test_count: int
+    # Top-level tests that ran to a pass or a fail. Zero is a valid answer, and worth a warning.
+    tests_run: int
+    # Each test and subtest that skipped, as package.name, one line each.
+    tests_skipped: tuple[str, ...]
+    # Every test, benchmark, fuzz test and example the toolchain lists, which need not have run.
+    # None when a test package does not compile, because a count of the rest would read as a total.
+    tests_listed: int | None
     # Files the build leaves out, such as a test file behind a build tag or one for another
     # platform, as paths from the repo root. A file that leads out of the repo is not listed.
     ignored_files: tuple[str, ...]
+    # Folders from the repo root that hold a module of their own. No check above reached them.
+    unchecked_modules: tuple[str, ...]
 
 
 # Why a route has no hash: its handler is written in place, several functions share its key, no

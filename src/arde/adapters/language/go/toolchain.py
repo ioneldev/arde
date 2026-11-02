@@ -12,20 +12,28 @@ from typing import NamedTuple
 
 from pydantic import BaseModel, Field
 
-from arde.adapters.child_process import ChildCommand, ChildOutcome, run_child
-from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text, visible_text
+from arde.adapters.child_process import ChildCommand, ChildOutcome, OutputLimit, run_child
+from arde.adapters.child_text import (
+    MESSAGE_TAIL_BYTES,
+    bounded_text,
+    visible_text,
+    with_kept_tail,
+)
 from arde.adapters.language.go.errors import GoCommandError
 from arde.adapters.language.go.go_environment import go_environment
-from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
+from arde.adapters.language.go.go_test_events import MeasuredTests, measured_tests
+from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT, TEST_EVENTS_LIMIT
 from arde.adapters.language.go.timeouts import (
     EXTRA_TEST_COMMAND_TIMEOUT_S,
     GO_BUILD_TIMEOUT_S,
     GO_LIST_TIMEOUT_S,
+    GO_TEST_BINARY_TIMEOUT_S,
     GO_TEST_TIMEOUT_S,
     GO_VET_TIMEOUT_S,
 )
 from arde.adapters.repo_links import is_inside
 from arde.application.ports import CheckResult
+from arde.domain.base import printable_name
 from arde.domain.errors import ArdeError
 from arde.domain.profile import RepoProfile
 from arde.domain.report import ExitCode
@@ -41,6 +49,14 @@ _LISTED_TEST = re.compile(r"(Test|Benchmark|Fuzz|Example)\w*")
 class GoStep(NamedTuple):
     arguments: tuple[str, ...]
     timeout_s: float
+    output: OutputLimit = CHECK_OUTPUT_LIMIT
+
+
+class _GoFolders(NamedTuple):
+    # The folders ./... reaches that hold Go files, as arguments to a go command.
+    packages: list[str]
+    # The folders where ./... stops at another module's go.mod, from the repo root.
+    nested_modules: list[str]
 
 
 class _ListedPackage(BaseModel):
@@ -121,18 +137,47 @@ def run_checks(repo: Path, profile: RepoProfile) -> CheckResult:
         repo, GoStep(("build", "-buildvcs=false", "-o", os.devnull, "./..."), GO_BUILD_TIMEOUT_S)
     )
     vet = _go(repo, GoStep(("vet", "./..."), GO_VET_TIMEOUT_S))
-    test = _go(repo, GoStep(("test", "./..."), GO_TEST_TIMEOUT_S))
+    test = _run_the_tests(repo)
+    measured = measured_tests(test.stdout, tests_passed=test.succeeded)
     extras = [(command, _run_extra(repo, words)) for command, words in extra_commands]
     listing = _go(repo, GoStep(("test", "-list", ".*", "./..."), GO_TEST_TIMEOUT_S))
-    sections = [("build", build), ("vet", vet), ("test", test)]
+    folders = _go_folders(repo)
+    sections = [("build", build), ("vet", vet), ("test", _as_text(test, measured))]
     sections += [(f"extra: {command}", outcome) for command, outcome in extras]
     return CheckResult(
         build_ok=build.succeeded,
         vet_ok=vet.succeeded,
         test_ok=test.succeeded and all(outcome.succeeded for _, outcome in extras),
         output="\n".join(_section(title, outcome) for title, outcome in sections),
-        test_count=_count_listed_tests(listing, tests_passed=test.succeeded),
-        ignored_files=_ignored_files(repo),
+        tests_run=measured.tests_run,
+        tests_skipped=measured.tests_skipped,
+        tests_listed=_count_listed_tests(listing, tests_passed=test.succeeded),
+        ignored_files=_ignored_files(repo, folders.packages),
+        unchecked_modules=tuple(printable_name(folder) for folder in folders.nested_modules),
+    )
+
+
+# -count=1 because a cached pass can stand for code outside the repo that has since changed.
+def _run_the_tests(repo: Path) -> ChildOutcome:
+    timeout = f"{GO_TEST_BINARY_TIMEOUT_S}s"
+    arguments = ("test", "-json", "-count=1", "-timeout", timeout, "./...")
+    test = _go(repo, GoStep(arguments, GO_TEST_TIMEOUT_S, output=TEST_EVENTS_LIMIT))
+    if test.output_was_cut:
+        raise GoCommandError(
+            "The tests printed too much to read in full, so what ran cannot be counted. The end "
+            f"of what they printed, which names the last test: {_end_of(test)}",
+            next_action="Find the test that prints so much, quiet it, then run again.",
+        )
+    return test
+
+
+# The events are read and gone, so the section holds their text, limited as any other check's.
+def _as_text(test: ChildOutcome, measured: MeasuredTests) -> ChildOutcome:
+    limit = CHECK_OUTPUT_LIMIT.max_bytes
+    return ChildOutcome(
+        exit_code=test.exit_code,
+        stdout=with_kept_tail(measured.text, limit),
+        stderr=with_kept_tail(test.stderr, limit),
     )
 
 
@@ -148,16 +193,18 @@ def _end_of(outcome: ChildOutcome) -> str:
 
 
 # Zero must mean zero tests. A listing that failed after the tests passed would read as zero, and
-# so would one that was cut short, so both stop the run.
-def _count_listed_tests(listing: ChildOutcome, *, tests_passed: bool) -> int:
+# so would one that was cut short, so both stop the run. One that failed with the tests holds only
+# the packages that compiled, so it gives no count at all.
+def _count_listed_tests(listing: ChildOutcome, *, tests_passed: bool) -> int | None:
     _require_whole(listing, "the list of tests")
-    if tests_passed and not listing.succeeded:
-        raise GoCommandError(
-            f"The tests passed, but listing them failed, so they cannot be counted: "
-            f"{_end_of(listing)}",
-            next_action="Run the list command by hand in the repo to see why, then run again.",
-        )
-    return sum(1 for line in listing.stdout.splitlines() if _LISTED_TEST.fullmatch(line))
+    if listing.succeeded:
+        return sum(1 for line in listing.stdout.splitlines() if _LISTED_TEST.fullmatch(line))
+    if not tests_passed:
+        return None
+    raise GoCommandError(
+        f"The tests passed, but listing them failed, so they cannot be counted: {_end_of(listing)}",
+        next_action="Run the list command by hand in the repo to see why, then run again.",
+    )
 
 
 def _require_whole(listing: ChildOutcome, what: str) -> None:
@@ -168,8 +215,7 @@ def _require_whole(listing: ChildOutcome, what: str) -> None:
         )
 
 
-def _ignored_files(repo: Path) -> tuple[str, ...]:
-    folders = _folders_with_go_files(repo)
+def _ignored_files(repo: Path, folders: list[str]) -> tuple[str, ...]:
     root = os.path.realpath(repo)
     found: set[str] = set()
     for start in range(0, len(folders), FOLDERS_PER_LIST):
@@ -222,22 +268,21 @@ def _list_ignored_files(repo: Path, folders: list[str]) -> str:
 # Named one by one, because "./..." leaves out a package whose every file is behind a build tag,
 # and its tests are the ones that nothing else shows. The folders the Go tool passes over, and
 # those of another module, are left out as ./... leaves them out.
-def _folders_with_go_files(repo: Path) -> list[str]:
-    folders: list[str] = []
+def _go_folders(repo: Path) -> _GoFolders:
+    found = _GoFolders(packages=[], nested_modules=[])
     for current, subfolders, files in os.walk(repo):
         here = Path(current)
-        subfolders[:] = sorted(name for name in subfolders if not _is_passed_over(here / name))
+        reached = [name for name in sorted(subfolders) if not _is_passed_over(name)]
+        modules = [name for name in reached if os.path.isfile(here / name / "go.mod")]
+        subfolders[:] = [name for name in reached if name not in modules]
+        found.nested_modules.extend((here / name).relative_to(repo).as_posix() for name in modules)
         if any(name.endswith(".go") for name in files):
-            folders.append("./" + here.relative_to(repo).as_posix() if here != repo else ".")
-    return folders
+            found.packages.append("./" + here.relative_to(repo).as_posix() if here != repo else ".")
+    return found
 
 
-def _is_passed_over(folder: Path) -> bool:
-    return (
-        folder.name in ("vendor", "testdata")
-        or folder.name.startswith(("_", "."))
-        or os.path.isfile(folder / "go.mod")
-    )
+def _is_passed_over(folder_name: str) -> bool:
+    return folder_name in ("vendor", "testdata") or folder_name.startswith(("_", "."))
 
 
 # No shell: the words are split and run as they are, so a command in the profile cannot chain
@@ -268,7 +313,7 @@ def _go(repo: Path, step: GoStep) -> ChildOutcome:
         argv=("go", *step.arguments),
         cwd=repo,
         timeout_s=step.timeout_s,
-        output=CHECK_OUTPUT_LIMIT,
+        output=step.output,
         env=go_environment(repo),
     )
     return run_child(command)
