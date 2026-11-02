@@ -548,7 +548,7 @@ func TestFingerprintsFailWhenTheModuleHoldsNoPackage(t *testing.T) {
 
 	exitCode, stdout, stderr := runCommand(t, "fingerprints", "--roots", writeRoots(t, shopDetail), "--main", ".", root)
 
-	if exitCode != 1 || stdout != "" || !strings.Contains(stderr, "main_package") {
+	if exitCode != exitProfileProblem || stdout != "" || !strings.Contains(stderr, "main_package") {
 		t.Fatalf("exit %d, stdout %q, stderr %q", exitCode, stdout, stderr)
 	}
 }

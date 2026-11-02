@@ -16,6 +16,7 @@ from arde.adapters.child_process import (
     run_child,
 )
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text
+from arde.adapters.language.go.errors import BadPackageError, BadPatternError
 from arde.adapters.language.go.go_environment import go_environment
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT, GOINSPECT_REPLY_LIMIT
 from arde.adapters.language.go.timeouts import GO_BUILD_TIMEOUT_S, GOINSPECT_TIMEOUT_S
@@ -29,6 +30,11 @@ GOINSPECT_SOURCE = Path(__file__).resolve().parents[5] / "tools" / "goinspect"
 HELPER_NAME = "goinspect"
 # What the helper prints in place of an expression past its size limit.
 TOO_LONG_TO_PRINT = "(too long to print)"
+# How the helper says the profile is to blame. The exit code alone cannot say so, because the Go
+# runtime exits 2 on a panic too, and a crash must never reach a model as its own mistake.
+EXIT_PROFILE_PROBLEM = 2
+BAD_PATTERNS_MARK = "goinspect: bad patterns: "
+BAD_MAIN_PACKAGE_MARK = "goinspect: bad main_package: "
 
 
 class GoinspectError(ArdeError):
@@ -244,8 +250,13 @@ class GoinspectClient:
 
 # goinspect writes a reason for every failure of its own, so silence means it was stopped from
 # outside. Reasons vary too much for one guess at the cause to help.
-def _failure_of[T: Frozen](question: "_Question[T]", outcome: ChildOutcome) -> GoinspectError:
+def _failure_of[T: Frozen](question: "_Question[T]", outcome: ChildOutcome) -> ArdeError:
     reason = bounded_text(outcome.stderr.strip(), MESSAGE_TAIL_BYTES)
+    if outcome.exit_code == EXIT_PROFILE_PROBLEM:
+        if outcome.stderr.startswith(BAD_PATTERNS_MARK):
+            return BadPatternError(reason.removeprefix(BAD_PATTERNS_MARK))
+        if outcome.stderr.startswith(BAD_MAIN_PACKAGE_MARK):
+            return BadPackageError(f"main_package {reason.removeprefix(BAD_MAIN_PACKAGE_MARK)}")
     if not reason:
         return GoinspectError(
             f"goinspect {question.name} stopped with exit {outcome.exit_code} and gave no reason.",

@@ -1013,15 +1013,11 @@ func TestRoutesSortsSitesAndPrintsEmptyListsAsLists(t *testing.T) {
 }
 
 func TestRoutesFailsLoudly(t *testing.T) {
-	services := twoServices()
 	cases := map[string]struct {
 		files       map[string]string
 		mainPackage string
 		mustMention string
 	}{
-		"a package that does not exist": {services, "./cmd/nothing", "main_package"},
-		"several packages":              {services, "./...", "main_package"},
-		"a file and not a folder":       {services, "./cmd/tracker/main.go", "main_package"},
 		"a type error in the service": {
 			map[string]string{"main.go": "package main\n\nfunc main() { missingName() }\n"}, ".", "missingName",
 		},
@@ -1047,6 +1043,82 @@ func TestRoutesFailsLoudly(t *testing.T) {
 	}
 }
 
+func TestABadMainPackageIsAProblemOfTheProfile(t *testing.T) {
+	files := twoServices()
+	files["empty/notes.txt"] = "no Go here"
+	files["tagged/tagged.go"] = "//go:build e2e\n\npackage main\n\nfunc main() {}\n"
+	files["nested/go.mod"] = "module example.com/nested\n\ngo 1.27\n"
+	files["nested/main.go"] = "package main\n\nfunc main() {}\n"
+	root := writeModule(t, "example.com/depot", files)
+	cases := map[string]string{
+		"a package that does not exist":   "./cmd/nothing",
+		"several packages":                "./...",
+		"a file and not a folder":         "./cmd/tracker/main.go",
+		"a folder with no Go file":        "./empty",
+		"a folder whose files are tagged": "./tagged",
+		"a folder of another module":      "./nested",
+	}
+
+	for name, mainPackage := range cases {
+		exitCode, stdout, stderr := runCommand(t, "routes", "--patterns", writePatterns(t, noPatterns), "--main", mainPackage, root)
+
+		if exitCode != exitProfileProblem || stdout != "" {
+			t.Errorf("%s: exit %d, stdout %q, stderr %q", name, exitCode, stdout, stderr)
+		}
+		if !strings.HasPrefix(stderr, "goinspect: bad main_package: ") {
+			t.Errorf("%s: stderr must start with the mark the client reads, got %q", name, stderr)
+		}
+	}
+}
+
+func TestAPackageThatNamesAFileAtFaultIsAProblemOfTheRepo(t *testing.T) {
+	cases := map[string]map[string]string{
+		"a package clause that does not parse": {"main.go": "packag main\n"},
+		"an import nothing provides":           {"main.go": "package main\n\nimport _ \"example.invalid/nothing\"\n\nfunc main() {}\n"},
+	}
+
+	for name, files := range cases {
+		root := writeModule(t, "example.com/depot", files)
+
+		exitCode, _, stderr := runCommand(t, "routes", "--patterns", writePatterns(t, noPatterns), "--main", ".", root)
+
+		if exitCode != 1 || strings.HasPrefix(stderr, "goinspect: bad") {
+			t.Errorf("%s: exit %d, stderr %q", name, exitCode, stderr)
+		}
+	}
+}
+
+func TestABrokenGoModIsAProblemOfTheRepo(t *testing.T) {
+	root := writeTree(t, map[string]string{"go.mod": "module\n\nthis is not a module file\n", "main.go": "package main\n"})
+
+	exitCode, _, stderr := runCommand(t, "routes", "--patterns", writePatterns(t, noPatterns), "--main", ".", root)
+
+	if exitCode != 1 || strings.HasPrefix(stderr, "goinspect: bad") {
+		t.Fatalf("exit %d, stderr %q", exitCode, stderr)
+	}
+}
+
+func TestFingerprintsNamesABadMainPackageTheSameWay(t *testing.T) {
+	root := writeModule(t, "example.com/depot", twoServices())
+	rootsFile := writeTree(t, map[string]string{"roots.json": `["example.com/depot.x"]`}) + "/roots.json"
+
+	exitCode, _, stderr := runCommand(t, "fingerprints", "--roots", rootsFile, "--main", "./cmd/nothing", root)
+
+	if exitCode != exitProfileProblem || !strings.HasPrefix(stderr, "goinspect: bad main_package: ") {
+		t.Fatalf("exit %d, stderr %q", exitCode, stderr)
+	}
+}
+
+func TestAMissingPatternsFileIsNoProblemOfTheProfile(t *testing.T) {
+	root := writeModule(t, "example.com/depot", twoServices())
+
+	exitCode, _, stderr := runCommand(t, "routes", "--patterns", filepath.Join(t.TempDir(), "gone.json"), "--main", ".", root)
+
+	if exitCode != 1 || strings.HasPrefix(stderr, "goinspect: bad") {
+		t.Fatalf("exit %d, stderr %q", exitCode, stderr)
+	}
+}
+
 func TestRoutesIsNotStoppedByABrokenPackageOutsideTheService(t *testing.T) {
 	files := twoServices()
 	files["cmd/console/oops.go"] = "package main\n\nvar broken int = \"text\"\n"
@@ -1064,7 +1136,7 @@ func TestRoutesReadsNoGoFileBeforeTheBadPatternStopsIt(t *testing.T) {
 
 	exitCode, _, stderr := runCommand(t, "routes", "--patterns", writePatterns(t, `[{"kind":"route","call":"(","args":{}}]`), "--main", ".", root)
 
-	if exitCode != 1 || !strings.Contains(stderr, "does not compile") {
+	if exitCode != exitProfileProblem || !strings.Contains(stderr, "does not compile") {
 		t.Fatalf("exit %d, stderr %q", exitCode, stderr)
 	}
 }

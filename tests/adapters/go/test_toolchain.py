@@ -11,7 +11,7 @@ from tree_support import a_tree_too_deep_for_one_path
 from arde.adapters.child_process import ChildCommand, ChildOutcome
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES
 from arde.adapters.language.go import toolchain
-from arde.adapters.language.go.errors import GoCommandError
+from arde.adapters.language.go.errors import BadPackageError, GoCommandError
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
 from arde.adapters.language.go.timeouts import GO_TEST_BINARY_TIMEOUT_S, GO_TEST_TIMEOUT_S
 from arde.adapters.language.go.toolchain import BadTestCommandError, build_service, run_checks
@@ -364,7 +364,7 @@ def test_a_package_that_is_not_main_stops_the_build_and_names_main_package(
 ) -> None:
     go = use(monkeypatch, StandInGo(package_name=outcome(stdout=answer)))
 
-    with pytest.raises(GoCommandError) as refused:
+    with pytest.raises(BadPackageError) as refused:
         build_service(repo, shop_profile(main_package=main_package))
 
     assert f"main_package {main_package}" in str(refused.value)
@@ -378,8 +378,26 @@ def test_a_package_that_cannot_be_listed_stops_the_build_with_the_toolchains_wor
     failed_list = ChildOutcome(exit_code=1, stdout="", stderr="no required module provides ./x\n")
     use(monkeypatch, StandInGo(package_name=failed_list))
 
-    with pytest.raises(GoCommandError, match="no required module provides"):
+    with pytest.raises(BadPackageError, match="no required module provides"):
         build_service(repo, shop_profile(main_package="./x"))
+
+
+# "go:" is the command speaking about the module, before it reached any package, so no other value
+# of main_package would help, and a model must not be sent to look for one.
+@pytest.mark.parametrize(
+    "stderr",
+    ["go: errors parsing go.mod:\ngo.mod:1: usage\n", "go: go.mod requires go >= 1.99.0\n"],
+)
+def test_a_module_that_does_not_load_is_no_problem_of_the_profile(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, stderr: str
+) -> None:
+    failed_list = ChildOutcome(exit_code=1, stdout="", stderr=stderr)
+    use(monkeypatch, StandInGo(package_name=failed_list))
+
+    with pytest.raises(GoCommandError) as stopped:
+        build_service(repo, shop_profile())
+
+    assert "main_package" not in stopped.value.next_action
 
 
 def test_the_package_is_listed_after_a_double_dash_like_it_is_built(
@@ -476,7 +494,7 @@ def test_a_package_that_cannot_be_listed_gives_a_short_clean_message(
 ) -> None:
     use(monkeypatch, StandInGo(package_name=NOISY_FAILURE))
 
-    with pytest.raises(GoCommandError) as failed:
+    with pytest.raises(BadPackageError) as failed:
         build_service(repo, shop_profile())
 
     assert_bounded_and_clean(str(failed.value))
@@ -599,7 +617,7 @@ def test_thousands_of_package_names_give_a_short_message(
     names = "".join(f"package{number}\n" for number in range(5000))
     use(monkeypatch, StandInGo(package_name=outcome(stdout=names)))
 
-    with pytest.raises(GoCommandError) as failed:
+    with pytest.raises(BadPackageError) as failed:
         build_service(repo, shop_profile(main_package="./..."))
 
     assert "5000 packages" in str(failed.value)

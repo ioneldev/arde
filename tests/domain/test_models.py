@@ -538,6 +538,33 @@ def test_a_main_package_must_name_a_folder_of_this_repo_with_a_leading_dot(value
         DiscoveredProfile(**{**PROFILE_FIELDS, "main_package": value})
 
 
+# The links gate does not walk .git, so a package there is the one way past it. Go passes over a
+# folder with a leading dot anyway, so no real service lives in one.
+@pytest.mark.parametrize(
+    "value",
+    [
+        "./.git/x",
+        "./.git",
+        "./.hidden/api",
+        "./cmd/.hidden",
+        "./cmd/.hidden/api",
+        ".//.hidden",
+        "./cmd/./api",
+        "./.git\\x",
+        "./cmd/...",
+        "./.../api",
+    ],
+)
+def test_a_main_package_cannot_name_a_folder_that_starts_with_a_dot(value: str) -> None:
+    with pytest.raises(ValidationError, match="starts with a dot"):
+        DiscoveredProfile(**{**PROFILE_FIELDS, "main_package": value})
+
+
+@pytest.mark.parametrize("value", ["./cmd.v2/api", "./a.b", "./x.y/z.w"])
+def test_a_dot_inside_a_folder_name_is_no_hidden_folder(value: str) -> None:
+    assert DiscoveredProfile(**{**PROFILE_FIELDS, "main_package": value}).main_package == value
+
+
 @pytest.mark.parametrize("value", ["./../outside", "./cmd/../../x", "./a/..", "./..\\x"])
 def test_a_main_package_cannot_leave_the_repo(value: str) -> None:
     with pytest.raises(ValidationError, match="must stay inside the repo"):

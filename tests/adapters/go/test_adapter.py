@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 import urllib.request
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -20,11 +20,11 @@ from shop_support import ROUTE_PATTERNS, SHOP, shop_profile
 
 from arde.adapters.child_process import ChildStartError
 from arde.adapters.language.go.adapter import GoAdapter, go_adapter
-from arde.adapters.language.go.errors import GoCommandError
+from arde.adapters.language.go.errors import BadPackageError, BadPatternError, GoCommandError
 from arde.adapters.language.go.goinspect_client import GoinspectError
 from arde.adapters.language.go.inventory_builder import NoRoutesError, RouteNotUnderstoodError
 from arde.adapters.language.go.toolchain import BadTestCommandError
-from arde.application.ports import RouteHashes
+from arde.application.ports import ProfileProblem, RouteHashes
 from arde.domain.errors import ArdeError
 from arde.domain.inventory import (
     INLINE_HANDLER,
@@ -33,7 +33,7 @@ from arde.domain.inventory import (
     ResponseField,
     Route,
 )
-from arde.domain.profile import RepoProfile
+from arde.domain.profile import ExtractionPattern, RepoProfile
 from arde.domain.report import ExitCode
 
 pytestmark = pytest.mark.integration
@@ -893,7 +893,7 @@ def test_build_service_reads_the_package_as_a_package_and_never_as_a_flag(
         }
     )
 
-    with pytest.raises(GoCommandError):
+    with pytest.raises(BadPackageError):
         adapter.build_service(shop, hostile)
 
     assert not ran_the_flag.exists()
@@ -916,7 +916,7 @@ def test_a_build_that_fails_names_the_error_and_the_next_action(
 def test_a_package_that_is_not_main_is_refused_and_main_package_is_named(
     adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
 ) -> None:
-    with pytest.raises(GoCommandError) as refused:
+    with pytest.raises(BadPackageError) as refused:
         adapter.build_service(shop, shop_profile(main_package="./pricing"))
 
     assert "main_package ./pricing is package pricing" in str(refused.value)
@@ -926,15 +926,88 @@ def test_a_package_that_is_not_main_is_refused_and_main_package_is_named(
 def test_every_package_at_once_passes_the_type_and_stops_at_the_main_check(
     adapter: GoAdapter, shop: Path
 ) -> None:
-    with pytest.raises(GoCommandError, match=r"main_package \./\.\.\."):
+    with pytest.raises(BadPackageError, match=r"main_package \./\.\.\."):
         adapter.build_service(shop, shop_profile(main_package="./..."))
 
 
 def test_a_package_that_does_not_exist_is_an_error(
     adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
 ) -> None:
-    with pytest.raises(GoCommandError):
+    with pytest.raises(BadPackageError):
         adapter.build_service(shop, shop_profile(main_package="./nowhere"))
+
+
+def bad_regex_second_in_the_profile() -> RepoProfile:
+    good = ExtractionPattern(kind="param", call=r"^r\.PathValue$", args={"name": 0})
+    bad = ExtractionPattern(kind="route", call=r"^app\.handle(", args={"path": 0, "handler": 1})
+    return shop_profile(patterns=(good, bad))
+
+
+def test_a_bad_regex_in_the_profile_is_a_problem_of_the_profile_named_by_its_own_number(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    with pytest.raises(BadPatternError, match="pattern 2") as refused:
+        adapter.extract_inventory(shop, bad_regex_second_in_the_profile())
+
+    assert isinstance(refused.value, ProfileProblem)
+    assert refused.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
+    assert "patterns.json" not in str(refused.value)
+    assert "input.json" not in str(refused.value)
+
+
+def test_a_main_package_that_names_nothing_stops_the_inventory_as_a_problem_of_the_profile(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    with pytest.raises(BadPackageError, match=r"\./nowhere"):
+        adapter.extract_inventory(shop, shop_profile(main_package="./nowhere"))
+
+
+def test_a_repo_file_that_does_not_parse_is_no_problem_of_the_profile(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    (shop / "web" / "broken.go").write_text("package web\n\nfunc (\n", encoding="utf-8")
+
+    with pytest.raises(GoinspectError) as stopped:
+        adapter.extract_inventory(shop, shop_profile())
+
+    assert not isinstance(stopped.value, ProfileProblem)
+
+
+def test_a_broken_go_mod_is_no_problem_of_the_profile(adapter: GoAdapter, shop: Path) -> None:
+    (shop / "go.mod").write_text("module\n\nthis is not a module file\n", encoding="utf-8")
+
+    with pytest.raises(ArdeError) as stopped:
+        adapter.extract_inventory(shop, shop_profile())
+
+    assert not isinstance(stopped.value, ProfileProblem)
+
+
+@pytest.mark.parametrize(
+    "exercised",
+    [
+        pytest.param(
+            lambda adapter, shop: adapter.build_service(shop, shop_profile()),
+            id="build_service",
+        ),
+        pytest.param(
+            lambda adapter, shop: adapter.extract_inventory(shop, shop_profile()),
+            id="extract_inventory",
+        ),
+    ],
+)
+def test_a_go_mod_that_needs_a_newer_go_is_no_problem_of_the_profile(
+    adapter: GoAdapter,
+    shop: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exercised: Callable[[GoAdapter, Path], object],
+) -> None:
+    monkeypatch.setenv("GOTOOLCHAIN", "local")
+    edit(shop / "go.mod", "go 1.", "go 1.99\n\n// was go 1.")
+
+    with pytest.raises(ArdeError, match=r"1\.99") as stopped:
+        exercised(adapter, shop)
+
+    assert not isinstance(stopped.value, ProfileProblem)
 
 
 @pytest.mark.parametrize(
@@ -1009,7 +1082,7 @@ def test_a_call_to_strip_prefix_stops_the_run(adapter: GoAdapter, tmp_path: Path
 def test_a_main_package_that_names_no_one_package_stops_with_a_reason(
     adapter: GoAdapter, shop: Path, main_package: str, says: str
 ) -> None:
-    with pytest.raises(GoinspectError, match=says):
+    with pytest.raises(BadPackageError, match=says):
         adapter.extract_inventory(shop, shop_profile(main_package=main_package))
 
 

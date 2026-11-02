@@ -356,12 +356,26 @@ func TestMatchRejectsAPatternsFileItCannotUse(t *testing.T) {
 
 		exitCode, stdout, stderr := runCommand(t, "match", "--patterns", patternsFile, root)
 
-		if exitCode != 1 || stdout != "" {
+		if exitCode != exitProfileProblem || stdout != "" {
 			t.Errorf("%s: exit %d, stdout %q", name, exitCode, stdout)
+		}
+		if !strings.HasPrefix(stderr, "goinspect: bad patterns: ") {
+			t.Errorf("%s: stderr must start with the mark the client reads, got %q", name, stderr)
 		}
 		if !strings.Contains(stderr, test.mustMention) {
 			t.Errorf("%s: stderr must mention %q, got %q", name, test.mustMention, stderr)
 		}
+	}
+}
+
+func TestABadPatternIsNamedByItsNumberAndNotByAFileThatWillBeGone(t *testing.T) {
+	root := writeTree(t, map[string]string{"README.md": "no go here"})
+	patternsFile := writeTree(t, map[string]string{"patterns.json": `[{"kind":"route","call":"(","args":{}}]`}) + "/patterns.json"
+
+	_, _, stderr := runCommand(t, "match", "--patterns", patternsFile, root)
+
+	if !strings.Contains(stderr, "pattern 1") || strings.Contains(stderr, patternsFile) {
+		t.Fatalf("got %q", stderr)
 	}
 }
 

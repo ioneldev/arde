@@ -19,7 +19,7 @@ from arde.adapters.child_text import (
     visible_text,
     with_kept_tail,
 )
-from arde.adapters.language.go.errors import GoCommandError
+from arde.adapters.language.go.errors import BadPackageError, GoCommandError
 from arde.adapters.language.go.go_environment import go_environment
 from arde.adapters.language.go.go_test_events import MeasuredTests, measured_tests
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT, TEST_EVENTS_LIMIT
@@ -96,17 +96,24 @@ def _require_one_main_package(repo: Path, main_package: str) -> None:
     arguments = ("list", "-buildvcs=false", "-f", "{{.Name}}", "--", main_package)
     listing = _go(repo, GoStep(arguments, GO_LIST_TIMEOUT_S))
     if not listing.succeeded:
-        raise GoCommandError(
-            f"main_package {main_package} cannot be loaded: {_end_of(listing)}",
-            next_action="Correct main_package in the profile to name a package, then run again.",
-        )
+        raise _cannot_load(main_package, listing)
     names = listing.stdout.split()
     if names != ["main"]:
-        raise GoCommandError(
+        raise BadPackageError(
             f"main_package {main_package} {_what_it_names(names)}, "
-            "and a service is one package main.",
-            next_action="Correct main_package in the profile to the package that holds func main.",
+            "and a service is one package main."
         )
+
+
+# "go:" starts what the command says about the module, before it reaches any package, such as a
+# broken go.mod or one that needs a newer Go. No value of main_package would fix those.
+def _cannot_load(main_package: str, listing: ChildOutcome) -> ArdeError:
+    if listing.stderr.startswith("go: "):
+        return GoCommandError(
+            f"The module cannot be loaded: {_end_of(listing)}",
+            next_action="Fix what the message names, then run again.",
+        )
+    return BadPackageError(f"main_package {main_package} cannot be loaded: {_end_of(listing)}")
 
 
 def _what_it_names(names: list[str]) -> str:

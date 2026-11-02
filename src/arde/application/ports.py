@@ -123,6 +123,18 @@ class LLMClient(Protocol):
     ) -> tuple[T, LLMResponse]: ...
 
 
+# Lives with the port, not the adapter, for the same reason as ProviderError.
+class ProfileProblem(ArdeError):
+    """The profile does not fit the repo, and a better profile could. Discovery may correct it.
+
+    Any other ArdeError from an adapter means the repo or the machine is broken, which no value in
+    a profile can fix, so it stops the run and never goes back to a model as its own mistake.
+    """
+
+    def __init__(self, message: str, *, next_action: str) -> None:
+        super().__init__(message, next_action=next_action, exit_code=ExitCode.DISCOVERY_NEEDS_INPUT)
+
+
 class ToolOutcome(Frozen):
     content: str
     is_error: bool = False
@@ -199,7 +211,8 @@ class LanguageAdapter(Protocol):
     def extract_inventory(self, repo: Path, profile: RepoProfile) -> Inventory:
         """What the service built from main_package holds. The repo must compile.
 
-        Raises an ArdeError when the repo has no route, or a route it cannot read.
+        Raises a ProfileProblem when the repo has no route, a route it cannot read, or a pattern or
+        main_package that cannot be used.
         """
         ...
 

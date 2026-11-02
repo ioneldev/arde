@@ -16,6 +16,7 @@ from arde.adapters.child_process import (
 )
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES
 from arde.adapters.language.go import goinspect_client
+from arde.adapters.language.go.errors import BadPackageError, BadPatternError
 from arde.adapters.language.go.goinspect_client import (
     GOINSPECT_REPLY_LIMIT,
     GOINSPECT_SOURCE,
@@ -28,6 +29,7 @@ from arde.adapters.language.go.goinspect_client import (
     WrapperCall,
     build_goinspect,
 )
+from arde.application.ports import ProfileProblem
 from arde.domain.errors import ArdeError
 from arde.domain.profile import ExtractionPattern
 from arde.domain.report import ExitCode
@@ -376,6 +378,105 @@ def test_a_helper_killed_by_a_signal_says_so(tmp_path: Path, folder: Path) -> No
     assert "exit -9" in str(failed.value)
     assert "gave no reason" in str(failed.value)
     assert "memory" in failed.value.next_action
+
+
+NO_PATTERNS: tuple[ExtractionPattern, ...] = ()
+
+
+def test_a_pattern_goinspect_refuses_is_a_problem_of_the_profile(
+    stand_in: StandIn, folder: Path
+) -> None:
+    refused = 'goinspect: bad patterns: pattern 1 (kind "route"): call does not compile\n'
+    stand_in.replies_with("", stderr=refused, exit_code=2)
+
+    with pytest.raises(BadPatternError) as failed:
+        GoinspectClient(stand_in.binary).matches(folder, NO_PATTERNS)
+
+    assert isinstance(failed.value, ProfileProblem)
+    assert failed.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
+    assert 'pattern 1 (kind "route")' in str(failed.value)
+    assert "goinspect:" not in str(failed.value)
+    assert "pattern" in failed.value.next_action
+
+
+def test_routes_reports_a_refused_pattern_the_same_way(stand_in: StandIn, folder: Path) -> None:
+    stand_in.replies_with("", stderr="goinspect: bad patterns: pattern 2\n", exit_code=2)
+
+    with pytest.raises(BadPatternError):
+        GoinspectClient(stand_in.binary).routes(folder, NO_PATTERNS, main_package=".")
+
+
+@pytest.mark.parametrize("command", ["routes", "fingerprints"])
+def test_a_main_package_goinspect_refuses_is_a_problem_of_the_profile(
+    stand_in: StandIn, folder: Path, command: str
+) -> None:
+    refused = "goinspect: bad main_package: ./gone does not load\n"
+    stand_in.replies_with("", stderr=refused, exit_code=2)
+    client = GoinspectClient(stand_in.binary)
+
+    with pytest.raises(BadPackageError) as failed:
+        if command == "routes":
+            client.routes(folder, NO_PATTERNS, main_package="./gone")
+        else:
+            client.fingerprints(folder, ["example.com/x.f"], main_package="./gone")
+
+    assert isinstance(failed.value, ProfileProblem)
+    assert failed.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
+    assert str(failed.value) == "main_package ./gone does not load"
+    assert "main_package" in failed.value.next_action
+
+
+# The Go runtime exits 2 too. A crash on a repo's file must not reach a model as its own mistake.
+@pytest.mark.parametrize(
+    "crash",
+    [
+        "panic: runtime error: index out of range\n\ngoroutine 1 [running]:\n",
+        "fatal error: stack overflow\n",
+        "",
+    ],
+    ids=["panic", "fatal error", "silence"],
+)
+def test_exit_two_without_the_mark_is_a_crash_and_no_problem_of_the_profile(
+    stand_in: StandIn, folder: Path, crash: str
+) -> None:
+    stand_in.replies_with("", stderr=crash, exit_code=2)
+
+    with pytest.raises(GoinspectError) as failed:
+        GoinspectClient(stand_in.binary).matches(folder, NO_PATTERNS)
+
+    assert not isinstance(failed.value, ProfileProblem)
+
+
+def test_the_mark_without_exit_two_is_no_problem_of_the_profile(
+    stand_in: StandIn, folder: Path
+) -> None:
+    stand_in.replies_with("", stderr="goinspect: bad patterns: quoted text\n", exit_code=1)
+
+    with pytest.raises(GoinspectError):
+        GoinspectClient(stand_in.binary).matches(folder, NO_PATTERNS)
+
+
+# The message keeps only the end of a long reason, and the mark is at the start.
+def test_the_mark_is_read_from_the_whole_of_a_long_message(stand_in: StandIn, folder: Path) -> None:
+    refused = "goinspect: bad main_package: " + "x" * (3 * MESSAGE_TAIL_BYTES) + " end\n"
+    stand_in.replies_with("", stderr=refused, exit_code=2)
+
+    with pytest.raises(BadPackageError) as failed:
+        GoinspectClient(stand_in.binary).routes(folder, NO_PATTERNS, main_package="./x")
+
+    assert str(failed.value).endswith("end")
+    assert len(str(failed.value)) < 2 * MESSAGE_TAIL_BYTES
+
+
+def test_a_problem_of_the_profile_gives_a_short_clean_message(
+    stand_in: StandIn, folder: Path
+) -> None:
+    stand_in.replies_with("", stderr="goinspect: bad patterns: \x1b[2Jpattern 1\n", exit_code=2)
+
+    with pytest.raises(BadPatternError) as failed:
+        GoinspectClient(stand_in.binary).matches(folder, NO_PATTERNS)
+
+    assert "\x1b" not in str(failed.value)
 
 
 def test_a_failing_helper_gives_a_short_clean_message(stand_in: StandIn, folder: Path) -> None:

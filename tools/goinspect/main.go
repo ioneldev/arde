@@ -1,6 +1,7 @@
 // goinspect answers the questions about Go source that ARDE's Python side cannot, because the
 // parser lives in Go's standard library. Every command prints one JSON document on stdout. A
-// failure prints a message on stderr, exits 1 and leaves stdout empty.
+// failure prints a message on stderr and leaves stdout empty. It exits 1, or 2 when what the
+// profile gave it is to blame.
 package main
 
 import (
@@ -15,6 +16,33 @@ import (
 const usage = "usage: goinspect compare --old DIR --new DIR | goinspect declarations DIR | " +
 	"goinspect match --patterns FILE DIR | goinspect routes --patterns FILE --main PKG DIR | " +
 	"goinspect fingerprints --roots FILE --main PKG DIR"
+
+// exitProfileProblem is the exit code of a failure that a better profile would avoid. The Go runtime
+// exits 2 on a panic as well, so the client also reads the start of the message.
+const exitProfileProblem = 2
+
+// profileProblem is a failure of what the profile gave goinspect. The text before its cause is part
+// of the contract with the client, which tells the two subjects apart by it.
+type profileProblem struct {
+	subject string
+	cause   error
+}
+
+func (problem profileProblem) Error() string {
+	return "bad " + problem.subject + ": " + problem.cause.Error()
+}
+
+func (problem profileProblem) Unwrap() error {
+	return problem.cause
+}
+
+func badPatterns(cause error) error {
+	return profileProblem{subject: "patterns", cause: cause}
+}
+
+func badMainPackage(cause error) error {
+	return profileProblem{subject: "main_package", cause: cause}
+}
 
 type command func(args []string) (any, error)
 
@@ -39,9 +67,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "goinspect: %v\n", err)
-		return 1
+		return exitCodeOf(err)
 	}
 	return 0
+}
+
+func exitCodeOf(err error) int {
+	var problem profileProblem
+	if errors.As(err, &problem) {
+		return exitProfileProblem
+	}
+	return 1
 }
 
 func execute(args []string) (any, error) {

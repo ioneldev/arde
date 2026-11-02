@@ -47,7 +47,8 @@ func loadService(dir, mainPackage string) (loadedService, error) {
 }
 
 // findMainPackage leaves it to the go command to say what the text names. A file has no module in
-// its answer, because go list builds an ad hoc package for it.
+// its answer, because go list builds an ad hoc package for it. Load's own error means the module
+// itself does not load, such as a broken go.mod, and no value of main_package would help.
 func findMainPackage(root, mainPackage string) (*packages.Package, error) {
 	config := &packages.Config{Mode: serviceGraphMode, Dir: root}
 	found, err := packages.Load(config, mainPackage)
@@ -55,15 +56,28 @@ func findMainPackage(root, mainPackage string) (*packages.Package, error) {
 		return nil, fmt.Errorf("main_package %s cannot be loaded: %w", mainPackage, err)
 	}
 	if len(found) != 1 {
-		return nil, fmt.Errorf("main_package %s names %d packages, and a service is one package; correct it and run again", mainPackage, len(found))
+		return nil, badMainPackage(fmt.Errorf("%s names %d packages, and a service is one package; correct it and run again", mainPackage, len(found)))
 	}
 	if problems := loadProblems(found); len(problems) > 0 {
-		return nil, fmt.Errorf("main_package %s does not load; fix these and run again:\n%s", mainPackage, strings.Join(problems, "\n"))
+		failure := fmt.Errorf("%s does not load; fix these and run again:\n%s", mainPackage, strings.Join(problems, "\n"))
+		if namesNothing(found[0]) {
+			return nil, badMainPackage(failure)
+		}
+		return nil, fmt.Errorf("main_package %w", failure)
 	}
 	if found[0].Module == nil {
-		return nil, fmt.Errorf("main_package %s is not a package of a module; name the folder that holds the package", mainPackage)
+		return nil, badMainPackage(fmt.Errorf("%s is not a package of a module; name the folder that holds the package", mainPackage))
 	}
 	return found[0], nil
+}
+
+// namesNothing is true when the go command has no file to blame: the folder is missing, holds no Go
+// file for this build, or belongs to another module. A problem with a place is in a file of the
+// repo, and a better main_package would not fix it.
+func namesNothing(entry *packages.Package) bool {
+	return len(entry.Errors) > 0 && !slices.ContainsFunc(entry.Errors, func(problem packages.Error) bool {
+		return problem.Pos != "" && problem.Pos != "-"
+	})
 }
 
 // moduleFoldersImportedBy compares modules and not import paths, because a nested module's path

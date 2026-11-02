@@ -17,8 +17,8 @@ from arde.adapters.language.go.goinspect_client import (
     RoutesReply,
     UnmatchedPattern,
 )
+from arde.application.ports import ProfileProblem
 from arde.domain.base import Frozen, describe_problems, one_line, printable_name
-from arde.domain.errors import ArdeError
 from arde.domain.inventory import (
     INLINE_HANDLER,
     PATH_LIMIT,
@@ -32,7 +32,6 @@ from arde.domain.inventory import (
     ResponseField,
     Route,
 )
-from arde.domain.report import ExitCode
 
 _HTTP_VERBS = frozenset(
     {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "OPTIONS", "TRACE"}
@@ -97,17 +96,16 @@ class _Located(Protocol):
     def line(self) -> int: ...
 
 
-class RouteNotUnderstoodError(ArdeError):
+class RouteNotUnderstoodError(ProfileProblem):
     def __init__(self, place: _Located, problem: str, *, next_action: str) -> None:
         super().__init__(
             f"Cannot read the route registered at {printable_name(place.file)}:{place.line}: "
             f"{problem}.",
             next_action=next_action,
-            exit_code=ExitCode.DISCOVERY_NEEDS_INPUT,
         )
 
 
-class NoRoutesError(ArdeError):
+class NoRoutesError(ProfileProblem):
     def __init__(self) -> None:
         super().__init__(
             "The profile's patterns found no route in this repo.",
@@ -115,7 +113,6 @@ class NoRoutesError(ArdeError):
                 "Give Discovery a route pattern that matches how this repo registers routes, "
                 "or fix the one in the profile, then run again."
             ),
-            exit_code=ExitCode.DISCOVERY_NEEDS_INPUT,
         )
 
 

@@ -106,6 +106,8 @@ func patternsWithNoMatch(patterns []callPattern, matches []callMatch) []patternN
 	return unmatched
 }
 
+// loadPatterns names a pattern by its number in the profile, and not the file, which the caller
+// deletes. A file that cannot be read is no fault of the profile's.
 func loadPatterns(path string) ([]callPattern, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -113,13 +115,13 @@ func loadPatterns(path string) ([]callPattern, error) {
 	}
 	specs, err := decodePatternSpecs(content)
 	if err != nil {
-		return nil, fmt.Errorf("patterns file %s: %w; it must be a JSON array of objects with kind, call and args", path, err)
+		return nil, badPatterns(fmt.Errorf("%w; it must be a JSON array of objects with kind, call and args", err))
 	}
 	patterns := make([]callPattern, 0, len(specs))
 	for index, spec := range specs {
 		pattern, err := compilePattern(spec)
 		if err != nil {
-			return nil, fmt.Errorf("patterns file %s: pattern %d (kind %q): %w; fix that pattern and run again", path, index+1, spec.Kind, err)
+			return nil, badPatterns(fmt.Errorf("pattern %d (kind %q): %w; fix that pattern and run again", index+1, spec.Kind, err))
 		}
 		patterns = append(patterns, pattern)
 	}

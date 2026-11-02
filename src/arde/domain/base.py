@@ -137,6 +137,19 @@ def _require_package_inside_repo(package: str) -> str:
     return package
 
 
+# Every package at once, which the Go tool writes with dots and which names no hidden folder.
+_ALL_PACKAGES = "./..."
+
+
+# A folder that starts with a dot is out of the Go tool's reach, so no real service lives in one,
+# and .git is the one folder the repo-links gate does not walk.
+def _require_no_hidden_folder(package: str) -> str:
+    after_the_leading_dot = package.replace("\\", "/").split("/")[1:]
+    if package != _ALL_PACKAGES and any(part.startswith(".") for part in after_the_leading_dot):
+        raise ValueError("must name no folder that starts with a dot")
+    return package
+
+
 # The leading dot ties the package to this repo: any other text can name a package anywhere, such
 # as cmd/go in the toolchain or a dependency's program. It also stops the text being read as a
 # flag, because the build tool reads a leading hyphen as one, and one of its flags runs any command
@@ -149,6 +162,7 @@ MainPackage = Annotated[
         "or backticks",
     ),
     AfterValidator(_require_package_inside_repo),
+    AfterValidator(_require_no_hidden_folder),
 ]
 
 
