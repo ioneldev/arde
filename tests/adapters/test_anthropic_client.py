@@ -16,9 +16,18 @@ from anthropic.types import Message
 from pydantic import BaseModel, SecretStr
 from recording_tracer import RecordingTracer
 
+from arde.adapters.llm import anthropic_client
 from arde.adapters.llm.anthropic_client import AnthropicClient
+from arde.application.agent_loop import Accepted, AgentDeps, AgentSpec, SubmitTool, run_agent
+from arde.application.budget import Budget
 from arde.application.models_config import RoleConfig
-from arde.application.ports import LLMRequest, ParseFailed, ProviderError, ToolDef
+from arde.application.ports import (
+    LLMRequest,
+    ParseFailed,
+    ProviderError,
+    Refusal,
+    ToolDef,
+)
 from arde.domain.errors import ArdeError
 from arde.domain.report import ExitCode
 from arde.domain.usage import Usage
@@ -44,6 +53,7 @@ READ_FILE_PARAMS = {
     "strict": True,
 }
 STREAM_HEADERS = {"content-type": "text/event-stream", "request-id": REQUEST_ID}
+REPORTED_USAGE = Usage(input_tokens=3, output_tokens=4, cache_read=0, cache_write=0)
 REQUEST = LLMRequest(
     config=CONFIG,
     system="You explore a service.",
@@ -99,6 +109,11 @@ class StubMessages:
             raise self._outcome
         return self._outcome
 
+    # The SDK asserts this way when a stream delivered no event, and the stub delivers none.
+    @property
+    def current_message_snapshot(self) -> object:
+        raise AssertionError
+
 
 class StubSdk:
     def __init__(self, messages: StubMessages) -> None:
@@ -114,6 +129,7 @@ def message_with(
     *,
     stop_reason: str | None = "end_turn",
     usage: dict[str, int | None] | None = None,
+    stop_details: dict[str, object] | None = None,
 ) -> Message:
     return Message.model_validate(
         {
@@ -123,6 +139,7 @@ def message_with(
             "model": CONFIG.model,
             "content": content if content is not None else [{"type": "text", "text": "done"}],
             "stop_reason": stop_reason,
+            "stop_details": stop_details,
             "stop_sequence": None,
             "usage": usage or usage_fields(),
         }
@@ -574,7 +591,9 @@ def test_a_paid_reply_that_fails_validation_keeps_its_usage(text: str) -> None:
         client.parse(REQUEST, Verdict)
 
     assert isinstance(raised.value, ProviderError)
-    assert raised.value.usage == Usage(input_tokens=3, output_tokens=4, cache_read=0, cache_write=0)
+    assert raised.value.usage == REPORTED_USAGE
+    assert raised.value.paid_call is not None
+    assert raised.value.paid_call.usage == REPORTED_USAGE
     assert "Verdict" in str(raised.value)
     assert raised.value.__cause__ is None
 
@@ -784,22 +803,66 @@ FULL_REPLY = api_reply([{"type": "text", "text": "done"}], "end_turn")
 FULL_STREAM = stream_events(FULL_REPLY)
 
 
-def with_stop_reason(stop_reason: str | None) -> list[dict[str, object]]:
-    finish = {"stop_reason": stop_reason, "stop_sequence": None}
+def with_finish(**finish: object) -> list[dict[str, object]]:
+    delta = {"stop_sequence": None, **finish}
     return [
-        {**event, "delta": finish} if event["type"] == "message_delta" else event
+        {**event, "delta": delta} if event["type"] == "message_delta" else event
         for event in FULL_STREAM
     ]
 
 
-def with_usage(usage: dict[str, object]) -> list[dict[str, object]]:
+def with_stop_reason(stop_reason: str | None) -> list[dict[str, object]]:
+    return with_finish(stop_reason=stop_reason)
+
+
+def with_usage(usage: object) -> list[dict[str, object]]:
     start = {**FULL_STREAM[0]["message"], "usage": usage}
     return [{"type": "message_start", "message": start}, *FULL_STREAM[1:]]
 
 
+def with_message_field_removed(field: str) -> list[dict[str, object]]:
+    start = {key: value for key, value in FULL_STREAM[0]["message"].items() if key != field}
+    return [{"type": "message_start", "message": start}, *FULL_STREAM[1:]]
+
+
+def tool_input_stream(input_json: str) -> list[dict[str, object]]:
+    block = {"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {}}
+    delta = {"type": "input_json_delta", "partial_json": input_json}
+    return [
+        FULL_STREAM[0],
+        {"type": "content_block_start", "index": 0, "content_block": block},
+        {"type": "content_block_delta", "index": 0, "delta": delta},
+        {"type": "content_block_stop", "index": 0},
+        *FULL_STREAM[-2:],
+    ]
+
+
+TEXT_DELTA = FULL_STREAM[2]
+Answer = Callable[[httpx2.Request], httpx2.Response]
+
+
 # What a stream cannot be trusted to deliver, each measured against the real SDK. Most of these
-# reach the adapter as something other than an AnthropicError.
-UNUSABLE_ANSWERS: dict[str, Callable[[httpx2.Request], httpx2.Response]] = {
+# reach the adapter as something other than an AnthropicError. The API had answered in each of
+# these, and its first event had said what the prompt used, so each one was paid for.
+ANSWERS_THAT_REPORTED_USAGE: dict[str, Answer] = {
+    "ends before the stop reason": lambda _: event_stream(FULL_STREAM[:4]),
+    "no stop reason": lambda _: event_stream(with_stop_reason(None)),
+    "pause_turn with no server tools": lambda _: event_stream(with_stop_reason("pause_turn")),
+    "a stop reason that is new": lambda _: event_stream(with_stop_reason("something_new")),
+    "connection reset": lambda _: breaks_off_with(httpx2.ReadError("reset")),
+    "peer closed": lambda _: breaks_off_with(httpx2.RemoteProtocolError("peer closed")),
+    "read timeout": lambda _: breaks_off_with(httpx2.ReadTimeout("slow")),
+    "delta for a block that is not there": lambda _: event_stream(
+        [FULL_STREAM[0], {**TEXT_DELTA, "index": 5}]
+    ),
+    "message delta with no delta": lambda _: event_stream(
+        [FULL_STREAM[0], {"type": "message_delta", "usage": {"output_tokens": 4}}]
+    ),
+    "tool input that will not parse": lambda _: event_stream(tool_input_stream("{oops")),
+    "tool input that is no object": lambda _: event_stream(tool_input_stream('"partial"')),
+}
+
+ANSWERS_WITH_NOTHING_TO_CHARGE: dict[str, Answer] = {
     "html from a proxy": lambda _: httpx2.Response(
         200, content=b"<html>Sign in</html>", headers={"content-type": "text/html"}
     ),
@@ -809,31 +872,243 @@ UNUSABLE_ANSWERS: dict[str, Callable[[httpx2.Request], httpx2.Response]] = {
         200, content=b"event: message_start\ndata: {oops\n\n", headers=STREAM_HEADERS
     ),
     "events out of order": lambda _: event_stream(FULL_STREAM[1:]),
-    "ends before the stop reason": lambda _: event_stream(FULL_STREAM[:4]),
-    "no stop reason": lambda _: event_stream(with_stop_reason(None)),
-    "pause_turn with no server tools": lambda _: event_stream(with_stop_reason("pause_turn")),
-    "a stop reason that is new": lambda _: event_stream(with_stop_reason("something_new")),
     "negative usage": lambda _: event_stream(with_usage({"input_tokens": -1, "output_tokens": 1})),
-    "connection reset": lambda _: breaks_off_with(httpx2.ReadError("reset")),
-    "peer closed": lambda _: breaks_off_with(httpx2.RemoteProtocolError("peer closed")),
-    "read timeout": lambda _: breaks_off_with(httpx2.ReadTimeout("slow")),
+    "usage with no counts": lambda _: event_stream(with_usage({})),
+    "usage that is null": lambda _: event_stream(with_usage(None)),
+    "usage that is missing": lambda _: event_stream(with_message_field_removed("usage")),
+    "message start with no message": lambda _: event_stream([{"type": "message_start"}]),
 }
+
+UNUSABLE_ANSWERS = {**ANSWERS_THAT_REPORTED_USAGE, **ANSWERS_WITH_NOTHING_TO_CHARGE}
+
+
+def call_failing_with(answer: Answer, call: str) -> ProviderError:
+    client = AnthropicClient(sdk_answering(answer), RecordingTracer())
+    with pytest.raises(ProviderError) as raised:
+        client.complete(REQUEST) if call == "complete" else client.parse(REQUEST, Verdict)
+    return raised.value
 
 
 @pytest.mark.parametrize("call", ["complete", "parse"])
 @pytest.mark.parametrize("answer", UNUSABLE_ANSWERS.values(), ids=UNUSABLE_ANSWERS.keys())
 def test_an_unusable_reply_is_a_provider_error_with_a_next_action(
-    answer: Callable[[httpx2.Request], httpx2.Response], call: str
+    answer: Answer, call: str
 ) -> None:
-    client = AnthropicClient(sdk_answering(answer), RecordingTracer())
+    error = call_failing_with(answer, call)
 
-    with pytest.raises(ProviderError) as raised:
+    assert error.next_action
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+@pytest.mark.parametrize("call", ["complete", "parse"])
+@pytest.mark.parametrize(
+    "answer", ANSWERS_THAT_REPORTED_USAGE.values(), ids=ANSWERS_THAT_REPORTED_USAGE.keys()
+)
+def test_a_failure_after_the_api_answered_carries_what_it_reported(
+    answer: Answer, call: str
+) -> None:
+    error = call_failing_with(answer, call)
+
+    assert error.paid_call is not None
+    assert error.paid_call.usage == REPORTED_USAGE
+    assert error.paid_call.request_id == REQUEST_ID
+    assert error.paid_call.latency_s >= 0
+
+
+@pytest.mark.parametrize("call", ["complete", "parse"])
+@pytest.mark.parametrize(
+    "answer", ANSWERS_WITH_NOTHING_TO_CHARGE.values(), ids=ANSWERS_WITH_NOTHING_TO_CHARGE.keys()
+)
+def test_a_failure_with_no_readable_usage_has_nothing_to_charge(answer: Answer, call: str) -> None:
+    assert call_failing_with(answer, call).paid_call is None
+
+
+def test_a_status_error_before_any_reply_has_nothing_to_charge() -> None:
+    body = {"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}}
+
+    error = call_failing_with(lambda _: httpx2.Response(429, json=body), "complete")
+
+    assert error.paid_call is None
+
+
+# The SDK builds a streamed message without validating it, so a block's text can be None.
+TEXT_BLOCK_WITH_NO_TEXT = {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {"type": "text"},
+}
+
+
+def test_a_text_block_with_no_text_is_read_as_empty() -> None:
+    answer = event_stream([FULL_STREAM[0], TEXT_BLOCK_WITH_NO_TEXT, *FULL_STREAM[3:]])
+    client = AnthropicClient(sdk_answering(lambda _: answer), RecordingTracer())
+
+    assert client.complete(REQUEST).text == ""
+
+
+def test_a_text_block_with_no_text_cannot_hide_the_failure_after_it() -> None:
+    def answer(_request: httpx2.Request) -> httpx2.Response:
+        first = sse_bytes([FULL_STREAM[0], TEXT_BLOCK_WITH_NO_TEXT])
+        return httpx2.Response(
+            200, stream=BreaksOff(first, httpx2.ReadError("reset")), headers=STREAM_HEADERS
+        )
+
+    error = call_failing_with(answer, "complete")
+
+    assert "ReadError" in str(error)
+    assert error.paid_call is not None
+    assert error.paid_call.usage == REPORTED_USAGE
+
+
+def test_a_failed_call_keeps_the_text_and_the_stop_reason_it_got() -> None:
+    error = call_failing_with(lambda _: event_stream(with_stop_reason("pause_turn")), "complete")
+
+    assert error.paid_call is not None
+    assert error.paid_call.text == "done"
+    assert error.paid_call.stop_reason == "pause_turn"
+
+
+def agent_on(sdk: anthropic.Anthropic, deps_tracer: RecordingTracer) -> AgentDeps:
+    return AgentDeps(
+        client=AnthropicClient(sdk, deps_tracer),
+        tracer=deps_tracer,
+        budget=Budget(max_usd=10.0),
+    )
+
+
+SUBMIT_ANYTHING = SubmitTool[object](
+    definition=ToolDef(
+        name="submit", description="Submit.", input_schema={"type": "object"}, strict=False
+    ),
+    validate=lambda tool_input: Accepted(tool_input),
+)
+AGENT = AgentSpec[object](
+    role="explore",
+    config=CONFIG,
+    system="You explore a service.",
+    user="Find every route.",
+    tools=(),
+    submit=SUBMIT_ANYTHING,
+)
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        lambda _: event_stream(with_stop_reason("pause_turn")),
+        lambda _: event_stream(FULL_STREAM[:4]),
+        lambda _: breaks_off_with(httpx2.ReadError("reset")),
+    ],
+    ids=["stop_reason_outside_the_port", "stream_ended_early", "connection_dropped"],
+)
+def test_a_paid_reply_that_fails_reaches_the_budget_and_the_trace(answer: Answer) -> None:
+    tracer = RecordingTracer()
+    deps = agent_on(sdk_answering(answer), tracer)
+
+    with pytest.raises(ProviderError):
+        run_agent(AGENT, deps)
+
+    assert deps.budget.totals()["explore"].input_tokens == REPORTED_USAGE.input_tokens
+    assert len(tracer.events_of("model_call")) == 1
+    assert len(tracer.events_of("model_error")) == 1
+
+
+def test_a_failed_call_with_no_reply_charges_nothing_and_still_leaves_a_record() -> None:
+    tracer = RecordingTracer()
+    answer = UNUSABLE_ANSWERS["html from a proxy"]
+    deps = agent_on(sdk_answering(answer), tracer)
+
+    with pytest.raises(ProviderError):
+        run_agent(AGENT, deps)
+
+    assert deps.budget.totals() == {}
+    assert tracer.events_of("model_call") == []
+    assert len(tracer.events_of("model_error")) == 1
+
+
+def planted_typo(_usage: object) -> object:
+    raise AttributeError("'Usage' object has no attribute 'input_tokenz'")
+
+
+@pytest.mark.parametrize("call", ["complete", "parse"])
+def test_a_bug_in_the_adapter_is_not_reported_as_a_network_fault(
+    monkeypatch: pytest.MonkeyPatch, call: str
+) -> None:
+    monkeypatch.setattr(anthropic_client, "_usage", planted_typo)
+    reply = api_reply([{"type": "text", "text": '{"label": "ok"}'}], "end_turn")
+    client = AnthropicClient(sdk_over_mock_api(reply, []), RecordingTracer())
+
+    with pytest.raises(AttributeError, match="input_tokenz"):
         client.complete(REQUEST) if call == "complete" else client.parse(REQUEST, Verdict)
 
-    assert not isinstance(raised.value, ParseFailed)
-    assert raised.value.next_action
-    assert raised.value.__cause__ is None
-    assert raised.value.__context__ is None
+
+def test_a_bad_keyword_from_arde_is_not_reported_as_a_network_fault(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(anthropic_client, "_params", lambda _request: {"no_such_setting": 1})
+    client = AnthropicClient(sdk_over_mock_api(FULL_REPLY, []), RecordingTracer())
+
+    with pytest.raises(TypeError, match="no_such_setting"):
+        client.complete(REQUEST)
+
+
+def test_a_broken_stream_logs_where_it_failed_without_any_message() -> None:
+    tracer = RecordingTracer()
+
+    def answer(_request: httpx2.Request) -> httpx2.Response:
+        return breaks_off_with(httpx2.ReadError("Bearer sk-ant-SECRET"))
+
+    with pytest.raises(ProviderError):
+        AnthropicClient(sdk_answering(answer), tracer).complete(REQUEST)
+
+    logged = "\n".join(tracer.debug_lines)
+    assert "anthropic_client.py" in logged
+    assert "_messages.py" in logged
+    assert "SECRET" not in logged
+
+
+REFUSAL_DETAILS = {
+    "type": "refusal",
+    "category": "cyber",
+    "explanation": "This looks like exploit development.",
+}
+
+
+def test_a_refusal_keeps_its_category_and_explanation_from_the_stream() -> None:
+    answer = event_stream(with_finish(stop_reason="refusal", stop_details=REFUSAL_DETAILS))
+    client = AnthropicClient(sdk_answering(lambda _: answer), RecordingTracer())
+
+    response = client.complete(REQUEST)
+
+    assert response.refusal == Refusal(
+        category="cyber", explanation="This looks like exploit development."
+    )
+
+
+def test_a_refusal_with_no_named_category_keeps_that_too() -> None:
+    details = {"type": "refusal", "category": None, "explanation": None}
+    client, _ = client_returning(message_with([], stop_reason="refusal", stop_details=details))
+
+    assert client.complete(REQUEST).refusal == Refusal(category=None, explanation=None)
+
+
+def test_a_reply_that_was_not_refused_has_no_refusal() -> None:
+    client, _ = client_returning(message_with())
+
+    assert client.complete(REQUEST).refusal is None
+
+
+def test_a_refused_structured_call_carries_the_detail_to_whoever_charges_it() -> None:
+    reply = message_with([], stop_reason="refusal", stop_details=REFUSAL_DETAILS)
+    client, _ = client_returning(reply)
+
+    with pytest.raises(ParseFailed) as raised:
+        client.parse(REQUEST, Verdict)
+
+    assert raised.value.paid_call is not None
+    assert raised.value.paid_call.refusal is not None
+    assert raised.value.paid_call.refusal.category == "cyber"
 
 
 @pytest.mark.parametrize("stop_reason", ["pause_turn", "something_new"])
@@ -867,8 +1142,11 @@ def test_an_error_inside_a_stream_is_a_provider_error(error_type: str) -> None:
 
     client = AnthropicClient(sdk_answering(answer), RecordingTracer())
 
-    with pytest.raises(ProviderError, match="try later"):
+    with pytest.raises(ProviderError, match="try later") as raised:
         client.complete(REQUEST)
+
+    assert raised.value.paid_call is not None
+    assert raised.value.paid_call.usage == REPORTED_USAGE
 
 
 # The tokens of a broken stream may already be billed, so a silent retry would pay for them twice.

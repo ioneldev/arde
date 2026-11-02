@@ -2,10 +2,12 @@
 
 import re
 import time
+import traceback
 from collections.abc import Callable
 from typing import Any, NamedTuple, Self
 
 import anthropic
+from anthropic.lib.streaming import MessageStream
 from anthropic.types import CacheControlEphemeralParam, Message
 from pydantic import BaseModel, SecretStr, ValidationError
 
@@ -15,8 +17,10 @@ from arde.application.ports import (
     LLMRequest,
     LLMResponse,
     ModelStop,
+    PaidCall,
     ParseFailed,
     ProviderError,
+    Refusal,
     ToolCall,
     ToolDef,
     Tracer,
@@ -34,6 +38,7 @@ _RAISE_MAX_TOKENS = (
     f"({MODELS_FILE_VARIABLE}) and run again"
 )
 _REPORT_THE_STOP_REASON = "Run again, and if it repeats report the stop reason"
+_REPORT_THE_PROBLEM = "Run again, and if it repeats report the problem"
 # pause_turn is absent on purpose. Only server tools cause it, ARDE sends none, and the loop has
 # no way to resume one, so it is refused here with everything else this code cannot act on.
 _MODEL_STOPS: dict[str | None, ModelStop] = {
@@ -182,33 +187,40 @@ class AnthropicClient(LLMClient):
 
     # Every call streams, because the SDK refuses a large max_tokens on a call that does not.
     #
+    # The try holds SDK code and nothing else. The request is built before it, so a bad keyword
+    # from ARDE stays a TypeError, and the reply is read after it, so a bug here stays a bug.
+    #
     # The failure is raised after the handlers, not inside them. Inside a handler Python links
     # the SDK error as __context__ even for "from None", and a transport error's chain holds the
     # request headers, the API key among them.
     def _send(self, params: dict[str, Any]) -> LLMResponse:
         started = self._clock()
+        opening = self._sdk.messages.stream(**params)
+        stream: MessageStream[Any] | None = None
         try:
-            with self._sdk.messages.stream(**params) as stream:
+            with opening as stream:
                 reply = stream.get_final_message()
-            return _to_response(
-                reply, latency_s=self._clock() - started, request_id=stream.request_id
-            )
+                request_id = stream.request_id
         except anthropic.AnthropicError as error:
             self._log_failure(error)
             failure = _provider_error(error)
-        except ProviderError:
-            raise
-        # Only SDK code runs above, and a stream fails in ways the SDK does not wrap: a dropped
-        # connection is a raw transport error, and a 200 that is no stream is an AssertionError.
+        # A stream fails in ways the SDK does not wrap, all measured: AssertionError, ValueError,
+        # AttributeError, IndexError and raw transport errors. Those are the kinds a bug raises
+        # too, so a list of them would be no narrower. The frames in the log tell the two apart.
         except Exception as error:
             self._log_failure(error)
             failure = _unusable_reply(error)
+        else:
+            return _to_response(reply, latency_s=self._clock() - started, request_id=request_id)
+        failure.paid_call = _reported_so_far(stream, latency_s=self._clock() - started)
         raise failure from None
 
-    # Only the kinds are logged. The error chained under a transport error can quote the request
-    # headers, and the API key is one of them.
+    # Only the kinds and the frames are logged. The error chained under a transport error can
+    # quote the request headers, and the API key is one of them, while a frame holds a file, a line
+    # number and a line of source, and no value.
     def _log_failure(self, error: Exception) -> None:
-        self._tracer.debug(f"The Anthropic call failed: {_kinds_in_chain(error)}")
+        frames = "".join(traceback.format_tb(error.__traceback__))
+        self._tracer.debug(f"The Anthropic call failed: {_kinds_in_chain(error)}\n{frames}")
 
 
 def _params(request: LLMRequest) -> dict[str, Any]:
@@ -243,24 +255,79 @@ def _tool_param(tool: ToolDef) -> dict[str, Any]:
 
 
 def _to_response(reply: Message, *, latency_s: float, request_id: str | None) -> LLMResponse:
+    paid_call = _paid_call(reply, latency_s=latency_s, request_id=request_id)
+    if paid_call is None:
+        raise _no_readable_usage()
     stop_reason = _MODEL_STOPS.get(reply.stop_reason)
     if stop_reason is None:
-        raise _unusable_stop_reason(reply)
-    tool_calls = tuple(
-        ToolCall(id=block.id, name=block.name, input=block.input)
-        for block in reply.content
-        if block.type == "tool_use"
-    )
-    text = "\n".join(block.text for block in reply.content if block.type == "text")
+        raise _unusable_stop_reason(reply, paid_call)
     return LLMResponse(
-        tool_calls=tool_calls,
-        text=text,
         stop_reason=stop_reason,
-        usage=_usage(reply.usage),
-        latency_s=latency_s,
+        tool_calls=_tool_calls(reply, paid_call),
         assistant_content=tuple(reply.content),
-        request_id=request_id,
+        usage=paid_call.usage,
+        latency_s=paid_call.latency_s,
+        text=paid_call.text,
+        request_id=paid_call.request_id,
+        refusal=paid_call.refusal,
     )
+
+
+# The stream's first event reports the prompt, so a stream that breaks later has already said what
+# most of the call cost. The SDK's property asserts that a first event arrived.
+def _reported_so_far(stream: MessageStream[Any] | None, *, latency_s: float) -> PaidCall | None:
+    if stream is None:
+        return None
+    try:
+        snapshot = stream.current_message_snapshot
+    except AssertionError:
+        return None
+    return _paid_call(snapshot, latency_s=latency_s, request_id=stream.request_id)
+
+
+# The SDK builds a streamed message without validating it, so a block's text can be None, and that
+# must not cost the usage this reads.
+def _paid_call(reply: Message, *, latency_s: float, request_id: str | None) -> PaidCall | None:
+    usage = _readable_usage(reply)
+    if usage is None:
+        return None
+    return PaidCall(
+        usage=usage,
+        latency_s=latency_s,
+        stop_reason=reply.stop_reason,
+        text="\n".join(block.text or "" for block in reply.content if block.type == "text"),
+        request_id=request_id,
+        refusal=_refusal(reply),
+    )
+
+
+# None for a usage that is absent or breaks the rules of Usage, because neither can be charged.
+def _readable_usage(reply: Message) -> Usage | None:
+    if reply.usage is None:
+        return None
+    try:
+        return _usage(reply.usage)
+    except ValidationError:
+        return None
+
+
+def _refusal(reply: Message) -> Refusal | None:
+    details = reply.stop_details
+    if details is None:
+        return None
+    return Refusal(category=details.category, explanation=details.explanation)
+
+
+def _tool_calls(reply: Message, paid_call: PaidCall) -> tuple[ToolCall, ...]:
+    try:
+        return tuple(
+            ToolCall(id=block.id, name=block.name, input=block.input)
+            for block in reply.content
+            if block.type == "tool_use"
+        )
+    except ValidationError as error:
+        failure = _unreadable_tool_call(error, paid_call)
+    raise failure from None
 
 
 def _usage(usage: anthropic.types.Usage) -> Usage:
@@ -329,10 +396,27 @@ def _unusable_reply(error: Exception) -> ProviderError:
     )
 
 
-def _unusable_stop_reason(reply: Message) -> ProviderError:
+def _no_readable_usage() -> ProviderError:
+    return ProviderError(
+        "The reply from Anthropic did not say what it used, so it cannot be charged",
+        next_action=_REPORT_THE_PROBLEM,
+    )
+
+
+def _unusable_stop_reason(reply: Message, paid_call: PaidCall) -> ProviderError:
     return ProviderError(
         f"The reply ended with a stop reason ARDE cannot act on: {reply.stop_reason}",
         next_action=_REPORT_THE_STOP_REASON,
+        paid_call=paid_call,
+    )
+
+
+def _unreadable_tool_call(error: ValidationError, paid_call: PaidCall) -> ProviderError:
+    return ProviderError(
+        "The reply from Anthropic held a tool call ARDE cannot read: "
+        f"{describe_problems(error, whole='the tool call')}",
+        next_action=_REPORT_THE_PROBLEM,
+        paid_call=paid_call,
     )
 
 

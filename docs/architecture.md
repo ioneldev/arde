@@ -57,7 +57,7 @@ Each layer is a folder under `src/arde/`, created by the task that first needs i
 
 What exists today:
 
-- `src/arde/application/agent_loop.py`: the one loop every agent runs, and `record_model_call`, which traces and charges a paid call.
+- `src/arde/application/agent_loop.py`: the one loop every agent runs, plus `record_model_call` and `record_failed_call`, which trace and charge every paid call, failed or not.
 - `src/arde/application/ports.py`: the `LLMClient` and `Tracer` interfaces.
 - `src/arde/application/budget.py`: the cost cap and the totals per role.
 - `src/arde/adapters/llm/anthropic_client.py`: the Anthropic API behind `LLMClient`.

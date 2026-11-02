@@ -44,7 +44,7 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 ## Cost
 
 - **The cap can be overshot by one call.** A call's price is known only after it is paid for. The run stops once spending reaches the cap, but the last call can pass it by its own cost: at the shipped settings the worst single Opus 5.5 call costs $4.32, from 1M uncached input tokens and 16,000 output tokens.
-- **A stream that breaks is not counted.** The reply never said how many tokens it used, so that spend is missing from the totals. This is reasoned from how the adapter works, not measured against a bill.
+- **A stream that breaks is charged only for what it had reported.** The first event says what the prompt used, so those tokens reach the trace and the cap. Output tokens arrive in the last event, so those written before the break are missing and the total reads low. A failure before the first event has nothing to charge. That the real API's first event carries the prompt's tokens comes from the SDK's types and has not been seen live, and that such a call is billed is assumed, not measured against a bill.
 
 ## The model API
 
@@ -53,7 +53,7 @@ Measured against the live API on 2026-11-02, with Opus 5.5.
 - **Every request streams.** The SDK refuses a call that does not stream above about 21,333 `max_tokens`, and thinking counts against that limit. A dropped stream is not retried, because the SDK retries only before a stream starts, so it ends the run with a next action. See [decision 0011](decisions/0011-stream-every-request.md).
 
 - **Strict tool use is refused for the repo profile and for the facts.** The API answers `For 'object' type, 'additionalProperties: object' is not supported` for the open `args` dict in the profile, and `Schema type 'oneOf' is not supported` for the fact union. Rewriting `oneOf` as `anyOf` did not help on Haiku 5.5: the API then said the compiled grammar was too large. Tools with these schemas must be sent with `strict=False`, and code validation holds the guarantee.
-- **A refusal ends the agent, with no retry on another model.** The server-side fallback needs the beta client, and Haiku 5.5, which the classifier uses, has no fallback at all. The agent stops with the reason `refused`.
+- **A refusal ends the agent, with no retry on another model.** The server-side fallback needs the beta client, and Haiku 5.5, which the classifier uses, has no fallback at all. The agent stops with the reason `refused`. The category and explanation go to `model_call` and `debug.log`, and `AgentStopped` exposes the category, so false positives can be counted on the first real run. No live refusal has been seen yet, so this rests on the SDK's types.
 - **An error result with no text is refused by the API** (HTTP 400). The agent loop sends a stand-in text, so a tool that fails silently does not end the run.
 
 ## Not tested yet

@@ -14,6 +14,9 @@ from arde.application.ports import (
     LLMRequest,
     LLMResponse,
     ModelStop,
+    PaidCall,
+    ProviderError,
+    Refusal,
     Tool,
     ToolCall,
     ToolDef,
@@ -62,7 +65,13 @@ class AgentStopped(ArdeError):
     """The agent ended any way but an accepted submit, so there is no value to return."""
 
     def __init__(
-        self, *, role: Role, stop: StopReason, turns: int, last_rejection: str | None
+        self,
+        *,
+        role: Role,
+        stop: StopReason,
+        turns: int,
+        last_rejection: str | None,
+        refusal_category: str | None = None,
     ) -> None:
         super().__init__(
             f"The {role} agent stopped after {turns} turns: {stop}",
@@ -72,6 +81,7 @@ class AgentStopped(ArdeError):
         self.stop = stop
         self.turns = turns
         self.last_rejection = last_rejection
+        self.refusal_category = refusal_category
 
 
 class ToolCrashed(ArdeError):
@@ -144,7 +154,14 @@ def run_agent[T](spec: AgentSpec[T], deps: AgentDeps) -> T:
         # Checked before any tool runs, because a refused turn may hold a partial tool call.
         if response.stop_reason in _TERMINAL_STOPS:
             stop = _TERMINAL_STOPS[response.stop_reason]
-            raise _stopped(stop, turns=turn, last_rejection=last_rejection, spec=spec, deps=deps)
+            raise _stopped(
+                stop,
+                turns=turn,
+                last_rejection=last_rejection,
+                refusal=response.refusal,
+                spec=spec,
+                deps=deps,
+            )
 
         # Keyed on the calls, not stop_reason: each tool_use echoed here must get a result next.
         if response.tool_calls and response.stop_reason != "max_tokens":
@@ -183,10 +200,22 @@ def _assistant_message(response: LLMResponse) -> Message:
 
 
 def _stopped[T](
-    stop: StopReason, *, turns: int, last_rejection: str | None, spec: AgentSpec[T], deps: AgentDeps
+    stop: StopReason,
+    *,
+    turns: int,
+    last_rejection: str | None,
+    refusal: Refusal | None = None,
+    spec: AgentSpec[T],
+    deps: AgentDeps,
 ) -> AgentStopped:
     deps.tracer.event("agent_end", role=spec.role, stop=stop, turns=turns)
-    return AgentStopped(role=spec.role, stop=stop, turns=turns, last_rejection=last_rejection)
+    return AgentStopped(
+        role=spec.role,
+        stop=stop,
+        turns=turns,
+        last_rejection=last_rejection,
+        refusal_category=None if refusal is None else refusal.category,
+    )
 
 
 # A cut-off turn is dropped, not echoed: a tool call cut off mid-input can have no result. An
@@ -212,8 +241,8 @@ def _ask_model[T](messages: list[Message], *, spec: AgentSpec[T], deps: AgentDep
     model = spec.config.model
     try:
         response = deps.client.complete(request)
-    except ArdeError as error:
-        deps.tracer.event("model_error", role=spec.role, model=model, error=str(error))
+    except ProviderError as error:
+        record_failed_call(error, role=spec.role, model=model, deps=deps)
         raise
     record_model_call(response, role=spec.role, model=model, deps=deps)
     return response
@@ -222,13 +251,14 @@ def _ask_model[T](messages: list[Message], *, spec: AgentSpec[T], deps: AgentDep
 # The charge is in a finally, because a call the API answered is paid for even when the disk
 # holding the trace has failed. It comes after the event, because a charge over the cap raises
 # and the call that tripped the cap belongs in the trace.
-def record_model_call(response: LLMResponse, *, role: Role, model: str, deps: AgentDeps) -> None:
+def record_model_call(call: PaidCall, *, role: Role, model: str, deps: AgentDeps) -> None:
     """Traces and charges one paid call. Every caller of the model comes through here."""
-    usage, latency_s = response.usage, response.latency_s
+    usage, latency_s = call.usage, call.latency_s
+    refusal = {} if call.refusal is None else {"refusal": call.refusal.model_dump()}
     try:
         deps.tracer.debug(
-            f"{role} model reply ({response.stop_reason}, request id {response.request_id}):\n"
-            f"{response.text}"
+            f"{role} model reply ({call.stop_reason}, request id {call.request_id}"
+            f"{'' if call.refusal is None else f', {call.refusal}'}):\n{call.text}"
         )
         deps.tracer.event(
             "model_call",
@@ -236,11 +266,23 @@ def record_model_call(response: LLMResponse, *, role: Role, model: str, deps: Ag
             model=model,
             usage=usage.model_dump(),
             cost_usd=cost_usd(model, usage),
-            stop_reason=response.stop_reason,
+            stop_reason=call.stop_reason,
             latency_s=latency_s,
+            **refusal,
         )
     finally:
         deps.budget.charge(ModelCall(role=role, model=model, usage=usage, latency_s=latency_s))
+
+
+# model_error comes first and the charge in a finally, so neither a charge over the cap nor a
+# tracer that has failed can lose the other half of the record.
+def record_failed_call(error: ProviderError, *, role: Role, model: str, deps: AgentDeps) -> None:
+    """Traces a call that failed, and charges whatever the API had reported before it failed."""
+    try:
+        deps.tracer.event("model_error", role=role, model=model, error=str(error))
+    finally:
+        if error.paid_call is not None:
+            record_model_call(error.paid_call, role=role, model=model, deps=deps)
 
 
 def _run_tools[T](

@@ -20,6 +20,7 @@ from arde.application.agent_loop import (
     StopReason,
     SubmitTool,
     ToolCrashed,
+    record_failed_call,
     record_model_call,
     run_agent,
 )
@@ -29,7 +30,10 @@ from arde.application.ports import (
     LLMClient,
     LLMRequest,
     LLMResponse,
+    PaidCall,
+    ParseFailed,
     ProviderError,
+    Refusal,
     Tool,
     ToolCall,
     ToolDef,
@@ -149,6 +153,7 @@ def reply(
     content: tuple[object, ...] = ({"type": "text", "text": "Let me think."},),
     text: str = "",
     usage: Usage = USAGE,
+    refusal: Refusal | None = None,
 ) -> LLMResponse:
     return LLMResponse(
         tool_calls=tool_calls,
@@ -157,6 +162,7 @@ def reply(
         usage=usage,
         latency_s=LATENCY_S,
         assistant_content=content,
+        refusal=refusal,
     )
 
 
@@ -792,6 +798,117 @@ def test_a_failed_model_call_leaves_a_record_before_the_error_propagates() -> No
         run_agent(spec_with((), submit_tool()), deps)
 
     assert tracer.events_of("model_error") == [{"role": ROLE, "model": MODEL, "error": message}]
+
+
+PAID_CALL = PaidCall(usage=USAGE, latency_s=LATENCY_S, stop_reason=None, text="half a reply")
+
+
+def failing_with_a_paid_call(call: PaidCall | None, *, message: str = "broke") -> ProviderError:
+    error = ProviderError(message, next_action="Run again")
+    error.paid_call = call
+    return error
+
+
+def test_a_failed_call_that_reported_usage_is_charged_and_traced() -> None:
+    tracer = RecordingTracer()
+    deps = deps_with(ClientThatFails(failing_with_a_paid_call(PAID_CALL)), tracer=tracer)
+
+    with pytest.raises(ProviderError):
+        run_agent(spec_with((), submit_tool()), deps)
+
+    assert deps.budget.totals()[ROLE].input_tokens == USAGE.input_tokens
+    assert tracer.events_of("model_call")[0]["cost_usd"] == cost_usd(MODEL, USAGE)
+    assert tracer.events_of("model_call")[0]["stop_reason"] is None
+    assert any("half a reply" in line for line in tracer.debug_lines)
+
+
+def test_a_failed_call_that_reported_nothing_charges_nothing() -> None:
+    tracer = RecordingTracer()
+    deps = deps_with(ClientThatFails(failing_with_a_paid_call(None)), tracer=tracer)
+
+    with pytest.raises(ProviderError):
+        run_agent(spec_with((), submit_tool()), deps)
+
+    assert deps.budget.totals() == {}
+    assert tracer.events_of("model_call") == []
+
+
+def test_a_failed_call_over_the_cap_stops_the_run_and_keeps_its_record() -> None:
+    expensive = PAID_CALL.model_copy(update={"usage": EXPENSIVE})
+    tracer = RecordingTracer()
+    llm = ClientThatFails(failing_with_a_paid_call(expensive))
+    deps = deps_with(llm, tracer=tracer, max_usd=0.01)
+
+    with pytest.raises(BudgetExceeded):
+        run_agent(spec_with((), submit_tool()), deps)
+
+    assert len(tracer.events_of("model_error")) == 1
+    assert len(tracer.events_of("model_call")) == 1
+
+
+def test_a_tracer_failure_cannot_lose_a_failed_call_from_the_totals() -> None:
+    tracer = TracerThatCannotWrite()
+    deps = AgentDeps(client=FakeLLM([]), tracer=tracer, budget=Budget(max_usd=10.0))
+
+    with pytest.raises(OSError, match="disk full"):
+        record_failed_call(failing_with_a_paid_call(PAID_CALL), role=ROLE, model=MODEL, deps=deps)
+
+    assert deps.budget.totals()[ROLE].calls == 1
+
+
+def test_a_caller_outside_the_loop_can_record_a_failed_parse() -> None:
+    tracer = RecordingTracer()
+    deps = deps_with(FakeLLM([]), tracer=tracer)
+    failure = ParseFailed("no value", next_action="Run again", response=reply("max_tokens"))
+
+    record_failed_call(failure, role="classifier", model=MODEL, deps=deps)
+
+    assert deps.budget.totals()["classifier"].calls == 1
+    assert tracer.events_of("model_error")[0]["error"] == "no value"
+
+
+CYBER = Refusal(category="cyber", explanation="This looks like exploit development.")
+
+
+def test_a_refusal_records_its_category_and_explanation_in_the_trace() -> None:
+    run = run_script([reply("refusal", refusal=CYBER)])
+
+    assert run.tracer.events_of("model_call")[0]["refusal"] == {
+        "category": "cyber",
+        "explanation": "This looks like exploit development.",
+    }
+
+
+def test_a_refusal_records_its_category_and_explanation_in_the_debug_log() -> None:
+    run = run_script([reply("refusal", refusal=CYBER, text="I will not do that")])
+
+    debug_log = "\n".join(run.tracer.debug_lines)
+    assert "cyber" in debug_log
+    assert "This looks like exploit development." in debug_log
+    assert "I will not do that" in debug_log
+
+
+def test_agent_stopped_exposes_the_refusal_category() -> None:
+    run = run_script([reply("refusal", refusal=CYBER)])
+
+    assert_stopped(run, "refused", turns=1)
+    assert run.stopped is not None
+    assert run.stopped.refusal_category == "cyber"
+
+
+def test_a_refusal_with_no_detail_still_stops_with_no_category() -> None:
+    run = run_script([reply("refusal")])
+
+    assert_stopped(run, "refused", turns=1)
+    assert run.stopped is not None
+    assert run.stopped.refusal_category is None
+
+
+def test_a_stop_that_is_no_refusal_has_no_category() -> None:
+    run = run_script([reply("end_turn"), reply("end_turn"), reply("end_turn")])
+
+    assert run.stopped is not None
+    assert run.stopped.refusal_category is None
 
 
 def test_every_call_is_traced_with_usage_cost_and_latency() -> None:

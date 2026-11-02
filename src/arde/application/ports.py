@@ -56,34 +56,58 @@ ModelStop = Literal[
 ]
 
 
-class LLMResponse(Frozen):
-    tool_calls: tuple[ToolCall, ...]
-    text: str
-    stop_reason: ModelStop
+class Refusal(Frozen):
+    """Why the API refused a turn. Either part may be absent, because the API may not name one."""
+
+    category: str | None
+    explanation: str | None
+
+
+class PaidCall(Frozen):
+    """What the API reported for one call. A call that failed afterwards was still paid for."""
+
     usage: Usage
     latency_s: float
+    # Plain text here, because a failed call may have ended on a reason the loop cannot act on.
+    stop_reason: str | None
+    text: str = ""
+    request_id: str | None = None
+    refusal: Refusal | None = None
+
+
+class LLMResponse(PaidCall):
+    stop_reason: ModelStop
+    tool_calls: tuple[ToolCall, ...]
     # Sent back unchanged on the next turn, because the API checks thinking blocks byte for byte.
     assistant_content: tuple[object, ...]
-    request_id: str | None = None
 
 
 # Lives with the port, not the adapter, because application code catches it and may not import
 # an adapter.
 class ProviderError(ArdeError):
-    """The model provider failed in a way the run cannot work around."""
+    """The model provider failed in a way the run cannot work around.
+
+    paid_call holds what the API had reported before the failure, for the caller to charge. It is
+    None only when the API reported nothing that can be charged.
+    """
 
     def __init__(
-        self, message: str, *, next_action: str, exit_code: ExitCode = ExitCode.CHECKS_FAILED
+        self,
+        message: str,
+        *,
+        next_action: str,
+        exit_code: ExitCode = ExitCode.CHECKS_FAILED,
+        paid_call: PaidCall | None = None,
     ) -> None:
         super().__init__(message, next_action=next_action, exit_code=exit_code)
+        self.paid_call = paid_call
 
 
 class ParseFailed(ProviderError):
-    """The reply was paid for but holds no usable value, so it carries what to charge."""
+    """The reply came back whole but holds no usable value."""
 
     def __init__(self, message: str, *, next_action: str, response: LLMResponse) -> None:
-        super().__init__(message, next_action=next_action)
-        self.response = response
+        super().__init__(message, next_action=next_action, paid_call=response)
         self.usage = response.usage
 
 
