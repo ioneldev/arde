@@ -18,6 +18,15 @@ KEY_READERS = (
 KEY_VARIABLE = "ANTHROPIC_API_KEY"
 ENVIRONMENT_READS = ("get", "getenv", "pop", "setdefault")
 
+# ARDE knows nothing about any repo it documents. Whatever it learns about one comes from the
+# profile, the code it reads or the wiki, so these words from the first repo it was tried on may
+# not appear in the product: the Python, the Go helper and the prompts.
+REPO_AGNOSTIC_FOLDERS = ("src/arde", "tools/goinspect")
+TARGET_REPO_WORDS = ("catalog", "envOr", "writeError", "fxRates")
+# Test data may name anything. The built helper is a binary the build leaves in the folder.
+NOT_PRODUCT_FOLDERS = ("testdata", "__pycache__")
+BUILT_HELPER = Path("tools/goinspect/goinspect")
+
 DOMAIN_MAY_NOT_IMPORT = ("arde.adapters", "arde.application", "arde.cli")
 APPLICATION_MAY_NOT_IMPORT = ("arde.adapters", "arde.cli")
 CHECKS_MAY_NOT_IMPORT = ("arde.adapters", "arde.cli")
@@ -60,6 +69,10 @@ def test_go_specifics_stay_in_go_adapter() -> None:
 
 def test_the_plain_key_is_read_only_by_the_adapter_and_conftest() -> None:
     assert key_reads(REPO_ROOT) == []
+
+
+def test_product_code_names_no_target_repo() -> None:
+    assert target_repo_leaks(REPO_ROOT) == []
 
 
 # The checks below prove each rule fires on a violation, so a green run above means something.
@@ -258,6 +271,69 @@ def test_names_that_only_contain_the_letters_are_not_reported(tmp_path: Path, so
     assert go_specific_leaks(tmp_path) == []
 
 
+@pytest.mark.parametrize("word", TARGET_REPO_WORDS)
+@pytest.mark.parametrize(
+    "file",
+    [
+        "src/arde/application/pipeline.py",
+        "src/arde/adapters/language/go/adapter.py",
+        "src/arde/prompts/discovery.md",
+        "src/arde/config/models.yaml",
+        "tools/goinspect/match.go",
+        "tools/goinspect/go.mod",
+    ],
+)
+def test_a_product_file_naming_the_target_repo_is_reported(
+    tmp_path: Path, file: str, word: str
+) -> None:
+    write(tmp_path, file, f"a note about {word} here\n")
+
+    assert target_repo_leaks(tmp_path) == [f"{file}: mentions {word}"]
+
+
+def test_the_words_are_matched_whatever_their_case(tmp_path: Path) -> None:
+    write(tmp_path, "src/arde/prompts/explore.md", "Look at the Catalog and WRITEERROR.\n")
+
+    assert target_repo_leaks(tmp_path) == [
+        "src/arde/prompts/explore.md: mentions catalog",
+        "src/arde/prompts/explore.md: mentions writeError",
+    ]
+
+
+@pytest.mark.parametrize(
+    "file",
+    [
+        "tools/goinspect/match_test.go",
+        "tools/goinspect/testdata/shop/go.mod",
+        "src/arde/__pycache__/pipeline.cpython-312.pyc",
+        "tests/domain/test_models.py",
+        "docs/limitations.md",
+    ],
+)
+def test_test_data_and_everything_outside_the_product_may_name_the_target_repo(
+    tmp_path: Path, file: str
+) -> None:
+    write(tmp_path, file, "catalog envOr writeError fxRates\n")
+
+    assert target_repo_leaks(tmp_path) == []
+
+
+def test_the_built_helper_is_not_read_as_text(tmp_path: Path) -> None:
+    binary = tmp_path / BUILT_HELPER
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"\xcf\xfa\xed\xfe catalog \x00\xff")
+
+    assert target_repo_leaks(tmp_path) == []
+
+
+def test_a_file_that_is_not_utf8_is_still_scanned(tmp_path: Path) -> None:
+    path = tmp_path / "src/arde/prompts/odd.md"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xff\xfe fxRates")
+
+    assert target_repo_leaks(tmp_path) == ["src/arde/prompts/odd.md: mentions fxRates"]
+
+
 def import_violations(source_root: Path, layer: str, forbidden: tuple[str, ...]) -> list[str]:
     layer_dir = source_root / "arde" / layer
     return [
@@ -305,6 +381,36 @@ def go_specific_leaks(source_root: Path) -> list[str]:
 
 def go_specific_names(source: str) -> list[str]:
     return [name for name, pattern in GO_SPECIFIC_PATTERNS.items() if pattern.search(source)]
+
+
+def target_repo_leaks(repo_root: Path) -> list[str]:
+    leaks: list[str] = []
+    for path in product_files(repo_root):
+        text = path.read_bytes().decode("utf-8", errors="replace").lower()
+        leaks.extend(
+            f"{label(path, repo_root)}: mentions {word}"
+            for word in TARGET_REPO_WORDS
+            if word.lower() in text
+        )
+    return leaks
+
+
+def product_files(repo_root: Path) -> list[Path]:
+    files = [
+        path
+        for folder in REPO_AGNOSTIC_FOLDERS
+        for path in (repo_root / folder).rglob("*")
+        if path.is_file()
+    ]
+    return sorted(path for path in files if is_product_file(path.relative_to(repo_root)))
+
+
+def is_product_file(relative: Path) -> bool:
+    return not (
+        relative.name.endswith("_test.go")
+        or relative == BUILT_HELPER
+        or any(part in NOT_PRODUCT_FOLDERS for part in relative.parts)
+    )
 
 
 def key_reads(repo_root: Path) -> list[str]:

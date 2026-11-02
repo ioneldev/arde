@@ -1,6 +1,7 @@
 """The interfaces the application needs from the outside world. Adapters implement them."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Literal, Protocol
 
 from pydantic import BaseModel
@@ -8,6 +9,8 @@ from pydantic import BaseModel
 from arde.application.models_config import RoleConfig
 from arde.domain.base import Frozen
 from arde.domain.errors import ArdeError
+from arde.domain.inventory import Inventory, Route
+from arde.domain.profile import RepoProfile
 from arde.domain.report import ExitCode
 from arde.domain.usage import Usage
 
@@ -127,3 +130,55 @@ class ToolOutcome(Frozen):
 class Tool(Frozen):
     definition: ToolDef
     handler: Callable[[dict[str, object]], ToolOutcome]
+
+
+class CheckResult(Frozen):
+    """What the language's own checks said about a repo. A failed check is data, not an error."""
+
+    build_ok: bool
+    vet_ok: bool
+    test_ok: bool
+    output: str
+    # Every test, benchmark, fuzz test and example the toolchain lists. Zero is a valid answer.
+    test_count: int
+    # Test files the build leaves out, such as one behind a build tag, as paths from the repo root.
+    ignored_files: tuple[str, ...]
+
+
+class LanguageAdapter(Protocol):
+    """Everything ARDE knows about one language. Each method holds an idiom of that language.
+
+    Methods for rendering annotations, generating the spec and checking agent edits arrive with
+    the tasks that implement them, so every method here has an implementation.
+    """
+
+    def detects(self, repo: Path) -> bool: ...
+
+    def is_comment_only(self, old_file: Path, new_file: Path) -> bool:
+        """True only when the two files differ in comments and formatting and nothing else.
+
+        A comment the compiler or a tool reads counts as code. Doubt is answered with False.
+        """
+        ...
+
+    def changed_declarations(self, old_repo: Path, new_repo: Path) -> list[str]:
+        """Ids, as file::kind name, of the declarations added, removed or changed. Sorted."""
+        ...
+
+    def extract_inventory(self, repo: Path, profile: RepoProfile) -> Inventory:
+        """Raises an ArdeError when the repo has no route, or a route it cannot read."""
+        ...
+
+    def route_fingerprints(self, repo: Path, routes: Sequence[Route]) -> dict[str, str]:
+        """A hash per route, keyed "METHOD /path". A route with no hash is left out of the result.
+
+        A route is left out when its handler is not a plain name or cannot be followed, and the
+        caller counts a missing route as changed.
+        """
+        ...
+
+    def run_checks(self, repo: Path, profile: RepoProfile) -> CheckResult: ...
+
+    def build_service(self, repo: Path, profile: RepoProfile) -> Path:
+        """Builds the service into a new folder outside the repo, which the caller removes."""
+        ...

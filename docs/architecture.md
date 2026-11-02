@@ -2,7 +2,7 @@
 
 This is the short map. The reasoning and the measurements are in the [design](superpowers/specs/2026-11-01-arde-design.md).
 
-**Status:** Phase 0 is built: the domain models, the agent loop, the Anthropic client, the tracer, the cost cap and the model settings. Phase 1 has started: the Go helper answers two questions, but nothing in Python calls it and nothing runs a service yet, so read the steps below as intent until later phases land them.
+**Status:** Phase 0 is built: the domain models, the agent loop, the Anthropic client, the tracer, the cost cap and the model settings. Phase 1 has started: the Go helper answers four questions and the Go language adapter calls it, but no pipeline calls the adapter and nothing runs a service yet, so read the steps below as intent until later phases land them.
 
 ## The orchestrator is code
 
@@ -58,11 +58,14 @@ Each layer is a folder under `src/arde/`, created by the task that first needs i
 What exists today:
 
 - `src/arde/application/agent_loop.py`: the one loop every agent runs, plus `record_model_call` and `record_failed_call`, which trace and charge every paid call, failed or not.
-- `src/arde/application/ports.py`: the `LLMClient` and `Tracer` interfaces.
+- `src/arde/application/ports.py`: the `LLMClient`, `Tracer` and `LanguageAdapter` interfaces. `LanguageAdapter` holds seven methods so far, each with an implementation: it detects a repo, tells a comment-only edit from a real one, lists changed declarations, extracts the inventory, fingerprints routes, runs the repo's own checks and builds the service.
 - `src/arde/application/budget.py`: the cost cap and the totals per role.
 - `src/arde/adapters/llm/anthropic_client.py`: the Anthropic API behind `LLMClient`.
+- `src/arde/adapters/language/go/`: the Go language adapter, which holds every Go idiom. `adapter.py` is `GoAdapter`. `goinspect_client.py` builds the helper and reads its JSON replies into typed models. `inventory_builder.py` turns the helper's matches into the inventory. `directives.py` and `makefile.py` hold the comment-only rule and the make targets. `toolchain.py` runs build, vet and test, and builds the service.
+- `src/arde/adapters/child_env.py` and `src/arde/adapters/child_process.py`: every child process gets an allow-listed environment, never a copy of ours, and a timeout that also stops what the child started.
 - `src/arde/adapters/tracer.py`: writes `trace.jsonl` and `debug.log`.
 - `src/arde/adapters/models_file.py`: reads the model settings per role.
+- `tests/fixtures/shop/`: a small `net/http` service that the adapter tests treat as a real repo. It shares no names or layout with any repo ARDE was built against.
 - `tools/goinspect/`: the Go helper. `compare` lists the Go files that changed, ignoring comments, formatting, line endings and the two struct tags ARDE adds. `declarations` hashes every top-level declaration and lists struct fields. `match` applies the profile's call patterns to every non-test Go file and prints each call that matches. `fingerprints` hashes everything a route's handler reaches by static calls, closures included, so a later run knows which routes changed.
 
 Imports go inward. These rules are enforced by `tests/test_architecture.py`:
@@ -71,7 +74,7 @@ Imports go inward. These rules are enforced by `tests/test_architecture.py`:
 - The application imports no adapter or cli code. It reaches the outside world through ports.
 - The checks import no adapter or cli code.
 
-The same test file keeps Go-specific code out of everything except the Go language adapter, and keeps reads of the plain API key to the adapter, the tracer and `tests/conftest.py`. A small Go helper, `goinspect`, sits next to it for AST work and the call graph. The orchestrator talks to Go only through the `LanguageAdapter` interface, so another language could be added later.
+The same test file keeps Go-specific code out of everything except the Go language adapter, keeps reads of the plain API key to the adapter, the tracer and `tests/conftest.py`, and keeps product code and prompts from naming a repo ARDE was tried on. A small Go helper, `goinspect`, sits next to it for AST work and the call graph. The orchestrator talks to Go only through the `LanguageAdapter` interface, so another language could be added later.
 
 ## What the LLM may and may not do
 

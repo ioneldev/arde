@@ -462,6 +462,24 @@ def test_a_main_package_with_the_wrong_shape_is_refused(value: str) -> None:
         DiscoveredProfile(**{**PROFILE_FIELDS, "main_package": value})
 
 
+@pytest.mark.parametrize("value", ["../outside", "/abs/path", "cmd/../../x", "..", "a/..", "..\\x"])
+def test_a_main_package_cannot_leave_the_repo(value: str) -> None:
+    with pytest.raises(ValidationError, match="must stay inside the repo"):
+        DiscoveredProfile(**{**PROFILE_FIELDS, "main_package": value})
+
+
+@pytest.mark.parametrize("value", ["--output=x", "-o", "-toolexec=sh"])
+def test_a_main_file_cannot_be_read_as_a_flag(value: str) -> None:
+    with pytest.raises(ValidationError, match="must not start with a hyphen"):
+        DiscoveredProfile(**{**PROFILE_FIELDS, "main_file": value})
+
+
+@pytest.mark.parametrize("value", [".", "./", ".//"])
+def test_a_main_file_cannot_be_the_repo_root(value: str) -> None:
+    with pytest.raises(ValidationError, match="must name a file, not the repo root"):
+        DiscoveredProfile(**{**PROFILE_FIELDS, "main_file": value})
+
+
 # Everything that takes a path a model chose. Each builder fills the rest with valid data.
 PATH_FIELDS: dict[str, Callable[[str], object]] = {
     "code quote file": lambda path: CodeQuote(kind="code", file=path, quote="x"),
@@ -482,6 +500,8 @@ PATH_FIELDS: dict[str, Callable[[str], object]] = {
         "..\\..\\.env",
         "a\x00b.go",
         "",
+        "../outside",
+        "/abs/path",
     ],
 )
 @pytest.mark.parametrize("build", PATH_FIELDS.values(), ids=PATH_FIELDS.keys())

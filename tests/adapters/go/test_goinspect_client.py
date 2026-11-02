@@ -1,0 +1,252 @@
+"""The Go helper behind a typed client. A stand-in program plays the helper, so no Go is needed."""
+
+import json
+import os
+import stat
+from pathlib import Path
+
+import pytest
+
+from arde.adapters.child_process import ChildCommand, ChildOutcome, ChildTimeoutError
+from arde.adapters.language.go import goinspect_client
+from arde.adapters.language.go.goinspect_client import (
+    CallMatch,
+    GoinspectClient,
+    GoinspectError,
+    build_goinspect,
+)
+from arde.domain.errors import ArdeError
+from arde.domain.profile import ExtractionPattern
+from arde.domain.report import ExitCode
+
+# Prints a canned reply and the exit code it was given, and records how it was called.
+STAND_IN = """#!/bin/sh
+printf '%s\\n' "$@" > "$0.args"
+[ "$1" = match ] && cp "$3" "$0.patterns"
+cat "$0.out"
+cat "$0.err" >&2
+exit "$(cat "$0.code")"
+"""
+
+
+class StandIn:
+    def __init__(self, folder: Path) -> None:
+        self.binary = folder / "goinspect"
+        self.binary.write_text(STAND_IN, encoding="utf-8")
+        self.binary.chmod(self.binary.stat().st_mode | stat.S_IXUSR)
+        self.replies_with()
+
+    def replies_with(self, stdout: str = "{}", *, stderr: str = "", exit_code: int = 0) -> None:
+        Path(f"{self.binary}.out").write_text(stdout, encoding="utf-8")
+        Path(f"{self.binary}.err").write_text(stderr, encoding="utf-8")
+        Path(f"{self.binary}.code").write_text(str(exit_code), encoding="utf-8")
+
+    @property
+    def arguments(self) -> list[str]:
+        return Path(f"{self.binary}.args").read_text(encoding="utf-8").splitlines()
+
+    @property
+    def patterns_it_was_given(self) -> object:
+        return json.loads(Path(f"{self.binary}.patterns").read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def stand_in(tmp_path: Path) -> StandIn:
+    folder = tmp_path / "helper"
+    folder.mkdir()
+    return StandIn(folder)
+
+
+@pytest.fixture
+def folder(tmp_path: Path) -> Path:
+    inspected = tmp_path / "inspected"
+    inspected.mkdir()
+    return inspected.resolve()
+
+
+def test_compare_names_both_folders_and_reads_the_reply(stand_in: StandIn, folder: Path) -> None:
+    stand_in.replies_with('{"changed": ["a.go"], "added": [], "removed": ["b.go"]}')
+
+    reply = GoinspectClient(stand_in.binary).compare(folder, folder)
+
+    assert (reply.changed, reply.added, reply.removed) == (("a.go",), (), ("b.go",))
+    assert stand_in.arguments == ["compare", "--old", str(folder), "--new", str(folder)]
+
+
+def test_declarations_are_read_with_their_fields(stand_in: StandIn, folder: Path) -> None:
+    stand_in.replies_with(
+        json.dumps(
+            {
+                "declarations": [
+                    {"file": "a.go", "kind": "func", "name": "F", "hash": "h1", "line": 3}
+                ],
+                "fields": [
+                    {
+                        "file": "a.go",
+                        "struct": "S",
+                        "name": "Id",
+                        "line": 7,
+                        "tag": 'json:"id"',
+                        "go_type": "int",
+                        "embedded": False,
+                    }
+                ],
+            }
+        )
+    )
+
+    reply = GoinspectClient(stand_in.binary).declarations(folder)
+
+    assert [(d.file, d.kind, d.name, d.hash, d.line) for d in reply.declarations] == [
+        ("a.go", "func", "F", "h1", 3)
+    ]
+    assert [(f.struct, f.name, f.tag, f.go_type, f.embedded) for f in reply.fields] == [
+        ("S", "Id", 'json:"id"', "int", False)
+    ]
+    assert stand_in.arguments == ["declarations", str(folder)]
+
+
+def test_matches_hand_the_patterns_over_as_a_file(stand_in: StandIn, folder: Path) -> None:
+    stand_in.replies_with(
+        '{"matches": [{"kind": "env", "call": "os.Getenv", "file": "m.go", "line": 4,'
+        ' "args": {"name": "\\"PORT\\""}}]}'
+    )
+    pattern = ExtractionPattern(kind="env", call=r"^os\.Getenv$", args={"name": 0})
+
+    reply = GoinspectClient(stand_in.binary).matches(folder, [pattern])
+
+    assert reply.matches == (
+        CallMatch(kind="env", call="os.Getenv", file="m.go", line=4, args={"name": '"PORT"'}),
+    )
+    assert stand_in.patterns_it_was_given == [
+        {"kind": "env", "call": r"^os\.Getenv$", "args": {"name": 0}}
+    ]
+    assert stand_in.arguments[:2] == ["match", "--patterns"]
+    assert stand_in.arguments[3] == str(folder)
+
+
+def test_fingerprints_pass_the_roots_as_one_comma_separated_list(
+    stand_in: StandIn, folder: Path
+) -> None:
+    stand_in.replies_with(
+        '{"fingerprints": {"a": "h"}, "reach": {"a": ["x.a"]}, "unresolved": ["b"]}'
+    )
+
+    reply = GoinspectClient(stand_in.binary).fingerprints(folder, ["a", "b"])
+
+    assert reply.fingerprints == {"a": "h"}
+    assert reply.reach == {"a": ("x.a",)}
+    assert reply.unresolved == ("b",)
+    assert stand_in.arguments == ["fingerprints", "--roots", "a,b", str(folder)]
+
+
+def test_no_roots_means_no_call_to_the_helper(tmp_path: Path, folder: Path) -> None:
+    reply = GoinspectClient(tmp_path / "not-there").fingerprints(folder, [])
+
+    assert (reply.fingerprints, reply.reach, reply.unresolved) == ({}, {}, ())
+
+
+def test_a_failure_carries_the_helpers_message_and_exits_with_one(
+    stand_in: StandIn, folder: Path
+) -> None:
+    stand_in.replies_with("", stderr="goinspect: cannot parse bad.go\n", exit_code=1)
+
+    with pytest.raises(GoinspectError) as failed:
+        GoinspectClient(stand_in.binary).declarations(folder)
+
+    assert isinstance(failed.value, ArdeError)
+    assert "cannot parse bad.go" in str(failed.value)
+    assert failed.value.exit_code == ExitCode.CHECKS_FAILED
+    assert failed.value.next_action
+
+
+@pytest.mark.parametrize(
+    ("stdout", "reason"),
+    [
+        ("", "Invalid JSON"),
+        ("not json", "Invalid JSON"),
+        ('{"changed": [], "added": []', "Invalid JSON"),
+        ('{"changed": [], "added": []}', "removed"),
+        ('{"changed": [], "added": [], "removed": [], "extra": 1}', "extra"),
+        ('{"changed": "a.go", "added": [], "removed": []}', "changed"),
+        ('{"changed": null, "added": [], "removed": []}', "changed"),
+    ],
+)
+def test_a_reply_that_does_not_fit_is_an_error_and_not_a_guess(
+    stand_in: StandIn, folder: Path, stdout: str, reason: str
+) -> None:
+    stand_in.replies_with(stdout)
+
+    with pytest.raises(GoinspectError) as unreadable:
+        GoinspectClient(stand_in.binary).compare(folder, folder)
+
+    assert reason in str(unreadable.value)
+    assert unreadable.value.exit_code == ExitCode.CHECKS_FAILED
+    assert unreadable.value.next_action
+
+
+def test_a_helper_that_hangs_is_stopped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, folder: Path
+) -> None:
+    hanging = tmp_path / "hanging"
+    hanging.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    hanging.chmod(hanging.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.setattr(goinspect_client, "GOINSPECT_TIMEOUT_S", 0.5)
+
+    with pytest.raises(ChildTimeoutError, match=r"0\.5 s"):
+        GoinspectClient(hanging).declarations(folder)
+
+
+class CountingBuild:
+    """Stands in for the build: writes the file it was asked for and counts how often it ran."""
+
+    def __init__(self) -> None:
+        self.runs = 0
+
+    def __call__(self, command: ChildCommand) -> ChildOutcome:
+        self.runs += 1
+        Path(command.argv[command.argv.index("-o") + 1]).write_text("binary", encoding="utf-8")
+        return ChildOutcome(exit_code=0, stdout="", stderr="")
+
+
+def test_the_helper_is_built_once_per_process_for_a_folder(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    build = CountingBuild()
+    monkeypatch.setattr(goinspect_client, "run_child", build)
+    monkeypatch.setattr(goinspect_client, "_built", set())
+
+    first = build_goinspect(tmp_path / "bin")
+    second = build_goinspect(tmp_path / "bin")
+
+    assert first == second == tmp_path / "bin" / "goinspect"
+    assert build.runs == 1
+
+
+def test_a_helper_deleted_after_the_build_is_built_again(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    build = CountingBuild()
+    monkeypatch.setattr(goinspect_client, "run_child", build)
+    monkeypatch.setattr(goinspect_client, "_built", set())
+
+    os.makedirs(tmp_path / "bin")
+    build_goinspect(tmp_path / "bin").unlink()
+    build_goinspect(tmp_path / "bin")
+
+    assert build.runs == 2
+
+
+def test_a_failed_build_names_the_next_action(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def failing_build(command: ChildCommand) -> ChildOutcome:
+        return ChildOutcome(exit_code=2, stdout="", stderr="main.go:3: oops\n")
+
+    monkeypatch.setattr(goinspect_client, "run_child", failing_build)
+    monkeypatch.setattr(goinspect_client, "_built", set())
+
+    with pytest.raises(GoinspectError, match=r"main\.go:3: oops") as failed:
+        build_goinspect(tmp_path / "bin")
+
+    assert failed.value.next_action

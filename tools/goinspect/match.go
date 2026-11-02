@@ -161,7 +161,7 @@ type fileMatcher struct {
 }
 
 // nameOfCallee writes the callee on one line, without the parentheses and type arguments around
-// it. A split `mux.\n HandleFunc`, `writeError[int]` and `(writeError)` then all read as the name
+// it. A split `mux.\n HandleFunc`, `reply[int]` and `(reply)` then all read as the name
 // a pattern is written against. Without type information `handlers[0](w)` looks the same as an
 // instantiation, so it reads as `handlers`.
 func nameOfCallee(callee ast.Expr) string {

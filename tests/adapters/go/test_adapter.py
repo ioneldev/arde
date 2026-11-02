@@ -1,0 +1,730 @@
+"""The Go adapter against real Go: goinspect, the toolchain and the shop fixture service."""
+
+import re
+import socket
+import subprocess
+import tempfile
+import time
+import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+from shop_support import ROUTE_PATTERNS, SHOP, shop_profile
+
+from arde.adapters.child_process import ChildStartError
+from arde.adapters.language.go.adapter import GoAdapter, go_adapter
+from arde.adapters.language.go.goinspect_client import GoinspectError
+from arde.adapters.language.go.inventory_builder import NoRoutesError, RouteNotUnderstoodError
+from arde.adapters.language.go.toolchain import BadTestCommandError, GoCommandError
+from arde.application.ports import LanguageAdapter
+from arde.domain.errors import ArdeError
+from arde.domain.inventory import (
+    INLINE_HANDLER,
+    ErrorCode,
+    Param,
+    ResponseField,
+    Route,
+)
+from arde.domain.profile import RepoProfile
+from arde.domain.report import ExitCode
+
+pytestmark = pytest.mark.integration
+
+SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def edit(path: Path, old: str, new: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    assert old in text, f"{old!r} is not in {path}"
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def field(
+    struct: str, name: str, json_name: str, declared_type: str, *, omitempty: bool = False
+) -> ResponseField:
+    return ResponseField(
+        struct=struct,
+        name=name,
+        json_name=json_name,
+        declared_type=declared_type,
+        omitempty=omitempty,
+    )
+
+
+def test_the_adapter_satisfies_the_port_it_is_wired_in_by(goinspect_binary: Path) -> None:
+    port: LanguageAdapter = GoAdapter(goinspect_binary)
+
+    assert port.detects(SHOP)
+
+
+def test_the_factory_builds_the_helper_and_hands_back_the_port(tmp_path: Path) -> None:
+    port = go_adapter(tmp_path / "bin")
+
+    assert isinstance(port, GoAdapter)
+    assert (tmp_path / "bin" / "goinspect").is_file()
+
+
+# detects
+
+
+def test_detects_go_mod(adapter: GoAdapter, tmp_path: Path) -> None:
+    assert not adapter.detects(tmp_path)
+
+    (tmp_path / "go.mod").write_text("module example.com/x\n", encoding="utf-8")
+
+    assert adapter.detects(tmp_path)
+
+
+def test_a_folder_named_go_mod_is_not_a_module(adapter: GoAdapter, tmp_path: Path) -> None:
+    (tmp_path / "go.mod").mkdir()
+
+    assert not adapter.detects(tmp_path)
+
+
+# extract_inventory
+
+
+def test_inventory_on_shop(adapter: GoAdapter) -> None:
+    inventory = adapter.extract_inventory(SHOP, shop_profile())
+
+    assert inventory.routes == (
+        Route(method="GET", path="/", handler="s.listing"),
+        Route(method="GET", path="/items/{sku}", handler="s.quote"),
+    )
+    assert inventory.params == (Param(name="qty"),)
+    assert inventory.error_codes == (
+        ErrorCode(code="bad_quantity", status="http.StatusBadRequest"),
+        ErrorCode(code="unknown_sku", status="http.StatusNotFound"),
+    )
+    assert inventory.env_vars == ("SHOP_PORT", "SHOP_VERBOSE")
+    assert inventory.make_targets == ("lint", "serve", "smoke", "unit")
+    assert inventory.response_fields == (
+        field("ItemView", "Name", "name", "string"),
+        field("ItemView", "PriceCents", "price_cents", "int64"),
+        field("ItemView", "SKU", "sku", "string"),
+        field("Listing", "Items", "items", "[]ItemView"),
+        field("Quote", "Details", "details", "any"),
+        field("Quote", "Note", "note", "string", omitempty=True),
+        field("Quote", "Quantity", "quantity", "int"),
+        field("Quote", "SKU", "sku", "string"),
+        field("Quote", "TotalCents", "total_cents", "int64"),
+        field("Stamp", "IssuedBy", "issued_by", "string"),
+        field("problem", "Code", "code", "string"),
+    )
+
+
+def test_the_shop_covers_a_method_in_the_pattern_and_a_method_in_the_call(
+    adapter: GoAdapter,
+) -> None:
+    routes = adapter.extract_inventory(SHOP, shop_profile()).routes
+
+    assert [(route.method, route.path) for route in routes] == [
+        ("GET", "/"),
+        ("GET", "/items/{sku}"),
+    ]
+
+
+def test_the_default_pattern_finds_a_direct_getenv_but_not_the_wrapper(adapter: GoAdapter) -> None:
+    profile = shop_profile(patterns=ROUTE_PATTERNS)
+
+    assert adapter.extract_inventory(SHOP, profile).env_vars == ("SHOP_VERBOSE",)
+
+
+def test_a_pattern_for_a_wrapper_adds_to_the_default_one(adapter: GoAdapter) -> None:
+    inventory = adapter.extract_inventory(SHOP, shop_profile())
+
+    assert inventory.env_vars == ("SHOP_PORT", "SHOP_VERBOSE")
+
+
+def test_a_profile_that_repeats_the_default_pattern_lists_nothing_twice(adapter: GoAdapter) -> None:
+    repeated = {"kind": "env", "call": r"^os\.Getenv$", "args": {"name": 0}}
+    profile = shop_profile(patterns=(*shop_profile().patterns, repeated))
+
+    assert adapter.extract_inventory(SHOP, profile).env_vars == ("SHOP_PORT", "SHOP_VERBOSE")
+
+
+def test_zero_routes_raises_no_routes_error(adapter: GoAdapter) -> None:
+    profile = shop_profile(patterns=())
+
+    with pytest.raises(NoRoutesError) as stopped:
+        adapter.extract_inventory(SHOP, profile)
+
+    assert stopped.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
+
+
+def test_a_repo_with_no_makefile_has_no_make_targets(adapter: GoAdapter, shop: Path) -> None:
+    (shop / "Makefile").unlink()
+
+    assert adapter.extract_inventory(shop, shop_profile()).make_targets == ()
+
+
+def test_a_route_with_a_path_held_in_a_variable_stops_the_run(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    edit(
+        shop / "web" / "server.go",
+        'app.get("/items/{sku}", s.quote)',
+        'itemPath := "/items/{sku}"\n\tapp.get(itemPath, s.quote)',
+    )
+
+    with pytest.raises(RouteNotUnderstoodError, match=r"web/server.go:\d+"):
+        adapter.extract_inventory(shop, shop_profile())
+
+
+def test_a_handler_written_in_place_is_listed_as_inline(adapter: GoAdapter, shop: Path) -> None:
+    edit(
+        shop / "web" / "server.go",
+        'app.get("/items/{sku}", s.quote)',
+        'app.get("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) })',
+    )
+
+    handlers = {r.path: r.handler for r in adapter.extract_inventory(shop, shop_profile()).routes}
+
+    assert handlers == {"/": "s.listing", "/health": INLINE_HANDLER}
+
+
+def test_a_go_file_that_does_not_parse_stops_the_run_and_names_it(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    (shop / "web" / "broken.go").write_text("package web\n\nfunc (\n", encoding="utf-8")
+
+    with pytest.raises(GoinspectError, match=r"broken\.go"):
+        adapter.extract_inventory(shop, shop_profile())
+
+
+# run_checks
+
+
+def test_run_checks_counts_tests_and_finds_tagged_files(adapter: GoAdapter, shop: Path) -> None:
+    result = adapter.run_checks(shop, shop_profile())
+
+    assert (result.build_ok, result.vet_ok, result.test_ok) == (True, True, True)
+    assert result.test_count == 3
+    assert result.ignored_files == ("web/smoke_integration_test.go",)
+
+
+def test_no_tests_gives_count_zero_not_failure(adapter: GoAdapter, tmp_path: Path) -> None:
+    (tmp_path / "go.mod").write_text("module example.com/bare\n\ngo 1.22\n", encoding="utf-8")
+    (tmp_path / "main.go").write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
+
+    result = adapter.run_checks(tmp_path, shop_profile())
+
+    assert (result.build_ok, result.vet_ok, result.test_ok) == (True, True, True)
+    assert (result.test_count, result.ignored_files) == (0, ())
+
+
+def test_a_failing_test_is_reported_and_not_raised(adapter: GoAdapter, shop: Path) -> None:
+    edit(shop / "pricing" / "pricing.go", "unitCents * int64(quantity)", "unitCents")
+
+    result = adapter.run_checks(shop, shop_profile())
+
+    assert (result.build_ok, result.test_ok) == (True, False)
+    assert "FAIL" in result.output
+    assert result.test_count == 3
+
+
+def test_a_build_error_is_reported_and_not_raised(adapter: GoAdapter, shop: Path) -> None:
+    edit(shop / "pricing" / "pricing.go", "return unitCents", "return missing")
+
+    result = adapter.run_checks(shop, shop_profile())
+
+    assert (result.build_ok, result.vet_ok, result.test_ok) == (False, False, False)
+    assert "undefined: missing" in result.output
+
+
+# copylocks is a vet check that go test does not run, so only vet fails.
+def test_a_vet_finding_fails_vet_alone(adapter: GoAdapter, shop: Path) -> None:
+    copies_a_lock = 'import "sync"\n\nfunc copied(lock sync.Mutex) sync.Mutex { return lock }'
+    (shop / "pricing" / "lock.go").write_text(
+        f"package pricing\n\n{copies_a_lock}\n", encoding="utf-8"
+    )
+
+    result = adapter.run_checks(shop, shop_profile())
+
+    assert (result.build_ok, result.vet_ok, result.test_ok) == (True, False, True)
+
+
+def test_run_checks_builds_without_a_version_control_stamp(adapter: GoAdapter, shop: Path) -> None:
+    (shop / ".git").mkdir()
+
+    assert adapter.run_checks(shop, shop_profile()).build_ok
+
+
+def test_extra_test_commands_run_from_profile_only(adapter: GoAdapter, shop: Path) -> None:
+    profile = shop_profile(
+        extra_test_commands=("touch ran-from-the-owner",),
+        reported_test_commands=("touch ran-from-the-repo",),
+    )
+
+    result = adapter.run_checks(shop, profile)
+
+    assert (shop / "ran-from-the-owner").exists()
+    assert not (shop / "ran-from-the-repo").exists()
+    assert result.test_ok
+
+
+def test_an_extra_command_is_reported_beside_the_checks_and_never_over_one(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    result = adapter.run_checks(shop, shop_profile(extra_test_commands=("test -d web",)))
+
+    assert "example.com/shop/pricing" in result.output
+    assert "== extra: test -d web (exit 0) ==" in result.output
+
+
+def test_an_extra_test_command_that_fails_fails_the_tests(adapter: GoAdapter, shop: Path) -> None:
+    result = adapter.run_checks(shop, shop_profile(extra_test_commands=("false",)))
+
+    assert (result.build_ok, result.test_ok) == (True, False)
+
+
+@pytest.mark.parametrize("command", ["echo 'unbalanced", "", "   "])
+def test_an_extra_test_command_that_is_not_a_command_stops_the_run(
+    adapter: GoAdapter, shop: Path, command: str
+) -> None:
+    with pytest.raises(BadTestCommandError) as stopped:
+        adapter.run_checks(shop, shop_profile(extra_test_commands=(command,)))
+
+    assert stopped.value.next_action
+
+
+def test_an_extra_test_command_that_does_not_exist_stops_the_run(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    with pytest.raises(ChildStartError):
+        adapter.run_checks(shop, shop_profile(extra_test_commands=("no-such-program-anywhere",)))
+
+
+def test_extra_test_commands_are_not_run_through_a_shell(adapter: GoAdapter, shop: Path) -> None:
+    result = adapter.run_checks(
+        shop, shop_profile(extra_test_commands=("echo a && touch shelled",))
+    )
+
+    assert not (shop / "shelled").exists()
+    assert "a && touch shelled" in result.output
+
+
+def test_child_env_has_no_anthropic_vars(
+    monkeypatch: pytest.MonkeyPatch, adapter: GoAdapter, shop: Path
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://example.invalid")
+    monkeypatch.setenv("GOFLAGS", "-toolexec=false")
+
+    result = adapter.run_checks(shop, shop_profile(extra_test_commands=("env",)))
+
+    assert result.build_ok and result.test_ok
+    assert "ANTHROPIC" not in result.output
+    assert "GOFLAGS" not in result.output
+    assert "PATH=" in result.output
+
+
+# build_service
+
+
+@pytest.fixture
+def binaries_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    folder = tmp_path / "binaries"
+    folder.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(folder))
+    return folder
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def wait_for_port(port: int) -> None:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+            return
+        except OSError:
+            time.sleep(0.05)
+    pytest.fail(f"nothing listened on port {port}")
+
+
+@contextmanager
+def started(binary: Path, port: int) -> Iterator[None]:
+    process = subprocess.Popen(
+        [str(binary)],
+        env={"SHOP_PORT": str(port)},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        wait_for_port(port)
+        yield
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+
+def test_build_service_builds_a_binary_outside_the_repo(
+    adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
+) -> None:
+    binary = adapter.build_service(shop, shop_profile())
+
+    assert binary.is_file()
+    assert binaries_in_tmp in binary.parents
+    assert shop not in binary.parents
+    assert sorted(path.name for path in shop.iterdir()) == sorted(
+        path.name for path in SHOP.iterdir()
+    )
+
+
+def test_the_service_listens_on_the_port_its_env_var_names(
+    adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
+) -> None:
+    binary = adapter.build_service(shop, shop_profile())
+    port = free_port()
+
+    with (
+        started(binary, port),
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as reply,
+    ):
+        body = reply.read().decode()
+
+    assert '"items"' in body
+
+
+def test_build_service_asks_for_no_version_control_stamp(
+    adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
+) -> None:
+    (shop / ".git").mkdir()
+
+    assert adapter.build_service(shop, shop_profile()).is_file()
+
+
+def test_build_service_reads_the_package_as_a_package_and_never_as_a_flag(
+    adapter: GoAdapter, shop: Path, binaries_in_tmp: Path, tmp_path: Path
+) -> None:
+    ran_the_flag = tmp_path / "ran-the-flag"
+    hostile = RepoProfile.model_construct(
+        **{
+            **shop_profile().model_dump(),
+            "main_package": f"-toolexec=touch {ran_the_flag}",
+        }
+    )
+
+    with pytest.raises(GoCommandError):
+        adapter.build_service(shop, hostile)
+
+    assert not ran_the_flag.exists()
+
+
+def test_a_build_that_fails_names_the_error_and_the_next_action(
+    adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
+) -> None:
+    edit(shop / "pricing" / "pricing.go", "return unitCents", "return missing")
+
+    with pytest.raises(GoCommandError) as failed:
+        adapter.build_service(shop, shop_profile())
+
+    assert isinstance(failed.value, ArdeError)
+    assert "undefined: missing" in str(failed.value)
+    assert failed.value.next_action
+    assert list(binaries_in_tmp.iterdir()) == []
+
+
+def test_a_package_that_does_not_exist_is_an_error(
+    adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
+) -> None:
+    with pytest.raises(GoCommandError):
+        adapter.build_service(shop, shop_profile(main_package="./nowhere"))
+
+
+@pytest.mark.parametrize(
+    ("main_package", "main_file"),
+    [
+        ("../outside", "main.go"),
+        ("/abs/path", "main.go"),
+        ("--output=x", "main.go"),
+        (".", "--output=x"),
+        (".", "../outside.go"),
+        (".", "/abs/main.go"),
+        (".", "."),
+    ],
+)
+def test_a_profile_cannot_name_a_package_or_file_that_leaves_the_repo_or_is_a_flag(
+    main_package: str, main_file: str
+) -> None:
+    with pytest.raises(ValidationError):
+        shop_profile(main_package=main_package, main_file=main_file)
+
+
+# route_fingerprints
+
+
+def shop_routes(adapter: GoAdapter, repo: Path) -> tuple[Route, ...]:
+    return adapter.extract_inventory(repo, shop_profile()).routes
+
+
+def test_each_route_gets_a_fingerprint_keyed_by_method_and_path(adapter: GoAdapter) -> None:
+    fingerprints = adapter.route_fingerprints(SHOP, shop_routes(adapter, SHOP))
+
+    assert sorted(fingerprints) == ["GET /", "GET /items/{sku}"]
+    assert all(SHA256_HEX.fullmatch(value) for value in fingerprints.values())
+    assert fingerprints["GET /"] != fingerprints["GET /items/{sku}"]
+
+
+def test_two_routes_that_share_a_handler_share_a_fingerprint(adapter: GoAdapter) -> None:
+    routes = [
+        Route(method="GET", path="/a", handler="s.quote"),
+        Route(method="POST", path="/b", handler="other.quote"),
+    ]
+
+    fingerprints = adapter.route_fingerprints(SHOP, routes)
+
+    assert fingerprints["GET /a"] == fingerprints["POST /b"]
+
+
+def test_an_inline_handler_has_no_fingerprint_and_no_error(adapter: GoAdapter) -> None:
+    routes = [
+        Route(method="GET", path="/", handler="s.listing"),
+        Route(method="GET", path="/inline", handler=INLINE_HANDLER),
+    ]
+
+    assert sorted(adapter.route_fingerprints(SHOP, routes)) == ["GET /"]
+
+
+def test_a_handler_goinspect_cannot_find_is_left_out_without_error(adapter: GoAdapter) -> None:
+    routes = [
+        Route(method="GET", path="/", handler="s.listing"),
+        Route(method="GET", path="/ghost", handler="s.nobodyWroteThis"),
+        Route(method="GET", path="/std", handler="http.NotFound"),
+    ]
+
+    assert sorted(adapter.route_fingerprints(SHOP, routes)) == ["GET /"]
+
+
+def test_no_routes_means_no_fingerprints_and_no_run(adapter: GoAdapter, tmp_path: Path) -> None:
+    assert adapter.route_fingerprints(tmp_path, []) == {}
+
+
+def test_only_inline_handlers_means_no_fingerprints_and_no_run(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    routes = [Route(method="GET", path="/", handler=INLINE_HANDLER)]
+
+    assert adapter.route_fingerprints(tmp_path, routes) == {}
+
+
+def test_a_repo_goinspect_cannot_load_is_an_error(adapter: GoAdapter, tmp_path: Path) -> None:
+    routes = [Route(method="GET", path="/", handler="s.listing")]
+
+    with pytest.raises(GoinspectError, match=r"go\.mod"):
+        adapter.route_fingerprints(tmp_path, routes)
+
+
+def test_editing_a_helper_changes_the_routes_that_reach_it_and_no_others(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    routes = shop_routes(adapter, shop)
+    before = adapter.route_fingerprints(shop, routes)
+
+    edit(
+        shop / "pricing" / "pricing.go",
+        "unitCents * int64(quantity)",
+        "unitCents*int64(quantity)+1",
+    )
+    after = adapter.route_fingerprints(shop, routes)
+
+    assert after["GET /items/{sku}"] != before["GET /items/{sku}"]
+    assert after["GET /"] == before["GET /"]
+
+
+def test_a_comment_edit_changes_no_fingerprint(adapter: GoAdapter, shop: Path) -> None:
+    routes = shop_routes(adapter, shop)
+    before = adapter.route_fingerprints(shop, routes)
+
+    edit(
+        shop / "pricing" / "pricing.go", "There is no volume discount", "There is never a discount"
+    )
+
+    assert adapter.route_fingerprints(shop, routes) == before
+
+
+# changed_declarations
+
+
+def test_nothing_changed_means_no_declarations(adapter: GoAdapter, shop: Path) -> None:
+    assert adapter.changed_declarations(SHOP, shop) == []
+
+
+def test_a_comment_edit_changes_no_declaration(adapter: GoAdapter, shop: Path) -> None:
+    edit(shop / "pricing" / "pricing.go", "no volume discount", "never a discount")
+
+    assert adapter.changed_declarations(SHOP, shop) == []
+
+
+def test_an_edited_function_is_named_by_file_kind_and_name(adapter: GoAdapter, shop: Path) -> None:
+    edit(shop / "pricing" / "pricing.go", "unitCents * int64(quantity)", "unitCents")
+
+    assert adapter.changed_declarations(SHOP, shop) == ["pricing/pricing.go::func Total"]
+
+
+def test_an_edited_method_is_named_after_its_receiver_type(adapter: GoAdapter, shop: Path) -> None:
+    edit(shop / "web" / "handlers.go", "parsed > maxQuantity", "parsed > maxQuantity+1")
+
+    assert adapter.changed_declarations(SHOP, shop) == [
+        "web/handlers.go::func server.quote",
+    ]
+
+
+def test_a_new_and_a_removed_declaration_are_both_named(adapter: GoAdapter, shop: Path) -> None:
+    edit(
+        shop / "pricing" / "pricing.go",
+        "func Total(",
+        "func Added() int { return 1 }\n\nfunc Total(",
+    )
+    edit(shop / "web" / "failures.go", "type problem struct", "type renamed struct")
+
+    assert adapter.changed_declarations(SHOP, shop) == [
+        "pricing/pricing.go::func Added",
+        "web/failures.go::type problem",
+        "web/failures.go::type renamed",
+    ]
+
+
+def test_an_edited_constant_is_named(adapter: GoAdapter, shop: Path) -> None:
+    edit(shop / "web" / "handlers.go", "const maxQuantity = 50", "const maxQuantity = 60")
+
+    assert adapter.changed_declarations(SHOP, shop) == [
+        "web/handlers.go::const maxQuantity",
+    ]
+
+
+def test_a_repo_with_a_file_that_does_not_parse_is_an_error(adapter: GoAdapter, shop: Path) -> None:
+    (shop / "web" / "broken.go").write_text("package web\n\nfunc (\n", encoding="utf-8")
+
+    with pytest.raises(GoinspectError, match=r"broken\.go"):
+        adapter.changed_declarations(SHOP, shop)
+
+
+# is_comment_only
+
+
+GREETING = """package greet
+
+// Hello says hello.
+func Hello() string {
+	return "hello"
+}
+"""
+
+
+def pair(tmp_path: Path, old: str, new: str) -> tuple[Path, Path]:
+    old_file, new_file = tmp_path / "old.go", tmp_path / "new.go"
+    old_file.write_text(old, encoding="utf-8")
+    new_file.write_text(new, encoding="utf-8")
+    return old_file, new_file
+
+
+def test_a_changed_comment_is_comment_only(adapter: GoAdapter, tmp_path: Path) -> None:
+    files = pair(tmp_path, GREETING, GREETING.replace("says hello", "greets the caller"))
+
+    assert adapter.is_comment_only(*files)
+
+
+def test_a_new_comment_and_a_reformat_are_comment_only(adapter: GoAdapter, tmp_path: Path) -> None:
+    reformatted = GREETING.replace("func Hello() string {", "// Added.\nfunc Hello()   string {")
+    files = pair(tmp_path, GREETING, reformatted)
+
+    assert adapter.is_comment_only(*files)
+
+
+def test_a_changed_line_of_code_is_not_comment_only(adapter: GoAdapter, tmp_path: Path) -> None:
+    files = pair(tmp_path, GREETING, GREETING.replace('"hello"', '"hi"'))
+
+    assert not adapter.is_comment_only(*files)
+
+
+def test_is_comment_only_false_on_directive_change(adapter: GoAdapter, tmp_path: Path) -> None:
+    files = pair(tmp_path, GREETING, GREETING.replace("func Hello", "//go:noinline\nfunc Hello"))
+
+    assert not adapter.is_comment_only(*files)
+
+
+def test_a_changed_build_constraint_is_not_comment_only(adapter: GoAdapter, tmp_path: Path) -> None:
+    old = "//go:build linux\n\n" + GREETING
+    files = pair(tmp_path, old, old.replace("linux", "darwin"))
+
+    assert not adapter.is_comment_only(*files)
+
+
+def test_a_directive_moved_to_other_code_is_not_comment_only(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    old = (
+        'package p\n\nimport _ "embed"\n\n//go:embed a.txt\nvar first string\n\nvar second string\n'
+    )
+    new = (
+        'package p\n\nimport _ "embed"\n\nvar first string\n\n//go:embed a.txt\nvar second string\n'
+    )
+
+    assert not adapter.is_comment_only(*pair(tmp_path, old, new))
+
+
+def test_a_changed_example_output_is_not_comment_only(adapter: GoAdapter, tmp_path: Path) -> None:
+    old = (
+        'package p\n\nimport "fmt"\n\nfunc ExampleHi() {\n\tfmt.Println("hi")\n\t// Output: hi\n}\n'
+    )
+    files = pair(tmp_path, old, old.replace("// Output: hi", "// Output: bye"))
+
+    assert not adapter.is_comment_only(*files)
+
+
+CGO_FILE = """package main
+
+// #define LIMIT 10
+import "C"
+
+// run starts the program.
+func run() {}
+"""
+
+
+def test_any_comment_edit_in_cgo_file_is_real(adapter: GoAdapter, tmp_path: Path) -> None:
+    preamble_edit = pair(tmp_path, CGO_FILE, CGO_FILE.replace("LIMIT 10", "LIMIT 20"))
+    elsewhere_edit = pair(tmp_path, CGO_FILE, CGO_FILE.replace("starts the program", "runs it"))
+
+    assert not adapter.is_comment_only(*preamble_edit)
+    assert not adapter.is_comment_only(*elsewhere_edit)
+
+
+def test_the_same_comment_edit_without_cgo_is_comment_only(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    plain = CGO_FILE.replace('import "C"', 'import "fmt"').replace(
+        "run() {}", "run() { fmt.Print() }"
+    )
+    files = pair(tmp_path, plain, plain.replace("LIMIT 10", "LIMIT 20"))
+
+    assert adapter.is_comment_only(*files)
+
+
+def test_a_file_that_does_not_parse_is_never_comment_only(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    broken = "package p\n\n// one\nfunc (\n"
+    files = pair(tmp_path, broken, broken.replace("one", "two"))
+
+    assert not adapter.is_comment_only(*files)
+
+
+def test_the_files_are_compared_whatever_their_names(adapter: GoAdapter, tmp_path: Path) -> None:
+    old_file = tmp_path / "a" / "_hidden_test.go"
+    new_file = tmp_path / "b" / "other.go"
+    old_file.parent.mkdir()
+    new_file.parent.mkdir()
+    old_file.write_text(GREETING, encoding="utf-8")
+    new_file.write_text(GREETING.replace('"hello"', '"hi"'), encoding="utf-8")
+
+    assert not adapter.is_comment_only(old_file, new_file)

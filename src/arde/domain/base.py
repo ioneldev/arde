@@ -102,6 +102,24 @@ ParamName = Annotated[
     ),
 ]
 
+
+# A backslash counts as a separator: the host decides what the path means, and code that joins
+# this text to a root must not need to know which host it is on.
+def _as_posix_path(text: str) -> PurePosixPath:
+    return PurePosixPath(text.replace("\\", "/"))
+
+
+def _leaves_the_repo(path: str) -> bool:
+    as_path = _as_posix_path(path)
+    return as_path.is_absolute() or ".." in as_path.parts
+
+
+def _require_package_inside_repo(package: str) -> str:
+    if _leaves_the_repo(package):
+        raise ValueError("must stay inside the repo: use no .. and no absolute path")
+    return package
+
+
 # The build tool reads a leading hyphen as a flag, and one of its flags runs any command it is
 # given, so this text could otherwise execute without a single file in the repo changing.
 MainPackage = Annotated[
@@ -110,14 +128,12 @@ MainPackage = Annotated[
         rf"(?!-){_PLAIN_CHAR}+",
         "a package path: do not start with a hyphen, and use no whitespace, quotes or backticks",
     ),
+    AfterValidator(_require_package_inside_repo),
 ]
 
 
 def _require_repo_relative(path: str) -> str:
-    # A backslash counts as a separator: the host decides what the path means, and code that
-    # joins this text to a root must not need to know which host it is on.
-    parts = PurePosixPath(path.replace("\\", "/"))
-    if not path or "\x00" in path or parts.is_absolute() or ".." in parts.parts:
+    if not path or "\x00" in path or _leaves_the_repo(path):
         raise ValueError("must be a file path relative to the repo root, with no ..")
     return path
 
@@ -125,3 +141,15 @@ def _require_repo_relative(path: str) -> str:
 # A path a model chose. Joined to a root, an absolute path discards the root, and that is a route
 # from repo text to any file ARDE can read, the API key among them.
 RepoRelativePath = Annotated[str, AfterValidator(_require_repo_relative)]
+
+
+# The main file is handed to a tool as an argument, where a leading hyphen is a flag.
+def _require_a_file_that_is_not_a_flag(path: str) -> str:
+    if path.startswith("-"):
+        raise ValueError("must not start with a hyphen, which a tool would read as a flag")
+    if not _as_posix_path(path).parts:
+        raise ValueError("must name a file, not the repo root")
+    return path
+
+
+MainFile = Annotated[RepoRelativePath, AfterValidator(_require_a_file_that_is_not_a_flag)]

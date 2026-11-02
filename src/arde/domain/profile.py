@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from arde.domain.base import Frozen, MainPackage, RepoRelativePath
+from arde.domain.base import Frozen, MainFile, MainPackage
 
 
 class ExtractionPattern(Frozen):
@@ -16,7 +16,7 @@ class DiscoveredProfile(Frozen):
 
     schema_version: Literal[1] = 1
     main_package: MainPackage
-    main_file: RepoRelativePath
+    main_file: MainFile
     port_env: str
     patterns: tuple[ExtractionPattern, ...]
     reported_test_commands: tuple[str, ...] = ()

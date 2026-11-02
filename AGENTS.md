@@ -5,7 +5,7 @@ ARDE (Agentic Repo Docs Engine) documents a Go `net/http` service: it adds swag 
 ## Commands
 
 - `make check`: ruff, ruff format check, strict mypy and the fast tests. Run it before every commit.
-- `make integration`: tests that need the Go toolchain.
+- `make integration`: tests that need the Go toolchain, and `gofmt` on `goinspect` and the `shop` fixture.
 - `make eval`: tests that call the Anthropic API and cost money. It reads the key from `.env`.
 - `uv run pytest tests/test_architecture.py -q`: run one test file.
 
@@ -26,6 +26,7 @@ A small Go helper, `goinspect`, does the AST work and the call graph, because th
 - The domain imports no adapter and no application code. The application imports no adapter and reaches the outside world through ports, wired in the cli.
 - Go-specific code (`goinspect`, `gofmt`, `swag`, `go build`) stays in the Go language adapter and the helper. The orchestrator never touches Go directly.
 - Code enforces rules. The LLM never writes a comment or a spec line, and agents get no shell or write tools.
+- ARDE knows nothing about any repo it documents. What it learns comes from the profile, from reading the repo or from the wiki, and `tests/test_architecture.py` fails if product code or a prompt names the first repo it was tried on.
 - Tests come first. Unit tests use the fake LLM and need no network or Go. Mark Go tests `integration` and paid tests `eval`.
 - Comments explain why, never what. Past two positional arguments, pass a model.
 - Every user-facing error names the next action.
