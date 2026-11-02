@@ -34,7 +34,7 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 - **Hand-edited `@` lines are overwritten** from the wiki on the next run.
 - **`@version` renders as `0.0.0`**, because the repo has no source for it and ARDE will not invent one.
 - **The comment-only rule is Go-only.**
-- **A `/*line ...*/` comment in the middle of a line is not read as a directive.** The check reads directives line by line, and this form only moves reported line numbers.
+- **Any comment edit in a file with an example function, or with `"C"` or `` `C` `` text, counts as a real change.** An example reads its expected output from comments, and a cgo preamble is C source. The rule over-reports on purpose: a wrong "real" costs one model call, and a wrong "comment-only" ignores a change.
 - **Embedded struct fields are not response fields.** Their fields are promoted into the parent's JSON object, and the inventory cannot say so. An embedded field with a `json` name is also left out, although Go treats it as a named field. Response fields are keyed by struct name, so two structs with one name in different packages share it.
 - **Only literal arguments are read.** A route path that is not a string literal stops the run. A route pattern with a host, such as `GET example.com/x`, also stops it. A param name, env name or error code that is not a literal is dropped, so a repo that wraps `os.Getenv` in its own helper gets nothing from the default pattern, and Discovery has to supply one for that helper.
 - **A handler that is not a plain name is stored as `(inline)`.** A function written in place or a call that wraps another handler has no fingerprint, so the route counts as changed on every run.

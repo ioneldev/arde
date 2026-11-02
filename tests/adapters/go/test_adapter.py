@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from doubtful_edits import EVERY_DOUBTFUL_EDIT, ORDINARY_EDITS, DoubtfulEdit
 from pydantic import ValidationError
 from shop_support import ROUTE_PATTERNS, SHOP, shop_profile
 
@@ -728,3 +729,49 @@ def test_the_files_are_compared_whatever_their_names(adapter: GoAdapter, tmp_pat
     new_file.write_text(GREETING.replace('"hello"', '"hi"'), encoding="utf-8")
 
     assert not adapter.is_comment_only(old_file, new_file)
+
+
+# is_comment_only: doubt answers False
+
+
+@pytest.mark.parametrize("doubtful", EVERY_DOUBTFUL_EDIT, ids=lambda edit: edit.name)
+def test_an_edit_that_may_change_behaviour_is_never_comment_only(
+    adapter: GoAdapter, tmp_path: Path, doubtful: DoubtfulEdit
+) -> None:
+    assert not adapter.is_comment_only(*pair(tmp_path, doubtful.old, doubtful.new))
+
+
+@pytest.mark.parametrize("ordinary", ORDINARY_EDITS, ids=lambda edit: edit.name)
+def test_an_ordinary_comment_edit_is_still_comment_only(
+    adapter: GoAdapter, tmp_path: Path, ordinary: DoubtfulEdit
+) -> None:
+    assert adapter.is_comment_only(*pair(tmp_path, ordinary.old, ordinary.new))
+
+
+def test_a_file_that_is_missing_is_not_comment_only(adapter: GoAdapter, tmp_path: Path) -> None:
+    present = tmp_path / "present.go"
+    present.write_text(GREETING, encoding="utf-8")
+    missing = tmp_path / "missing.go"
+
+    assert not adapter.is_comment_only(present, missing)
+    assert not adapter.is_comment_only(missing, present)
+
+
+def test_a_folder_is_not_comment_only(adapter: GoAdapter, tmp_path: Path) -> None:
+    present = tmp_path / "present.go"
+    present.write_text(GREETING, encoding="utf-8")
+
+    assert not adapter.is_comment_only(present, tmp_path)
+    assert not adapter.is_comment_only(tmp_path, present)
+
+
+@pytest.mark.parametrize("name", ["template.go.tmpl", "notes.md", "script.txt", "go"])
+def test_a_file_that_is_not_go_source_is_not_comment_only(
+    adapter: GoAdapter, tmp_path: Path, name: str
+) -> None:
+    old, new = tmp_path / "old" / name, tmp_path / "new" / name
+    for path, text in ((old, GREETING), (new, GREETING.replace("says hello", "greets"))):
+        path.parent.mkdir()
+        path.write_text(text, encoding="utf-8")
+
+    assert not adapter.is_comment_only(old, new)

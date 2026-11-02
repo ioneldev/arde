@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from arde.adapters.language.go import toolchain
-from arde.adapters.language.go.directives import anchored_directives, imports_cgo
+from arde.adapters.language.go.directives import comment_edit_may_change_behaviour, read_source
 from arde.adapters.language.go.goinspect_client import GoinspectClient, build_goinspect
 from arde.adapters.language.go.inventory_builder import SourceReading, build_inventory
 from arde.adapters.language.go.makefile import make_targets_of
@@ -25,12 +25,11 @@ class GoAdapter(LanguageAdapter):
     def detects(self, repo: Path) -> bool:
         return (repo / "go.mod").is_file()
 
-    # The directive and cgo checks come first, because the comparison below ignores every comment.
+    # The checks on comments come first, because the comparison below ignores every comment.
     def is_comment_only(self, old_file: Path, new_file: Path) -> bool:
-        old_source, new_source = _read_text(old_file), _read_text(new_file)
-        if anchored_directives(old_source) != anchored_directives(new_source):
+        if not (_is_go_source(old_file) and _is_go_source(new_file)):
             return False
-        if imports_cgo(old_source) or imports_cgo(new_source):
+        if comment_edit_may_change_behaviour(read_source(old_file), read_source(new_file)):
             return False
         return not self._code_differs(old_file, new_file)
 
@@ -81,8 +80,9 @@ def go_adapter(bin_dir: Path) -> LanguageAdapter:
     return GoAdapter(build_goinspect(bin_dir))
 
 
-def _read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8", errors="replace")
+# An added or removed file reaches this call too, and so may a folder or a template.
+def _is_go_source(path: Path) -> bool:
+    return path.suffix == ".go" and path.is_file()
 
 
 # A handler reads s.quote or handlers.Quote, and the call graph starts from the function's own name.

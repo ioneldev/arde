@@ -155,9 +155,11 @@ class LanguageAdapter(Protocol):
     def detects(self, repo: Path) -> bool: ...
 
     def is_comment_only(self, old_file: Path, new_file: Path) -> bool:
-        """True only when the two files differ in comments and formatting and nothing else.
+        """True when the files differ only in comments, formatting and the struct tags ARDE adds.
 
-        A comment the compiler or a tool reads counts as code. Doubt is answered with False.
+        Those tags are `oneOf` and `binding:"optional"`. A comment that a compiler or a tool
+        reads counts as code, and so does any comment in a file with an example or a cgo import.
+        Doubt answers False, as does a file that is missing or is not source code.
         """
         ...
 
