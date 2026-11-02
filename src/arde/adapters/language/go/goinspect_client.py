@@ -20,6 +20,8 @@ from arde.domain.report import ExitCode
 # The helper's source ships in this repo, next to the package.
 GOINSPECT_SOURCE = Path(__file__).resolve().parents[5] / "tools" / "goinspect"
 HELPER_NAME = "goinspect"
+# What the helper prints in place of an expression past its size limit.
+TOO_LONG_TO_PRINT = "(too long to print)"
 
 
 class GoinspectError(ArdeError):

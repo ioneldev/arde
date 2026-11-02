@@ -11,7 +11,7 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 import arde.domain
-from arde.domain.base import printable_name
+from arde.domain.base import one_line, printable_name
 from arde.domain.facts import (
     CodeQuote,
     EndpointFact,
@@ -710,3 +710,28 @@ def test_a_file_name_prints_without_a_raw_control_character(name: str) -> None:
 
 def test_a_very_long_file_name_is_cut() -> None:
     assert len(printable_name("x" * 100_000)) == 200
+
+
+def test_a_file_name_of_escapes_stays_within_the_cut() -> None:
+    assert len(printable_name("\x1b" * 300)) == 200
+
+
+def test_one_line_keeps_plain_text_as_it_is() -> None:
+    assert one_line("http.StatusBadRequest", 80) == "http.StatusBadRequest"
+
+
+def test_one_line_folds_a_printed_function_onto_one_line() -> None:
+    printed = "func() {\n\treturn 500\n}"
+
+    assert one_line(printed, 80) == "func() { return 500 }"
+
+
+@pytest.mark.parametrize(
+    "hostile", ["a\x1b[2Jb", "a\x00b", "a\rb", "a\u2028b", "a\x9bb", "a\ufeffb"]
+)
+def test_one_line_holds_no_control_character(hostile: str) -> None:
+    assert one_line(hostile, 80).isprintable()
+
+
+def test_one_line_keeps_the_first_characters() -> None:
+    assert one_line("abcdefgh", 3) == "abc"

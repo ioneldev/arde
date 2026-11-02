@@ -29,14 +29,20 @@ _SHOWN_NAME_LENGTH = 200
 # A file name can hold anything but a slash and NUL. json.dumps escapes every control character
 # and every letter outside ASCII, and the quotes it adds are cut, so a plain name reads as it is.
 def printable_name(name: str) -> str:
-    return json.dumps(name[:_SHOWN_NAME_LENGTH])[1:-1]
+    return json.dumps(name[:_SHOWN_NAME_LENGTH])[1:-1][:_SHOWN_NAME_LENGTH]
 
 
 # Go refuses NUL and a byte order mark inside a source file, so either one stops the build after
 # the paid work is done. The other control characters are refused for the same reason: none has a
-# place in a comment or a tag.
-_CONTROL_CHARACTERS = "\x00-\x1f\x7f-\x9f\ufeff"
+# place in a comment or a tag. The two Unicode separators would make one line read as two.
+_CONTROL_CHARACTERS = "\x00-\x1f\x7f-\x9f\u2028\u2029\ufeff"
 _CONTROL_CHARACTER = re.compile(f"[{_CONTROL_CHARACTERS}]")
+
+
+# Cut first, because one literal in a repo can run to many megabytes.
+def one_line(text: str, limit: int) -> str:
+    """The first characters of repo text, with each break or control character made a space."""
+    return " ".join(_CONTROL_CHARACTER.sub(" ", text[:limit]).split())
 
 
 def _require_clean_single_line(text: str) -> str:
