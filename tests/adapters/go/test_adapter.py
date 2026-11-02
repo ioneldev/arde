@@ -10,7 +10,7 @@ import sys
 import tempfile
 import time
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -25,6 +25,7 @@ from arde.adapters.language.go.goinspect_client import GoinspectError
 from arde.adapters.language.go.inventory_builder import NoRoutesError, RouteNotUnderstoodError
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
 from arde.adapters.language.go.toolchain import BadTestCommandError
+from arde.application.ports import RouteHashes
 from arde.domain.errors import ArdeError
 from arde.domain.inventory import (
     INLINE_HANDLER,
@@ -47,8 +48,15 @@ def edit(path: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
-def a_route(method: str, path: str, handler: str, *, file: str = "web/server.go") -> Route:
-    return Route(method=method, path=path, handler=handler, file=file, line=1)
+def a_route(method: str, path: str, handler: str, *, handler_id: str | None = None) -> Route:
+    return Route(
+        method=method,
+        path=path,
+        handler=handler,
+        file="web/server.go",
+        line=1,
+        handler_id=handler_id,
+    )
 
 
 def field(
@@ -348,7 +356,7 @@ def test_a_link_to_a_source_file_inside_the_repo_is_read_like_the_file_it_builds
     )
 
     routes = adapter.extract_inventory(shop, profile).routes
-    fingerprints = adapter.route_fingerprints(shop, routes)
+    fingerprints = hashes_of(adapter, shop, routes).hashes
     checks = adapter.run_checks(shop, shop_profile())
 
     [linked] = [route for route in routes if route.path == "/linked-in"]
@@ -968,102 +976,226 @@ def test_a_main_package_that_names_no_one_package_stops_with_a_reason(
 # route_fingerprints
 
 
+LISTING = "(*example.com/shop/web.server).listing"
+QUOTE = "(*example.com/shop/web.server).quote"
+
+
 def shop_routes(adapter: GoAdapter, repo: Path) -> tuple[Route, ...]:
     return adapter.extract_inventory(repo, shop_profile()).routes
 
 
-def test_each_route_gets_a_fingerprint_keyed_by_method_and_path(adapter: GoAdapter) -> None:
-    fingerprints = adapter.route_fingerprints(SHOP, shop_routes(adapter, SHOP))
+def hashes_of(adapter: GoAdapter, repo: Path, routes: Sequence[Route]) -> RouteHashes:
+    return adapter.route_fingerprints(repo, routes, main_package=".")
 
-    assert sorted(fingerprints) == ["GET /", "GET /items/{sku}"]
-    assert all(SHA256_HEX.fullmatch(value) for value in fingerprints.values())
-    assert fingerprints["GET /"] != fingerprints["GET /items/{sku}"]
+
+def test_each_route_gets_a_fingerprint_keyed_by_method_and_path(adapter: GoAdapter) -> None:
+    reply = hashes_of(adapter, SHOP, shop_routes(adapter, SHOP))
+
+    assert sorted(reply.hashes) == ["GET /", "GET /items/{sku}"]
+    assert all(SHA256_HEX.fullmatch(value) for value in reply.hashes.values())
+    assert reply.hashes["GET /"] != reply.hashes["GET /items/{sku}"]
+    assert reply.unhashed == {}
 
 
 def test_two_routes_that_share_a_key_and_not_a_handler_are_left_out_and_not_merged(
     adapter: GoAdapter,
 ) -> None:
     routes = [
-        a_route("GET", "/", "s.listing"),
-        a_route("GET", "/", "s.quote"),
-        a_route("GET", "/items/{sku}", "s.quote"),
+        a_route("GET", "/", "s.listing", handler_id=LISTING),
+        a_route("GET", "/", "s.quote", handler_id=QUOTE),
+        a_route("GET", "/items/{sku}", "s.quote", handler_id=QUOTE),
     ]
 
-    assert sorted(adapter.route_fingerprints(SHOP, routes)) == ["GET /items/{sku}"]
+    reply = hashes_of(adapter, SHOP, routes)
+
+    assert sorted(reply.hashes) == ["GET /items/{sku}"]
+    assert reply.unhashed == {"GET /": "shared key"}
 
 
-def test_two_routes_that_share_a_key_and_a_handler_keep_their_fingerprint(
+def test_two_routes_that_share_a_key_and_a_function_keep_their_fingerprint(
     adapter: GoAdapter,
 ) -> None:
     routes = [
-        a_route("GET", "/", "s.listing"),
-        a_route("GET", "/", "other.listing"),
+        a_route("GET", "/", "s.listing", handler_id=LISTING),
+        a_route("GET", "/", "other.listing", handler_id=LISTING),
     ]
 
-    assert sorted(adapter.route_fingerprints(SHOP, routes)) == ["GET /"]
+    assert sorted(hashes_of(adapter, SHOP, routes).hashes) == ["GET /"]
 
 
-def test_two_routes_that_share_a_handler_share_a_fingerprint(adapter: GoAdapter) -> None:
+def test_a_route_with_a_function_and_one_without_share_no_fingerprint(adapter: GoAdapter) -> None:
     routes = [
-        a_route("GET", "/a", "s.quote"),
-        a_route("POST", "/b", "other.quote"),
+        a_route("GET", "/", "s.listing", handler_id=LISTING),
+        a_route("GET", "/", INLINE_HANDLER),
     ]
 
-    fingerprints = adapter.route_fingerprints(SHOP, routes)
-
-    assert fingerprints["GET /a"] == fingerprints["POST /b"]
+    assert hashes_of(adapter, SHOP, routes).unhashed == {"GET /": "shared key"}
 
 
-def test_an_inline_handler_has_no_fingerprint_and_no_error(adapter: GoAdapter) -> None:
+def test_two_routes_that_share_a_function_share_a_fingerprint(adapter: GoAdapter) -> None:
     routes = [
-        a_route("GET", "/", "s.listing"),
+        a_route("GET", "/a", "s.quote", handler_id=QUOTE),
+        a_route("POST", "/b", "other.quote", handler_id=QUOTE),
+    ]
+
+    hashes = hashes_of(adapter, SHOP, routes).hashes
+
+    assert hashes["GET /a"] == hashes["POST /b"]
+
+
+def test_an_inline_handler_has_no_fingerprint_and_says_why(adapter: GoAdapter) -> None:
+    routes = [
+        a_route("GET", "/", "s.listing", handler_id=LISTING),
         a_route("GET", "/inline", INLINE_HANDLER),
     ]
 
-    assert sorted(adapter.route_fingerprints(SHOP, routes)) == ["GET /"]
+    reply = hashes_of(adapter, SHOP, routes)
+
+    assert sorted(reply.hashes) == ["GET /"]
+    assert reply.unhashed == {"GET /inline": "inline"}
 
 
-def test_a_handler_goinspect_cannot_find_is_left_out_without_error(adapter: GoAdapter) -> None:
+def test_a_name_with_no_function_behind_it_has_no_fingerprint_and_says_why(
+    adapter: GoAdapter,
+) -> None:
     routes = [
-        a_route("GET", "/", "s.listing"),
-        a_route("GET", "/ghost", "s.nobodyWroteThis"),
-        a_route("GET", "/std", "http.NotFound"),
+        a_route("GET", "/", "s.listing", handler_id=LISTING),
+        a_route("GET", "/variable", "local"),
+        a_route("GET", "/ghost", "s.gone", handler_id="(*example.com/shop/web.server).gone"),
     ]
 
-    assert sorted(adapter.route_fingerprints(SHOP, routes)) == ["GET /"]
+    reply = hashes_of(adapter, SHOP, routes)
+
+    assert sorted(reply.hashes) == ["GET /"]
+    assert reply.unhashed == {"GET /variable": "no function", "GET /ghost": "no function"}
+
+
+def test_a_function_that_reaches_code_with_no_body_says_why(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    (tmp_path / "go.mod").write_text(
+        "module example.com/depot\n\ngo 1.22\n\n"
+        "require example.com/depot/sub v0.0.0\n\n"
+        "replace example.com/depot/sub => ./sub\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "main.go").write_text(
+        'package main\n\nimport (\n\t"net/http"\n\n\t"example.com/depot/sub"\n)\n\n'
+        'func main() {\n\thttp.HandleFunc("/x", show)\n}\n\n'
+        "func show(w http.ResponseWriter, r *http.Request) { sub.Help() }\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "go.mod").write_text(
+        "module example.com/depot/sub\n\ngo 1.22\n", encoding="utf-8"
+    )
+    (tmp_path / "sub" / "sub.go").write_text("package sub\n\nfunc Help() {}\n", encoding="utf-8")
+    routes = adapter.extract_inventory(tmp_path, shop_profile(patterns=())).routes
+
+    assert hashes_of(adapter, tmp_path, routes).unhashed == {"ANY /x": "no body"}
 
 
 def test_no_routes_means_no_fingerprints_and_no_run(adapter: GoAdapter, tmp_path: Path) -> None:
-    assert adapter.route_fingerprints(tmp_path, []) == {}
+    assert hashes_of(adapter, tmp_path, []) == RouteHashes(hashes={}, unhashed={})
 
 
 def test_only_inline_handlers_means_no_fingerprints_and_no_run(
     adapter: GoAdapter, tmp_path: Path
 ) -> None:
-    routes = [a_route("GET", "/", INLINE_HANDLER)]
+    reply = hashes_of(adapter, tmp_path, [a_route("GET", "/", INLINE_HANDLER)])
 
-    assert adapter.route_fingerprints(tmp_path, routes) == {}
+    assert reply == RouteHashes(hashes={}, unhashed={"GET /": "inline"})
 
 
 def test_a_repo_goinspect_cannot_load_is_an_error(adapter: GoAdapter, tmp_path: Path) -> None:
-    routes = [a_route("GET", "/", "s.listing")]
-
     with pytest.raises(GoinspectError, match=r"go\.mod"):
-        adapter.route_fingerprints(tmp_path, routes)
+        hashes_of(adapter, tmp_path, [a_route("GET", "/", "s.listing", handler_id=LISTING)])
+
+
+def test_a_variable_that_shares_a_functions_name_hashes_nothing(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    edit(
+        shop / "web" / "server.go",
+        'app.handle("GET /{$}", s.listing)',
+        'list := s.listing\n\tapp.handle("GET /{$}", list)',
+    )
+    (shop / "web" / "listing.go").write_text(
+        "package web\n\nfunc list() int { return 1 }\n\nvar _ = list\n", encoding="utf-8"
+    )
+
+    reply = hashes_of(adapter, shop, shop_routes(adapter, shop))
+
+    assert "GET /" not in reply.hashes
+    assert reply.unhashed == {"GET /": "no function"}
+
+
+def test_a_field_that_shares_a_methods_name_hashes_nothing(adapter: GoAdapter, shop: Path) -> None:
+    edit(shop / "web" / "server.go", "items []item\n}", "items []item\n\tcount http.HandlerFunc\n}")
+    edit(
+        shop / "web" / "server.go",
+        'app.handle("GET /{$}", s.listing)',
+        's.count = s.listing\n\tapp.handle("GET /{$}", s.count)',
+    )
+    (shop / "web" / "audit.go").write_text(
+        'package web\n\nimport "net/http"\n\ntype audit struct{}\n\n'
+        "func (audit) count(w http.ResponseWriter, r *http.Request) {}\n",
+        encoding="utf-8",
+    )
+
+    reply = hashes_of(adapter, shop, shop_routes(adapter, shop))
+
+    assert reply.unhashed == {"GET /": "no function"}
+
+
+def test_an_edit_to_the_function_a_wrapped_handler_names_moves_its_route(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    edit(
+        shop / "web" / "server.go",
+        'app.handle("GET /{$}", s.listing)',
+        'app.handle("GET /{$}", http.HandlerFunc(s.listing))',
+    )
+    before = hashes_of(adapter, shop, shop_routes(adapter, shop)).hashes
+
+    edit(
+        shop / "web" / "handlers.go", "respond(w, http.StatusOK, Listing", "respond(w, 201, Listing"
+    )
+    after = hashes_of(adapter, shop, shop_routes(adapter, shop)).hashes
+
+    assert before["GET /"] != after["GET /"]
+    assert before["GET /items/{sku}"] == after["GET /items/{sku}"]
+
+
+def test_a_factory_is_the_root_of_the_route_it_makes(adapter: GoAdapter, tmp_path: Path) -> None:
+    source = (
+        'package main\n\nimport "net/http"\n\ntype desk struct{}\n\n'
+        "func (d desk) build() http.HandlerFunc {\n"
+        "\treturn func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(201) }\n}\n\n"
+        'func main() {\n\thttp.HandleFunc("/x", desk{}.build())\n}\n'
+    )
+    write_go(tmp_path, {"main.go": source})
+    [route] = adapter.extract_inventory(tmp_path, service_at(".")).routes
+    before = hashes_of(adapter, tmp_path, [route]).hashes
+
+    edit(tmp_path / "main.go", "WriteHeader(201)", "WriteHeader(202)")
+
+    assert route.handler_id == "(example.com/depot.desk).build"
+    assert hashes_of(adapter, tmp_path, [route]).hashes != before
 
 
 def test_editing_a_helper_changes_the_routes_that_reach_it_and_no_others(
     adapter: GoAdapter, shop: Path
 ) -> None:
     routes = shop_routes(adapter, shop)
-    before = adapter.route_fingerprints(shop, routes)
+    before = hashes_of(adapter, shop, routes).hashes
 
     edit(
         shop / "pricing" / "pricing.go",
         "unitCents * int64(pieces)",
         "unitCents*int64(pieces)+1",
     )
-    after = adapter.route_fingerprints(shop, routes)
+    after = hashes_of(adapter, shop, routes).hashes
 
     assert after["GET /items/{sku}"] != before["GET /items/{sku}"]
     assert after["GET /"] == before["GET /"]
@@ -1071,13 +1203,13 @@ def test_editing_a_helper_changes_the_routes_that_reach_it_and_no_others(
 
 def test_a_comment_edit_changes_no_fingerprint(adapter: GoAdapter, shop: Path) -> None:
     routes = shop_routes(adapter, shop)
-    before = adapter.route_fingerprints(shop, routes)
+    before = hashes_of(adapter, shop, routes)
 
     edit(
         shop / "pricing" / "pricing.go", "There is no volume discount", "There is never a discount"
     )
 
-    assert adapter.route_fingerprints(shop, routes) == before
+    assert hashes_of(adapter, shop, routes) == before
 
 
 # changed_declarations

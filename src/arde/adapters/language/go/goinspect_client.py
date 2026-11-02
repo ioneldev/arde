@@ -115,7 +115,10 @@ class RoutesReply(Frozen):
 class FingerprintsReply(Frozen):
     fingerprints: dict[str, str]
     reach: dict[str, tuple[str, ...]]
+    # The ids that name no function of the service.
     unresolved: tuple[str, ...]
+    # The ids that reach code with no body to hash, such as another module under the same path.
+    without_body: tuple[str, ...]
 
 
 # Whether this process has built the helper into a folder already. The Go build cache makes a
@@ -179,7 +182,7 @@ class GoinspectClient:
 
     def matches(self, root: Path, patterns: Sequence[ExtractionPattern]) -> MatchReply:
         resolved = root.resolve()
-        with _patterns_file(patterns) as patterns_file:
+        with _json_file(_as_plain_data(patterns)) as patterns_file:
             arguments = ("match", "--patterns", str(patterns_file), str(resolved))
             return self._ask(_Question(arguments, MatchReply, cwd=resolved))
 
@@ -187,7 +190,7 @@ class GoinspectClient:
         self, root: Path, patterns: Sequence[ExtractionPattern], *, main_package: str
     ) -> RoutesReply:
         resolved = root.resolve()
-        with _patterns_file(patterns) as patterns_file:
+        with _json_file(_as_plain_data(patterns)) as patterns_file:
             arguments = (
                 "routes",
                 "--patterns",
@@ -198,12 +201,23 @@ class GoinspectClient:
             )
             return self._ask(_Question(arguments, RoutesReply, cwd=resolved))
 
-    def fingerprints(self, root: Path, roots: Sequence[str]) -> FingerprintsReply:
+    # A file, because an id can hold a comma: (*example.com/x.pair[K, V]).serve.
+    def fingerprints(
+        self, root: Path, roots: Sequence[str], *, main_package: str
+    ) -> FingerprintsReply:
         if not roots:
-            return FingerprintsReply(fingerprints={}, reach={}, unresolved=())
+            return FingerprintsReply(fingerprints={}, reach={}, unresolved=(), without_body=())
         resolved = root.resolve()
-        arguments = ("fingerprints", "--roots", ",".join(roots), str(resolved))
-        return self._ask(_Question(arguments, FingerprintsReply, cwd=resolved))
+        with _json_file(list(roots)) as roots_file:
+            arguments = (
+                "fingerprints",
+                "--roots",
+                str(roots_file),
+                "--main",
+                main_package,
+                str(resolved),
+            )
+            return self._ask(_Question(arguments, FingerprintsReply, cwd=resolved))
 
     def _ask[T: Frozen](self, question: "_Question[T]") -> T:
         command = ChildCommand(
@@ -226,11 +240,15 @@ class GoinspectClient:
         return _read_reply(question, outcome)
 
 
+def _as_plain_data(patterns: Sequence[ExtractionPattern]) -> list[dict[str, object]]:
+    return [pattern.model_dump() for pattern in patterns]
+
+
 @contextmanager
-def _patterns_file(patterns: Sequence[ExtractionPattern]) -> Iterator[Path]:
-    with tempfile.TemporaryDirectory(prefix="arde-patterns-") as folder:
-        path = Path(folder) / "patterns.json"
-        path.write_text(json.dumps([p.model_dump() for p in patterns]), encoding="utf-8")
+def _json_file(content: object) -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(prefix="arde-goinspect-") as folder:
+        path = Path(folder) / "input.json"
+        path.write_text(json.dumps(content), encoding="utf-8")
         yield path
 
 

@@ -10,13 +10,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
-	"strings"
 )
 
 const usage = "usage: goinspect compare --old DIR --new DIR | goinspect declarations DIR | " +
-	"goinspect match --patterns FILE DIR | goinspect fingerprints --roots a,b DIR | " +
-	"goinspect routes --patterns FILE --main PKG DIR"
+	"goinspect match --patterns FILE DIR | goinspect routes --patterns FILE --main PKG DIR | " +
+	"goinspect fingerprints --roots FILE --main PKG DIR"
 
 type command func(args []string) (any, error)
 
@@ -97,26 +95,19 @@ func runRoutes(args []string) (any, error) {
 
 func runFingerprints(args []string) (any, error) {
 	flags := newFlagSet("fingerprints")
-	rootsText := flags.String("roots", "", "comma-separated names of the functions or methods to fingerprint")
+	rootsPath := flags.String("roots", "", "JSON file holding the ids of the functions to fingerprint")
+	mainPackage := flags.String("main", "", "the package that holds func main, as go list reads it")
 	if err := parseFlags(flags, args); err != nil {
 		return nil, err
 	}
-	if flags.NArg() != 1 {
+	if *rootsPath == "" || *mainPackage == "" || flags.NArg() != 1 {
 		return nil, errors.New(usage)
 	}
-	roots, err := splitRoots(*rootsText)
+	roots, err := loadRoots(*rootsPath)
 	if err != nil {
 		return nil, err
 	}
-	return fingerprintRoots(flags.Arg(0), roots)
-}
-
-func splitRoots(rootsText string) ([]string, error) {
-	roots := strings.Split(rootsText, ",")
-	if slices.Contains(roots, "") {
-		return nil, fmt.Errorf("--roots %q holds an empty name; pass function or method names separated by commas", rootsText)
-	}
-	return roots, nil
+	return fingerprintRoots(fingerprintRequest{dir: flags.Arg(0), mainPackage: *mainPackage, roots: roots})
 }
 
 func newFlagSet(command string) *flag.FlagSet {

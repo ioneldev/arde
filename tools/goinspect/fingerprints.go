@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -21,10 +22,21 @@ import (
 	"golang.org/x/tools/go/ssa/ssautil"
 )
 
+// fingerprintRequest names the functions to hash by id, as `routes` prints them. A bare name would
+// let a variable hash an unrelated function that shares its name.
+type fingerprintRequest struct {
+	dir         string
+	mainPackage string
+	roots       []string
+}
+
 type fingerprintReport struct {
 	Fingerprints map[string]string   `json:"fingerprints"`
 	Reach        map[string][]string `json:"reach"`
-	Unresolved   []string            `json:"unresolved"`
+	// Unresolved holds the ids that name no function of the service.
+	Unresolved []string `json:"unresolved"`
+	// WithoutBody holds the ids that reach code with no body to hash: see hasFunctionWithoutBody.
+	WithoutBody []string `json:"without_body"`
 }
 
 // moduleProgram is the module's own packages as SSA. Only their function bodies are built; the
@@ -42,17 +54,15 @@ type moduleProgram struct {
 	hashInputs map[*ssa.Function]string
 }
 
-// fingerprintRoots hashes, for each named function, everything it can reach inside the module.
+// fingerprintRoots hashes, for each function named, everything it can reach inside the module.
 // SSA decides what is reached, and three inputs say what each reached function does, because
 // none of them is enough alone: see hashFunctions. It hashes what the functions say and not the
 // package state they use: a package-level var or type is outside a fingerprint, and
 // `declarations` covers those. A const is inside, because SSA writes its value into every use,
 // except one used only as an array length inside a type declared in the function: SSA prints that
 // type by name, and the syntax holds only the const's name.
-// A root is unresolved when no function has its name, and when it reaches code with no body to
-// hash: see hasFunctionWithoutBody.
-func fingerprintRoots(dir string, roots []string) (fingerprintReport, error) {
-	module, err := loadModuleProgram(dir)
+func fingerprintRoots(request fingerprintRequest) (fingerprintReport, error) {
+	module, err := loadModuleProgram(request.dir, request.mainPackage)
 	if err != nil {
 		return fingerprintReport{}, err
 	}
@@ -60,17 +70,18 @@ func fingerprintRoots(dir string, roots []string) (fingerprintReport, error) {
 		Fingerprints: map[string]string{},
 		Reach:        map[string][]string{},
 		Unresolved:   []string{},
+		WithoutBody:  []string{},
 	}
-	declared := module.declaredFunctionsByName()
-	for _, root := range slices.Compact(slices.Sorted(slices.Values(roots))) {
-		starts := declared[root]
-		if len(starts) == 0 {
+	declared := module.declaredFunctionsByID()
+	for _, root := range slices.Compact(slices.Sorted(slices.Values(request.roots))) {
+		start, isDeclared := declared[root]
+		if !isDeclared {
 			report.Unresolved = append(report.Unresolved, root)
 			continue
 		}
-		reached := module.reachFrom(starts)
+		reached := module.reachFrom(start)
 		if hasFunctionWithoutBody(reached) {
-			report.Unresolved = append(report.Unresolved, root)
+			report.WithoutBody = append(report.WithoutBody, root)
 			continue
 		}
 		report.Fingerprints[root] = module.hashFunctions(reached)
@@ -79,31 +90,38 @@ func fingerprintRoots(dir string, roots []string) (fingerprintReport, error) {
 	return report, nil
 }
 
-func loadModuleProgram(dir string) (moduleProgram, error) {
-	resolved, err := resolveDirectory(dir)
+// loadModuleProgram builds main_package's graph and no more: a generic function's instances come
+// from every package in the program, so a second main would move this service's hashes.
+func loadModuleProgram(dir, mainPackage string) (moduleProgram, error) {
+	service, err := loadService(dir, mainPackage)
 	if err != nil {
 		return moduleProgram{}, err
 	}
-	if err := requireGoMod(resolved); err != nil {
-		return moduleProgram{}, err
-	}
-	loaded, err := loadPackages(resolved, []string{"./..."})
-	if err != nil {
-		return moduleProgram{}, err
-	}
-	modulePath, err := modulePathOf(loaded)
-	if err != nil {
-		return moduleProgram{}, err
-	}
-	program, ssaPackages := ssautil.Packages(loaded, ssa.InstantiateGenerics)
+	program, ssaPackages := ssautil.Packages(service.packages, ssa.InstantiateGenerics)
 	program.Build()
 	return moduleProgram{
-		modulePath:        modulePath,
+		modulePath:        service.modulePath,
 		program:           program,
 		sourcePackages:    ssaPackages,
 		instancesByOrigin: instancesByOrigin(program),
 		hashInputs:        map[*ssa.Function]string{},
 	}, nil
+}
+
+// loadRoots reads ids from a file, because an id can hold a comma: (*shop.pair[K, V]).serve.
+func loadRoots(path string) ([]string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var roots []string
+	if err := json.Unmarshal(content, &roots); err != nil {
+		return nil, fmt.Errorf("roots file %s: %w; it must be a JSON array of function ids", path, err)
+	}
+	if roots == nil {
+		return nil, fmt.Errorf("roots file %s holds null; it must be a JSON array of function ids", path)
+	}
+	return roots, nil
 }
 
 func instancesByOrigin(program *ssa.Program) map[*ssa.Function][]*ssa.Function {
@@ -161,31 +179,20 @@ func loadProblems(loaded []*packages.Package) []string {
 	return slices.Compact(problems)
 }
 
-func modulePathOf(loaded []*packages.Package) (string, error) {
-	for _, loadedPackage := range loaded {
-		if loadedPackage.Module != nil {
-			return loadedPackage.Module.Path, nil
-		}
-	}
-	return "", errors.New("the go command named no module for these packages; check the module line in go.mod")
-}
-
-// declaredFunctionsByName keys the module's declared functions and methods by their bare name. It
-// leaves out what SSA generates, such as the package initialiser. SSA names the init functions
-// someone wrote init#1, init#2 and so on, so a root `init` matches none and is unresolved. A
-// handler cannot be an init function, so nothing is lost.
-func (module moduleProgram) declaredFunctionsByName() map[string][]*ssa.Function {
-	byName := map[string][]*ssa.Function{}
+// declaredFunctionsByID leaves out what SSA generates, such as the package initialiser. Several
+// init functions share an id, which costs nothing, because a handler cannot be one.
+func (module moduleProgram) declaredFunctionsByID() map[string]*ssa.Function {
+	byID := map[string]*ssa.Function{}
 	for _, ssaPackage := range module.sourcePackages {
 		for _, member := range ssaPackage.Members {
 			for _, function := range module.functionsDeclaredBy(member) {
-				if function.Synthetic == "" {
-					byName[function.Name()] = append(byName[function.Name()], function)
+				if declared, isDeclared := function.Object().(*types.Func); isDeclared && function.Synthetic == "" {
+					byID[functionID(declared)] = function
 				}
 			}
 		}
 	}
-	return byName
+	return byID
 }
 
 func (module moduleProgram) functionsDeclaredBy(member ssa.Member) []*ssa.Function {
@@ -221,21 +228,19 @@ func (module moduleProgram) isInModule(function *ssa.Function) bool {
 	return path == module.modulePath || strings.HasPrefix(path, module.modulePath+"/")
 }
 
-// reachFrom returns the module functions the starts can reach, sorted by name. An edge is any
+// reachFrom returns the module functions the start can reach, sorted by name. An edge is any
 // function an instruction names, whether it calls it or hands it over, such as the comparator
 // given to slices.SortFunc: a fingerprint that moves too often is safe, and one that does not move
 // is not. A function's closures count as reached with it, because SSA has no edge into one that
 // is only passed around. Calls through an interface, or through a function value that is not
 // named where it is used, are not followed, and that is a documented limit.
-func (module moduleProgram) reachFrom(starts []*ssa.Function) []*ssa.Function {
+func (module moduleProgram) reachFrom(start *ssa.Function) []*ssa.Function {
 	walk := &reachWalk{module: module, visited: map[*ssa.Function]bool{}}
-	for _, start := range starts {
-		walk.visit(start)
-		// A generic root has no concrete type behind its type parameter, and its instances do.
-		// A new instance of a generic root can move the root, which only over-reports.
-		for _, instance := range module.instancesByOrigin[start] {
-			walk.visit(instance)
-		}
+	walk.visit(start)
+	// A generic root has no concrete type behind its type parameter, and its instances do. A new
+	// instance of a generic root can move the root, which only over-reports.
+	for _, instance := range module.instancesByOrigin[start] {
+		walk.visit(instance)
 	}
 	slices.SortFunc(walk.reached, func(a, b *ssa.Function) int { return strings.Compare(a.String(), b.String()) })
 	return walk.reached
@@ -289,13 +294,12 @@ func functionsMentionedBy(function *ssa.Function) []*ssa.Function {
 	return mentioned
 }
 
-// hasFunctionWithoutBody is true when the walk reached code of the module that ./... never
-// loaded, such as a nested module, a testdata or underscore directory that something imports, or
-// a module that a replace points at. It comes from export data and has no body, so an edit to it
-// cannot show in a hash. The root then gets no fingerprint and is unresolved, which the caller
-// counts as changed on every run. That over-reports and never misses, and it does not stop a repo
-// with such a layout from being documented. A function with syntax but no blocks is assembly,
-// which stays in: its body is outside the hash.
+// hasFunctionWithoutBody is true when the walk reached code under the module's path that belongs
+// to another module, such as a nested module or a module that a replace points at. It comes from
+// export data and has no body, so an edit to it cannot show in a hash. The root then gets no
+// fingerprint, and the caller counts it as changed on every run. That over-reports and never
+// misses, and it does not stop a repo with such a layout from being documented. A function with
+// syntax but no blocks is assembly, which stays in: its body is outside the hash.
 func hasFunctionWithoutBody(functions []*ssa.Function) bool {
 	return slices.ContainsFunc(functions, func(function *ssa.Function) bool {
 		return function.Blocks == nil && function.Syntax() == nil

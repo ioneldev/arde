@@ -13,9 +13,13 @@ import (
 )
 
 const (
-	routeListing = "listing"
-	routeDetail  = "detail"
-	routePing    = "ping"
+	routeListing = "(*storefront/internal/handlers.Handlers).listing"
+	routeDetail  = "(*storefront/internal/handlers.Handlers).detail"
+	routePing    = "(*storefront/internal/handlers.Handlers).ping"
+
+	shopListing = "shop.listing"
+	shopDetail  = "shop.detail"
+	shopPing    = "shop.ping"
 
 	pricingFile  = "internal/pricing/pricing.go"
 	handlersFile = "internal/handlers/handlers.go"
@@ -25,11 +29,38 @@ type fingerprintOutput struct {
 	Fingerprints map[string]string   `json:"fingerprints"`
 	Reach        map[string][]string `json:"reach"`
 	Unresolved   []string            `json:"unresolved"`
+	WithoutBody  []string            `json:"without_body"`
+}
+
+func writeRoots(t *testing.T, roots ...string) string {
+	t.Helper()
+	content, err := json.Marshal(roots)
+	assertNoError(t, err)
+	path := filepath.Join(t.TempDir(), "roots.json")
+	assertNoError(t, os.WriteFile(path, content, 0o644))
+	return path
 }
 
 func fingerprintsOf(t *testing.T, root string, roots ...string) fingerprintOutput {
 	t.Helper()
-	exitCode, stdout, stderr := runCommand(t, "fingerprints", "--roots", strings.Join(roots, ","), root)
+	return fingerprintsAt(t, fingerprintQuery{root: root, mainPackage: ".", roots: roots})
+}
+
+// storefrontFingerprints starts from the handlers package, because the module has no main.
+func storefrontFingerprints(t *testing.T, root string, roots ...string) fingerprintOutput {
+	t.Helper()
+	return fingerprintsAt(t, fingerprintQuery{root: root, mainPackage: "./internal/handlers", roots: roots})
+}
+
+type fingerprintQuery struct {
+	root        string
+	mainPackage string
+	roots       []string
+}
+
+func fingerprintsAt(t *testing.T, query fingerprintQuery) fingerprintOutput {
+	t.Helper()
+	exitCode, stdout, stderr := runCommand(t, "fingerprints", "--roots", writeRoots(t, query.roots...), "--main", query.mainPackage, query.root)
 	if exitCode != 0 || stderr != "" {
 		t.Fatalf("exit %d, stderr %q", exitCode, stderr)
 	}
@@ -87,10 +118,10 @@ func changedRoots(before, after fingerprintOutput) []string {
 
 func TestFingerprintChangesWhenCalleeChanges(t *testing.T) {
 	root := copyOfStorefront(t)
-	before := fingerprintsOf(t, root, routeListing, routeDetail, routePing)
+	before := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
 	editFile(t, root, pricingFile, "+0.5", "+0.4")
-	after := fingerprintsOf(t, root, routeListing, routeDetail, routePing)
+	after := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
 	if got := changedRoots(before, after); !reflect.DeepEqual(got, []string{routeDetail, routeListing}) {
 		t.Fatalf("changed %v, want listing and detail and not ping", got)
@@ -99,10 +130,10 @@ func TestFingerprintChangesWhenCalleeChanges(t *testing.T) {
 
 func TestFingerprintChangesWhenTheRouteItselfChanges(t *testing.T) {
 	root := copyOfStorefront(t)
-	before := fingerprintsOf(t, root, routeListing, routeDetail, routePing)
+	before := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
 	editFile(t, root, handlersFile, `return "ok"`, `return "fine"`)
-	after := fingerprintsOf(t, root, routeListing, routeDetail, routePing)
+	after := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
 	if got := changedRoots(before, after); !reflect.DeepEqual(got, []string{routePing}) {
 		t.Fatalf("changed %v, want only ping", got)
@@ -111,12 +142,12 @@ func TestFingerprintChangesWhenTheRouteItselfChanges(t *testing.T) {
 
 func TestFingerprintStableUnderComments(t *testing.T) {
 	root := copyOfStorefront(t)
-	before := fingerprintsOf(t, root, routeListing, routeDetail, routePing)
+	before := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
 	editFile(t, root, handlersFile, "func (h *Handlers) listing() float64 {",
 		"// listing adds two totals.\n\n\nfunc (h *Handlers) listing() float64 { // trailing\n\t/* inside */")
 	editFile(t, root, pricingFile, "return round(amount * rate)", "return round(amount * rate) // rounded")
-	after := fingerprintsOf(t, root, routeListing, routeDetail, routePing)
+	after := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
 	if got := changedRoots(before, after); len(got) != 0 {
 		t.Fatalf("a comment moved %v", got)
@@ -125,7 +156,7 @@ func TestFingerprintStableUnderComments(t *testing.T) {
 
 func TestFingerprintStableUnderWindowsLineEndings(t *testing.T) {
 	root := copyOfStorefront(t)
-	before := fingerprintsOf(t, root, routeListing, routeDetail, routePing)
+	before := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
 	for _, file := range []string{pricingFile, handlersFile} {
 		path := filepath.Join(root, filepath.FromSlash(file))
@@ -133,7 +164,7 @@ func TestFingerprintStableUnderWindowsLineEndings(t *testing.T) {
 		assertNoError(t, err)
 		assertNoError(t, os.WriteFile(path, []byte(strings.ReplaceAll(string(content), "\n", "\r\n")), 0o644))
 	}
-	after := fingerprintsOf(t, root, routeListing, routeDetail, routePing)
+	after := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
 	if got := changedRoots(before, after); len(got) != 0 {
 		t.Fatalf("line endings moved %v", got)
@@ -142,11 +173,11 @@ func TestFingerprintStableUnderWindowsLineEndings(t *testing.T) {
 
 func TestFingerprintStableWhenCodeMovesDownAFile(t *testing.T) {
 	root := copyOfStorefront(t)
-	before := fingerprintsOf(t, root, routeListing, routeDetail, routePing)
+	before := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
 	editFile(t, root, handlersFile, "type Handlers struct {",
 		"func unrelated() int {\n\n\n\treturn 7\n}\n\ntype Handlers struct {")
-	after := fingerprintsOf(t, root, routeListing, routeDetail, routePing)
+	after := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
 	if got := changedRoots(before, after); len(got) != 0 {
 		t.Fatalf("moving code down the file moved %v", got)
@@ -158,15 +189,17 @@ func TestFingerprintReadsModuleFromGoMod(t *testing.T) {
 	editFile(t, root, "go.mod", "module storefront", "module acme.example/orders")
 	editFile(t, root, handlersFile, `"storefront/internal/pricing"`, `"acme.example/orders/internal/pricing"`)
 
-	output := fingerprintsOf(t, root, routeDetail)
+	const movedDetail = "(*acme.example/orders/internal/handlers.Handlers).detail"
+
+	output := storefrontFingerprints(t, root, movedDetail)
 
 	want := []string{
-		"(*acme.example/orders/internal/handlers.Handlers).detail",
+		movedDetail,
 		"acme.example/orders/internal/pricing.Convert",
 		"acme.example/orders/internal/pricing.round",
 	}
-	if !reflect.DeepEqual(output.Reach[routeDetail], want) {
-		t.Fatalf("reach %v, want %v", output.Reach[routeDetail], want)
+	if !reflect.DeepEqual(output.Reach[movedDetail], want) {
+		t.Fatalf("reach %v, want %v", output.Reach[movedDetail], want)
 	}
 }
 
@@ -178,25 +211,25 @@ func TestFingerprintOnlyCountsPackagesInsideTheModule(t *testing.T) {
 		"shopfront/x/help.go": "package x\n\nfunc Helper() int { return 1 }\n",
 	})
 
-	output := fingerprintsOf(t, filepath.Join(root, "app"), routeDetail)
+	output := fingerprintsOf(t, filepath.Join(root, "app"), shopDetail)
 
 	// "shopfront/x" starts with "shop" but is another module.
-	if want := []string{"shop.detail"}; !reflect.DeepEqual(output.Reach[routeDetail], want) {
-		t.Fatalf("reach %v, want %v", output.Reach[routeDetail], want)
+	if want := []string{"shop.detail"}; !reflect.DeepEqual(output.Reach[shopDetail], want) {
+		t.Fatalf("reach %v, want %v", output.Reach[shopDetail], want)
 	}
 }
 
 func TestFingerprintFollowsAFunctionNamedInit(t *testing.T) {
 	source := "package shop\n\nfunc detail() string { return initDB() }\n\nfunc initDB() string { return \"a\" }\n"
-	before := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": source}), routeDetail)
+	before := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": source}), shopDetail)
 
 	editedRoot := writeModule(t, "shop", map[string]string{"shop.go": strings.Replace(source, `"a"`, `"b"`, 1)})
-	after := fingerprintsOf(t, editedRoot, routeDetail)
+	after := fingerprintsOf(t, editedRoot, shopDetail)
 
-	if want := []string{"shop.detail", "shop.initDB"}; !reflect.DeepEqual(before.Reach[routeDetail], want) {
-		t.Errorf("reach %v, want %v", before.Reach[routeDetail], want)
+	if want := []string{"shop.detail", "shop.initDB"}; !reflect.DeepEqual(before.Reach[shopDetail], want) {
+		t.Errorf("reach %v, want %v", before.Reach[shopDetail], want)
 	}
-	if before.Fingerprints[routeDetail] == after.Fingerprints[routeDetail] {
+	if before.Fingerprints[shopDetail] == after.Fingerprints[shopDetail] {
 		t.Error("editing initDB left the fingerprint of the handler that calls it unchanged")
 	}
 }
@@ -225,14 +258,14 @@ func TestFingerprintChangesWhenAClosureBodyChanges(t *testing.T) {
 	}
 
 	for name, test := range cases {
-		before := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": test.source}), routeListing)
+		before := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": test.source}), shopListing)
 		edited := strings.Replace(test.source, test.edit[0], test.edit[1], 1)
 		if edited == test.source {
 			t.Fatalf("%s: the edit matched nothing", name)
 		}
-		after := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": edited}), routeListing)
+		after := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": edited}), shopListing)
 
-		if before.Fingerprints[routeListing] == after.Fingerprints[routeListing] {
+		if before.Fingerprints[shopListing] == after.Fingerprints[shopListing] {
 			t.Errorf("%s: the edit left the fingerprint unchanged", name)
 		}
 	}
@@ -267,20 +300,20 @@ func TestFingerprintFollowsCallsThatGoThroughAGeneratedWrapper(t *testing.T) {
 	}
 
 	for name, test := range cases {
-		before := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": test.source}), routeDetail)
+		before := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": test.source}), shopDetail)
 		edited := strings.Replace(test.source, test.edit[0], test.edit[1], 1)
 		if edited == test.source {
 			t.Fatalf("%s: the edit matched nothing", name)
 		}
-		after := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": edited}), routeDetail)
+		after := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": edited}), shopDetail)
 
-		if before.Fingerprints[routeDetail] == after.Fingerprints[routeDetail] {
+		if before.Fingerprints[shopDetail] == after.Fingerprints[shopDetail] {
 			t.Errorf("%s: editing the callee left the fingerprint unchanged", name)
 		}
-		if !slices.Contains(before.Reach[routeDetail], test.wantName) {
-			t.Errorf("%s: reach %v lacks %s", name, before.Reach[routeDetail], test.wantName)
+		if !slices.Contains(before.Reach[shopDetail], test.wantName) {
+			t.Errorf("%s: reach %v lacks %s", name, before.Reach[shopDetail], test.wantName)
 		}
-		for _, reached := range before.Reach[routeDetail] {
+		for _, reached := range before.Reach[shopDetail] {
 			if strings.Contains(reached, "$bound") || strings.Contains(reached, "$thunk") || strings.Contains(reached, "[string]") {
 				t.Errorf("%s: reach lists the generated wrapper %s", name, reached)
 			}
@@ -289,7 +322,7 @@ func TestFingerprintFollowsCallsThatGoThroughAGeneratedWrapper(t *testing.T) {
 }
 
 func TestFingerprintReachIsSortedAndHoldsTheRouteItself(t *testing.T) {
-	output := fingerprintsOf(t, copyOfStorefront(t), routeListing, routePing)
+	output := storefrontFingerprints(t, copyOfStorefront(t), routeListing, routePing)
 
 	want := map[string][]string{
 		routeListing: {
@@ -307,20 +340,21 @@ func TestFingerprintReachIsSortedAndHoldsTheRouteItself(t *testing.T) {
 
 func TestFingerprintPrintsAFullSHA256AndAnEmptyUnresolvedList(t *testing.T) {
 	root := copyOfStorefront(t)
+	rootsFile := writeRoots(t, routePing, routeDetail)
 
-	exitCode, stdout, stderr := runCommand(t, "fingerprints", "--roots", "ping,detail", root)
+	exitCode, stdout, stderr := runCommand(t, "fingerprints", "--roots", rootsFile, "--main", "./internal/handlers", root)
 
 	if exitCode != 0 || stderr != "" {
 		t.Fatalf("exit %d, stderr %q", exitCode, stderr)
 	}
 	decoded := decodeObject(t, stdout)
-	for _, key := range []string{"fingerprints", "reach", "unresolved"} {
+	for _, key := range []string{"fingerprints", "reach", "unresolved", "without_body"} {
 		if _, found := decoded[key]; !found {
 			t.Errorf("output lacks %q: %s", key, stdout)
 		}
 	}
-	if !strings.Contains(stdout, `"unresolved":[]`) {
-		t.Errorf("unresolved must print as [], got %s", stdout)
+	if !strings.Contains(stdout, `"unresolved":[],"without_body":[]`) {
+		t.Errorf("both lists must print as [], got %s", stdout)
 	}
 	sha256Hex := regexp.MustCompile(`^[0-9a-f]{64}$`)
 	for root, hash := range decoded["fingerprints"].(map[string]any) {
@@ -334,31 +368,125 @@ func TestFingerprintListsARootThatMatchesNothingAsUnresolved(t *testing.T) {
 	source := "package shop\n\nimport \"strings\"\n\nfunc detail() string { return strings.ToUpper(\"a\") }\n"
 	root := writeModule(t, "shop", map[string]string{"shop.go": source})
 
-	// ToUpper is outside the module, and init exists only as the compiler's package initialiser.
-	output := fingerprintsOf(t, root, routeDetail, "missing", "ToUpper", "init")
+	// A bare name names nothing any more, ToUpper is outside the module, and init exists only as
+	// the compiler's package initialiser.
+	output := fingerprintsOf(t, root, shopDetail, "detail", "shop.missing", "strings.ToUpper", "shop.init")
 
-	if want := []string{"ToUpper", "init", "missing"}; !reflect.DeepEqual(output.Unresolved, want) {
+	want := []string{"detail", "shop.init", "shop.missing", "strings.ToUpper"}
+	if !reflect.DeepEqual(output.Unresolved, want) {
 		t.Errorf("unresolved %v, want %v", output.Unresolved, want)
 	}
-	if len(output.Fingerprints) != 1 || output.Fingerprints[routeDetail] == "" {
+	if len(output.Fingerprints) != 1 || output.Fingerprints[shopDetail] == "" {
 		t.Errorf("only detail resolves, got %v", output.Fingerprints)
 	}
-	if _, listed := output.Reach["missing"]; listed {
+	if _, listed := output.Reach["shop.missing"]; listed {
 		t.Error("an unresolved root must not appear in reach")
 	}
 }
 
-func TestFingerprintOfARootMatchingSeveralFunctionsUnionsTheirReach(t *testing.T) {
-	source := "package shop\n\ntype cart struct{}\n\ntype order struct{}\n\ntype crate[T any] struct{}\n\nfunc (cart) size() int { return 1 }\n\nfunc (order) size() int { return 1 }\n\nfunc (crate[T]) size() int { return 1 }\n"
-	before := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": source}), "size")
+func TestFingerprintStartsFromTheOneFunctionItsIdNames(t *testing.T) {
+	source := "package shop\n\ntype cart struct{}\n\ntype order struct{}\n\nfunc (cart) size() int { return 1 }\n\nfunc (order) size() int { return 1 }\n"
+	const cartSize, orderSize = "(shop.cart).size", "(shop.order).size"
+	before := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": source}), cartSize, orderSize)
 	editedOrder := strings.Replace(source, "func (order) size() int { return 1 }", "func (order) size() int { return 2 }", 1)
-	after := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": editedOrder}), "size")
+	after := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": editedOrder}), cartSize, orderSize)
 
-	if want := []string{"(shop.cart).size", "(shop.crate[T]).size", "(shop.order).size"}; !reflect.DeepEqual(before.Reach["size"], want) {
-		t.Errorf("reach %v, want %v", before.Reach["size"], want)
+	if want := []string{cartSize}; !reflect.DeepEqual(before.Reach[cartSize], want) {
+		t.Errorf("reach %v, want %v", before.Reach[cartSize], want)
 	}
-	if before.Fingerprints["size"] == after.Fingerprints["size"] {
-		t.Error("editing one of the two methods left the shared root's fingerprint unchanged")
+	if got, want := changedRoots(before, after), []string{orderSize}; !reflect.DeepEqual(got, want) {
+		t.Errorf("changed %v, want %v", got, want)
+	}
+}
+
+func TestFingerprintReadsAnIdThatHoldsACommaAndASpace(t *testing.T) {
+	source := "package shop\n\ntype pair[K comparable, V any] struct{}\n\nfunc (p *pair[K, V]) detail() int { return 1 }\n\nvar _ = (&pair[string, int]{}).detail()\n"
+	const id = "(*shop.pair[K, V]).detail"
+
+	output := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": source}), id)
+
+	if output.Fingerprints[id] == "" {
+		t.Fatalf("fingerprints %v, unresolved %v", output.Fingerprints, output.Unresolved)
+	}
+}
+
+func TestFingerprintsAgreeWithTheIdsRoutesPrints(t *testing.T) {
+	source := `package main
+
+import "net/http"
+
+type pair[K comparable, V any] struct{}
+
+func (p *pair[K, V]) serve(w http.ResponseWriter, r *http.Request) {}
+
+type desk struct{}
+
+func (d desk) list(w http.ResponseWriter, r *http.Request) {}
+
+func parcels(w http.ResponseWriter, r *http.Request) {}
+
+func main() {
+	p := &pair[string, int]{}
+	http.HandleFunc("/generic", p.serve)
+	http.HandleFunc("/value", desk{}.list)
+	http.HandleFunc("/plain", parcels)
+}
+`
+	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
+	ids := []string{}
+	for _, site := range routesOf(t, root, ".", noPatterns).Sites {
+		ids = append(ids, *site.HandlerID)
+	}
+
+	output := fingerprintsOf(t, root, ids...)
+
+	if len(ids) != 3 || len(output.Fingerprints) != 3 || len(output.Unresolved) != 0 {
+		t.Fatalf("ids %v, fingerprints %v, unresolved %v", ids, output.Fingerprints, output.Unresolved)
+	}
+}
+
+func twoMainsSharingAGeneric(secondMain string) map[string]string {
+	return map[string]string{
+		"cmd/api/main.go":   "package main\n\nimport \"shop/lib\"\n\nfunc main() { lib.Detail(1) }\n",
+		"cmd/admin/main.go": secondMain,
+		"lib/lib.go":        "package lib\n\nfunc Detail[T any](x T) T { return x }\n",
+		"unused/unused.go":  "package unused\n\nfunc Unused() {}\n",
+	}
+}
+
+func TestFingerprintIsNotMovedByAnInstanceOutsideTheService(t *testing.T) {
+	const id = "shop/lib.Detail"
+	first := twoMainsSharingAGeneric("package main\n\nfunc main() {}\n")
+	second := twoMainsSharingAGeneric("package main\n\nimport \"shop/lib\"\n\ntype other struct{}\n\nfunc main() { lib.Detail(other{}) }\n")
+
+	before := fingerprintsAt(t, fingerprintQuery{root: writeModule(t, "shop", first), mainPackage: "./cmd/api", roots: []string{id}})
+	after := fingerprintsAt(t, fingerprintQuery{root: writeModule(t, "shop", second), mainPackage: "./cmd/api", roots: []string{id}})
+
+	if before.Fingerprints[id] == "" || before.Fingerprints[id] != after.Fingerprints[id] {
+		t.Fatalf("before %v, after %v", before.Fingerprints, after.Fingerprints)
+	}
+}
+
+func TestFingerprintDoesNotFindAFunctionOutsideTheService(t *testing.T) {
+	root := writeModule(t, "shop", twoMainsSharingAGeneric("package main\n\nfunc main() {}\n"))
+
+	output := fingerprintsAt(t, fingerprintQuery{root: root, mainPackage: "./cmd/api", roots: []string{"shop/unused.Unused"}})
+
+	if want := []string{"shop/unused.Unused"}; !reflect.DeepEqual(output.Unresolved, want) {
+		t.Fatalf("unresolved %v, want %v", output.Unresolved, want)
+	}
+}
+
+func TestFingerprintsAreNotStoppedByABrokenPackageOutsideTheService(t *testing.T) {
+	files := map[string]string{
+		"shop.go":       "package shop\n\nfunc detail() int { return 1 }\n",
+		"other/oops.go": "package other\n\nvar broken int = \"text\"\n",
+	}
+
+	output := fingerprintsOf(t, writeModule(t, "shop", files), shopDetail)
+
+	if output.Fingerprints[shopDetail] == "" {
+		t.Fatalf("got %+v", output)
 	}
 }
 
@@ -379,9 +507,9 @@ func TestFingerprintsFailWhenAPackageDoesNotLoad(t *testing.T) {
 			files:       map[string]string{"shop.go": "package shop\n\nimport _ \"example.invalid/nothing\"\n\nfunc detail() int { return 1 }\n"},
 			mustMention: "example.invalid/nothing",
 		},
-		"a type error in a package the route does not use": {
+		"a type error in a package the service imports and the route does not use": {
 			files: map[string]string{
-				"shop.go":       "package shop\n\nfunc detail() int { return 1 }\n",
+				"shop.go":       "package shop\n\nimport _ \"shop/other\"\n\nfunc detail() int { return 1 }\n",
 				"other/oops.go": "package other\n\nvar broken int = \"text\"\n",
 			},
 			mustMention: "oops.go",
@@ -391,7 +519,7 @@ func TestFingerprintsFailWhenAPackageDoesNotLoad(t *testing.T) {
 	for name, test := range cases {
 		root := writeModule(t, "shop", test.files)
 
-		exitCode, stdout, stderr := runCommand(t, "fingerprints", "--roots", routeDetail, root)
+		exitCode, stdout, stderr := runCommand(t, "fingerprints", "--roots", writeRoots(t, shopDetail), "--main", ".", root)
 
 		if exitCode != 1 || stdout != "" {
 			t.Errorf("%s: exit %d, stdout %q", name, exitCode, stdout)
@@ -405,7 +533,7 @@ func TestFingerprintsFailWhenAPackageDoesNotLoad(t *testing.T) {
 func TestFingerprintsFailWithoutAGoMod(t *testing.T) {
 	root := writeTree(t, map[string]string{"shop.go": "package shop\n\nfunc detail() int { return 1 }\n"})
 
-	exitCode, stdout, stderr := runCommand(t, "fingerprints", "--roots", routeDetail, root)
+	exitCode, stdout, stderr := runCommand(t, "fingerprints", "--roots", writeRoots(t, shopDetail), "--main", ".", root)
 
 	if exitCode != 1 || stdout != "" {
 		t.Fatalf("exit %d, stdout %q", exitCode, stdout)
@@ -418,27 +546,33 @@ func TestFingerprintsFailWithoutAGoMod(t *testing.T) {
 func TestFingerprintsFailWhenTheModuleHoldsNoPackage(t *testing.T) {
 	root := writeModule(t, "shop", map[string]string{"README.md": "no go here"})
 
-	exitCode, stdout, stderr := runCommand(t, "fingerprints", "--roots", routeDetail, root)
+	exitCode, stdout, stderr := runCommand(t, "fingerprints", "--roots", writeRoots(t, shopDetail), "--main", ".", root)
 
-	if exitCode != 1 || stdout != "" || !strings.Contains(stderr, "no Go package") {
+	if exitCode != 1 || stdout != "" || !strings.Contains(stderr, "main_package") {
 		t.Fatalf("exit %d, stdout %q, stderr %q", exitCode, stdout, stderr)
 	}
 }
 
 func TestFingerprintsRejectBadArgumentsBeforeLoadingAnything(t *testing.T) {
 	root := copyOfStorefront(t)
+	const main = "./internal/handlers"
+	roots := writeRoots(t, routeListing)
+	badRoots := filepath.Join(t.TempDir(), "bad.json")
+	assertNoError(t, os.WriteFile(badRoots, []byte("a,b"), 0o644))
+	nullRoots := filepath.Join(t.TempDir(), "null.json")
+	assertNoError(t, os.WriteFile(nullRoots, []byte("null"), 0o644))
 	cases := map[string][]string{
-		"no --roots":               {"fingerprints", root},
-		"an empty --roots":         {"fingerprints", "--roots", "", root},
-		"only commas":              {"fingerprints", "--roots", ",", root},
-		"an empty root in a list":  {"fingerprints", "--roots", "listing,,ping", root},
-		"a trailing comma":         {"fingerprints", "--roots", "listing,", root},
-		"no directory":             {"fingerprints", "--roots", "listing"},
-		"two directories":          {"fingerprints", "--roots", "listing", root, root},
-		"an empty directory":       {"fingerprints", "--roots", "listing", ""},
-		"a missing directory":      {"fingerprints", "--roots", "listing", root + "/nope"},
-		"the flag after the root":  {"fingerprints", root, "--roots", "listing"},
-		"a directory that is file": {"fingerprints", "--roots", "listing", filepath.Join(root, "go.mod")},
+		"no --roots":                {"fingerprints", "--main", main, root},
+		"no --main":                 {"fingerprints", "--roots", roots, root},
+		"a roots file that is gone": {"fingerprints", "--roots", root + "/nope", "--main", main, root},
+		"a roots file of names":     {"fingerprints", "--roots", badRoots, "--main", main, root},
+		"a roots file holding null": {"fingerprints", "--roots", nullRoots, "--main", main, root},
+		"no directory":              {"fingerprints", "--roots", roots, "--main", main},
+		"two directories":           {"fingerprints", "--roots", roots, "--main", main, root, root},
+		"an empty directory":        {"fingerprints", "--roots", roots, "--main", main, ""},
+		"a missing directory":       {"fingerprints", "--roots", roots, "--main", main, root + "/nope"},
+		"the flag after the root":   {"fingerprints", root, "--roots", roots, "--main", main},
+		"a directory that is file":  {"fingerprints", "--roots", roots, "--main", main, filepath.Join(root, "go.mod")},
 	}
 
 	for name, args := range cases {

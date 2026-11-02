@@ -11,7 +11,7 @@ from arde.adapters.language.go.goinspect_client import GoinspectClient, build_go
 from arde.adapters.language.go.inventory_builder import SourceReading, build_inventory
 from arde.adapters.language.go.makefile import make_targets_of
 from arde.adapters.repo_links import require_no_link_leaves
-from arde.application.ports import CheckResult, LanguageAdapter
+from arde.application.ports import CheckResult, LanguageAdapter, RouteHashes, UnhashedReason
 from arde.domain.inventory import INLINE_HANDLER, Inventory, Route
 from arde.domain.profile import ExtractionPattern, RepoProfile
 
@@ -72,15 +72,21 @@ class GoAdapter(LanguageAdapter):
         )
         return build_inventory(reading)
 
-    def route_fingerprints(self, repo: Path, routes: Sequence[Route]) -> dict[str, str]:
+    def route_fingerprints(
+        self, repo: Path, routes: Sequence[Route], *, main_package: str
+    ) -> RouteHashes:
         require_no_link_leaves(repo)
-        roots = _one_root_per_key(routes)
-        reply = self._goinspect.fingerprints(repo, sorted(set(roots.values())))
-        return {
-            key: reply.fingerprints[root]
-            for key, root in roots.items()
-            if root in reply.fingerprints
-        }
+        roots, unhashed = _one_root_per_key(routes)
+        reply = self._goinspect.fingerprints(
+            repo, sorted(set(roots.values())), main_package=main_package
+        )
+        hashes: dict[str, str] = {}
+        for key, root in roots.items():
+            if root in reply.fingerprints:
+                hashes[key] = reply.fingerprints[root]
+            else:
+                unhashed[key] = "no body" if root in reply.without_body else "no function"
+        return RouteHashes(hashes=hashes, unhashed=unhashed)
 
     def run_checks(self, repo: Path, profile: RepoProfile) -> CheckResult:
         require_no_link_leaves(repo)
@@ -102,21 +108,23 @@ def _is_go_source(path: Path) -> bool:
     return path.suffix == ".go" and path.is_file()
 
 
-# A handler reads s.quote or handlers.Quote, and the call graph starts from the function's own name.
-def _root_of(route: Route) -> str:
-    return route.handler.rsplit(".", 1)[-1]
-
-
 # Two routes can share a key: "GET /{$}" and "GET /" both read as "GET /", and one path can sit on
 # two muxes. A hash of one handler would then stand for both, and an edit to the other would not
-# move it. A key with more than one handler, an inline one included, is left out like any route
-# with no hash, and the caller counts a missing route as changed.
-def _one_root_per_key(routes: Sequence[Route]) -> dict[str, str]:
-    roots_by_key: dict[str, set[str]] = {}
+# move it. Only the function decides, so one function under two names still counts as one.
+def _one_root_per_key(
+    routes: Sequence[Route],
+) -> tuple[dict[str, str], dict[str, UnhashedReason]]:
+    routes_by_key: dict[str, list[Route]] = {}
     for route in routes:
-        roots_by_key.setdefault(route.key, set()).add(_root_of(route))
-    return {
-        key: next(iter(roots))
-        for key, roots in roots_by_key.items()
-        if len(roots) == 1 and INLINE_HANDLER not in roots
-    }
+        routes_by_key.setdefault(route.key, []).append(route)
+    roots: dict[str, str] = {}
+    unhashed: dict[str, UnhashedReason] = {}
+    for key, sharing in routes_by_key.items():
+        route = sharing[0]
+        if len({other.handler_id or other.handler for other in sharing}) > 1:
+            unhashed[key] = "shared key"
+        elif route.handler_id is not None:
+            roots[key] = route.handler_id
+        else:
+            unhashed[key] = "inline" if route.handler == INLINE_HANDLER else "no function"
+    return roots, unhashed

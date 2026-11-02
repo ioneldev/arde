@@ -261,7 +261,7 @@ def every_repo_method(repo: Path) -> dict[str, object]:
         "changed_declarations old": lambda: adapter.changed_declarations(repo, repo.parent),
         "changed_declarations new": lambda: adapter.changed_declarations(repo.parent, repo),
         "extract_inventory": lambda: adapter.extract_inventory(repo, a_profile()),
-        "route_fingerprints": lambda: adapter.route_fingerprints(repo, ()),
+        "route_fingerprints": lambda: adapter.route_fingerprints(repo, (), main_package="."),
         "run_checks": lambda: adapter.run_checks(repo, a_profile()),
         "build_service": lambda: adapter.build_service(repo, a_profile()),
     }

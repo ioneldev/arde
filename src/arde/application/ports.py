@@ -147,6 +147,17 @@ class CheckResult(Frozen):
     ignored_files: tuple[str, ...]
 
 
+# Why a route has no hash: its handler is written in place, several functions share its key, no
+# function of the service is behind it, or it reaches code with no body to read.
+UnhashedReason = Literal["inline", "shared key", "no function", "no body"]
+
+
+class RouteHashes(Frozen):
+    # Keyed by Route.key. A key in neither map was not asked about.
+    hashes: dict[str, str]
+    unhashed: dict[str, UnhashedReason]
+
+
 class LanguageAdapter(Protocol):
     """Everything ARDE knows about one language. Each method holds an idiom of that language.
 
@@ -175,14 +186,18 @@ class LanguageAdapter(Protocol):
         ...
 
     def extract_inventory(self, repo: Path, profile: RepoProfile) -> Inventory:
-        """Raises an ArdeError when the repo has no route, or a route it cannot read."""
+        """What the service built from main_package holds. The repo must compile.
+
+        Raises an ArdeError when the repo has no route, or a route it cannot read.
+        """
         ...
 
-    def route_fingerprints(self, repo: Path, routes: Sequence[Route]) -> dict[str, str]:
-        """A hash per route, keyed "METHOD /path". A route with no hash is left out of the result.
+    def route_fingerprints(
+        self, repo: Path, routes: Sequence[Route], *, main_package: str
+    ) -> RouteHashes:
+        """A hash per route, by Route.key, and the reason for each route that has none.
 
-        A route is left out when its handler is not a plain name or cannot be followed, and the
-        caller counts a missing route as changed.
+        The caller counts a route with no hash as changed.
         """
         ...
 

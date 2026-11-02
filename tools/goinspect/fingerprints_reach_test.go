@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -13,24 +14,27 @@ type reachCase struct {
 	old       string
 	new       string
 	mustReach []string
+	// root is the function to start from, when that is not the plain function detail.
+	root string
 }
 
 func assertEditMovesAndReaches(t *testing.T, name string, test reachCase) {
 	t.Helper()
+	id := cmp.Or(test.root, shopDetail)
 	root := writeModule(t, "shop", map[string]string{"shop.go": test.source})
-	before := fingerprintsOf(t, root, routeDetail)
+	before := fingerprintsOf(t, root, id)
 	edited := editedSource(t, name, test.source, test.old, test.new)
-	after := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": edited}), routeDetail)
+	after := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": edited}), id)
 
-	if before.Fingerprints[routeDetail] == after.Fingerprints[routeDetail] {
+	if before.Fingerprints[id] == after.Fingerprints[id] {
 		t.Errorf("%s: editing %q left the fingerprint unchanged", name, test.old)
 	}
 	for _, wanted := range test.mustReach {
-		if !slices.Contains(before.Reach[routeDetail], wanted) {
-			t.Errorf("%s: reach %v lacks %s", name, before.Reach[routeDetail], wanted)
+		if !slices.Contains(before.Reach[id], wanted) {
+			t.Errorf("%s: reach %v lacks %s", name, before.Reach[id], wanted)
 		}
 	}
-	for _, reached := range before.Reach[routeDetail] {
+	for _, reached := range before.Reach[shopDetail] {
 		if strings.Contains(reached, "[shop.") {
 			t.Errorf("%s: reach lists the instance %s, and it should list the generic function", name, reached)
 		}
@@ -62,6 +66,7 @@ func TestFingerprintFollowsAMethodCalledOnATypeParameter(t *testing.T) {
 		"a generic handler that calls a method on its type parameter": {
 			source: genericHandler, old: "return \"ok\"", new: "return \"no\"",
 			mustReach: []string{"(shop.product).Validate", "(*shop.crud[T]).detail"},
+			root:      "(*shop.crud[T]).detail",
 		},
 		"a generic function as the root": {
 			source: genericFunctionRoot, old: "return \"ok\"", new: "return \"no\"",
@@ -70,6 +75,7 @@ func TestFingerprintFollowsAMethodCalledOnATypeParameter(t *testing.T) {
 		"a generic root that calls a method on a field of its type parameter": {
 			source: genericField, old: "return \"ok\"", new: "return \"no\"",
 			mustReach: []string{"(shop.product).Validate", "(shop.repo[T]).detail"},
+			root:      "(shop.repo[T]).detail",
 		},
 		"a function with a constrained parameter: the method": {
 			source: measure, old: "Size() int { return 1 }", new: "Size() int { return 2 }",
@@ -123,10 +129,10 @@ func TestFingerprintFollowsAFunctionHandedOverByName(t *testing.T) {
 	}
 }
 
-// ./... loads a body only for the module's own packages. Anything else in the module's path
-// comes from export data and has no body, so its edits cannot show in a hash. A route that
-// reaches one is unresolved, which the caller counts as changed on every run.
-func TestFingerprintListsARootThatReachesAFunctionWithNoBodyAsUnresolved(t *testing.T) {
+// A body is loaded only for the module's own packages. Another module under the same path comes
+// from export data, so its edits cannot show in a hash. A route that reaches one has no hash, and
+// the caller counts it as changed on every run.
+func TestFingerprintListsARootThatReachesAFunctionWithNoBody(t *testing.T) {
 	const reaching = "package shop\n\nimport \"%s\"\n\nfunc detail() int { return lib.Helper() }\n\nfunc ping() int { return 1 }\n"
 	library := "package lib\n\nfunc Helper() int { return 1 }\n"
 	layouts := map[string]struct {
@@ -139,22 +145,6 @@ func TestFingerprintListsARootThatReachesAFunctionWithNoBodyAsUnresolved(t *test
 				"app/shop.go":       strings.Replace(reaching, "%s", "shop/lib", 1),
 				"app/nested/go.mod": "module shop/lib\n\ngo 1.22\n",
 				"app/nested/lib.go": library,
-			},
-			dir: "app",
-		},
-		"an imported testdata directory": {
-			files: map[string]string{
-				"app/go.mod":              "module shop\n\ngo 1.22\n",
-				"app/shop.go":             strings.Replace(reaching, "%s", "shop/testdata/lib", 1),
-				"app/testdata/lib/lib.go": library,
-			},
-			dir: "app",
-		},
-		"an imported underscore directory": {
-			files: map[string]string{
-				"app/go.mod":          "module shop\n\ngo 1.22\n",
-				"app/shop.go":         strings.Replace(reaching, "%s", "shop/_gen/lib", 1),
-				"app/_gen/lib/lib.go": library,
 			},
 			dir: "app",
 		},
@@ -172,19 +162,41 @@ func TestFingerprintListsARootThatReachesAFunctionWithNoBodyAsUnresolved(t *test
 	for name, layout := range layouts {
 		root := writeTree(t, layout.files)
 
-		output := fingerprintsOf(t, filepath.Join(root, layout.dir), routeDetail, routePing)
+		output := fingerprintsOf(t, filepath.Join(root, layout.dir), shopDetail, shopPing)
 
-		if want := []string{routeDetail}; !reflect.DeepEqual(output.Unresolved, want) {
-			t.Errorf("%s: unresolved %v, want %v", name, output.Unresolved, want)
+		if want := []string{shopDetail}; !reflect.DeepEqual(output.WithoutBody, want) {
+			t.Errorf("%s: without a body %v, want %v", name, output.WithoutBody, want)
 		}
-		if _, listed := output.Fingerprints[routeDetail]; listed {
+		if len(output.Unresolved) != 0 {
+			t.Errorf("%s: detail is a function, got unresolved %v", name, output.Unresolved)
+		}
+		if _, listed := output.Fingerprints[shopDetail]; listed {
 			t.Errorf("%s: detail reaches code with no body and must have no fingerprint", name)
 		}
-		if _, listed := output.Reach[routeDetail]; listed {
+		if _, listed := output.Reach[shopDetail]; listed {
 			t.Errorf("%s: detail must not be listed in reach", name)
 		}
-		if output.Fingerprints[routePing] == "" {
+		if output.Fingerprints[shopPing] == "" {
 			t.Errorf("%s: ping reaches nothing odd and still needs its fingerprint, got %v", name, output.Fingerprints)
+		}
+	}
+}
+
+// ./... passes over these folders, and the service's own imports do not.
+func TestFingerprintHashesAFolderTheGoToolPassesOverWhenTheServiceImportsIt(t *testing.T) {
+	for _, folder := range []string{"testdata/lib", "_gen/lib"} {
+		files := func(body string) map[string]string {
+			return map[string]string{
+				"shop.go":          "package shop\n\nimport \"shop/" + folder + "\"\n\nfunc detail() int { return lib.Helper() }\n",
+				folder + "/lib.go": "package lib\n\nfunc Helper() int { return " + body + " }\n",
+			}
+		}
+
+		before := fingerprintsOf(t, writeModule(t, "shop", files("1")), shopDetail)
+		after := fingerprintsOf(t, writeModule(t, "shop", files("2")), shopDetail)
+
+		if before.Fingerprints[shopDetail] == "" || before.Fingerprints[shopDetail] == after.Fingerprints[shopDetail] {
+			t.Errorf("%s: before %v, after %v", folder, before.Fingerprints, after.Fingerprints)
 		}
 	}
 }
@@ -195,13 +207,13 @@ func TestFingerprintKeepsARootThatReachesAFunctionDeclaredWithoutABody(t *testin
 	source := "package shop\n\nimport _ \"unsafe\"\n\n//go:linkname now runtime.nanotime\nfunc now() int64\n\nfunc detail() int64 { return now() }\n"
 	root := writeModule(t, "shop", map[string]string{"shop.go": source})
 
-	output := fingerprintsOf(t, root, routeDetail)
+	output := fingerprintsOf(t, root, shopDetail)
 
-	if output.Fingerprints[routeDetail] == "" || len(output.Unresolved) != 0 {
+	if output.Fingerprints[shopDetail] == "" || len(output.Unresolved) != 0 {
 		t.Fatalf("fingerprints %v, unresolved %v", output.Fingerprints, output.Unresolved)
 	}
-	if want := []string{"shop.detail", "shop.now"}; !reflect.DeepEqual(output.Reach[routeDetail], want) {
-		t.Fatalf("reach %v, want %v", output.Reach[routeDetail], want)
+	if want := []string{"shop.detail", "shop.now"}; !reflect.DeepEqual(output.Reach[shopDetail], want) {
+		t.Fatalf("reach %v, want %v", output.Reach[shopDetail], want)
 	}
 }
 

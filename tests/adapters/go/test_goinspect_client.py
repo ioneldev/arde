@@ -34,7 +34,7 @@ from arde.domain.report import ExitCode
 # Prints a canned reply and the exit code it was given, and records how it was called.
 STAND_IN = """#!/bin/sh
 printf '%s\\n' "$@" > "$0.args"
-case "$1" in match|routes) cp "$3" "$0.patterns" ;; esac
+case "$1" in match|routes|fingerprints) cp "$3" "$0.handed-over" ;; esac
 cat "$0.out"
 cat "$0.err" >&2
 exit "$(cat "$0.code")"
@@ -58,8 +58,8 @@ class StandIn:
         return Path(f"{self.binary}.args").read_text(encoding="utf-8").splitlines()
 
     @property
-    def patterns_it_was_given(self) -> object:
-        return json.loads(Path(f"{self.binary}.patterns").read_text(encoding="utf-8"))
+    def file_it_was_given(self) -> object:
+        return json.loads(Path(f"{self.binary}.handed-over").read_text(encoding="utf-8"))
 
 
 GO_ENVIRONMENT = {"PATH": os.environ["PATH"], "GOPRIVATE": "corp.example/*", "GOENV": "off"}
@@ -149,7 +149,7 @@ def test_matches_hand_the_patterns_over_as_a_file(stand_in: StandIn, folder: Pat
             literals={"name": "PORT"},
         ),
     )
-    assert stand_in.patterns_it_was_given == [
+    assert stand_in.file_it_was_given == [
         {"kind": "env", "call": r"^os\.Getenv$", "args": {"name": 0}}
     ]
     assert stand_in.arguments[:2] == ["match", "--patterns"]
@@ -167,25 +167,33 @@ def test_a_match_reply_with_no_literals_object_is_refused(stand_in: StandIn, fol
         GoinspectClient(stand_in.binary).matches(folder, [pattern])
 
 
-def test_fingerprints_pass_the_roots_as_one_comma_separated_list(
+def test_fingerprints_hand_over_the_ids_as_a_file_and_read_the_reply(
     stand_in: StandIn, folder: Path
 ) -> None:
     stand_in.replies_with(
-        '{"fingerprints": {"a": "h"}, "reach": {"a": ["x.a"]}, "unresolved": ["b"]}'
+        '{"fingerprints": {"a": "h"}, "reach": {"a": ["x.a"]}, "unresolved": ["b"],'
+        ' "without_body": ["c"]}'
     )
+    generic = "(*example.com/x.pair[K, V]).serve"
 
-    reply = GoinspectClient(stand_in.binary).fingerprints(folder, ["a", "b"])
+    reply = GoinspectClient(stand_in.binary).fingerprints(
+        folder, ["a", generic], main_package="./cmd/api"
+    )
 
     assert reply.fingerprints == {"a": "h"}
     assert reply.reach == {"a": ("x.a",)}
     assert reply.unresolved == ("b",)
-    assert stand_in.arguments == ["fingerprints", "--roots", "a,b", str(folder)]
+    assert reply.without_body == ("c",)
+    assert stand_in.arguments[:2] == ["fingerprints", "--roots"]
+    assert stand_in.arguments[3:] == ["--main", "./cmd/api", str(folder)]
+    assert stand_in.file_it_was_given == ["a", generic]
 
 
 def test_no_roots_means_no_call_to_the_helper(tmp_path: Path, folder: Path) -> None:
-    reply = GoinspectClient(tmp_path / "not-there").fingerprints(folder, [])
+    reply = GoinspectClient(tmp_path / "not-there").fingerprints(folder, [], main_package=".")
 
     assert (reply.fingerprints, reply.reach, reply.unresolved) == ({}, {}, ())
+    assert reply.without_body == ()
 
 
 def test_a_failure_carries_the_helpers_message_and_exits_with_one(
@@ -465,7 +473,7 @@ def test_routes_hand_over_the_patterns_and_the_main_package_and_read_the_reply(
 
     assert stand_in.arguments[:2] == ["routes", "--patterns"]
     assert stand_in.arguments[3:] == ["--main", "./cmd/api", str(folder)]
-    assert stand_in.patterns_it_was_given == [pattern.model_dump()]
+    assert stand_in.file_it_was_given == [pattern.model_dump()]
     assert reply.package_folders == (".", "web")
     assert reply.build_files == ("main.go", "web/router.go")
     [site] = reply.sites

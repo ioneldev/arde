@@ -9,7 +9,7 @@ import (
 func fingerprintOfSource(t *testing.T, source string) string {
 	t.Helper()
 	root := writeModule(t, "shop", map[string]string{"shop.go": source})
-	hash := fingerprintsOf(t, root, routeDetail).Fingerprints[routeDetail]
+	hash := fingerprintsOf(t, root, shopDetail).Fingerprints[shopDetail]
 	if hash == "" {
 		t.Fatalf("detail did not resolve in:\n%s", source)
 	}
