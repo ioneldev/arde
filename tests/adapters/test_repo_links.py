@@ -263,7 +263,7 @@ def every_repo_method(repo: Path) -> dict[str, object]:
         "extract_inventory": lambda: adapter.extract_inventory(repo, a_profile()),
         "route_fingerprints": lambda: adapter.route_fingerprints(repo, (), main_package="."),
         "run_checks": lambda: adapter.run_checks(repo, a_profile()),
-        "build_service": lambda: adapter.build_service(repo, a_profile()),
+        "built_service": lambda: adapter.built_service(repo, a_profile()),
     }
 
 
@@ -276,7 +276,7 @@ def every_repo_method(repo: Path) -> dict[str, object]:
         "extract_inventory",
         "route_fingerprints",
         "run_checks",
-        "build_service",
+        "built_service",
     ],
 )
 def test_every_adapter_method_that_takes_a_repo_stops_at_a_link_that_leaves_it(

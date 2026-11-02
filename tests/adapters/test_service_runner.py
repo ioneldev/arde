@@ -31,7 +31,7 @@ from process_support import (
 
 from arde.adapters import child_process, service_runner
 from arde.adapters.child_env import ALLOWED_VARIABLES
-from arde.adapters.language.go.toolchain import build_service
+from arde.adapters.language.go.toolchain import built_service
 from arde.adapters.service_runner import local_service_runner
 from arde.application.ports import (
     ServiceConfig,
@@ -199,9 +199,8 @@ def shop_binary(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     repo = tmp_path_factory.mktemp("shop") / "shop"
     shutil.copytree(SHOP, repo)
     profile = RepoProfile(main_package=".", main_file="main.go", port_env="SHOP_PORT", patterns=())
-    binary = build_service(repo, profile)
-    yield binary
-    shutil.rmtree(binary.parent, ignore_errors=True)
+    with built_service(repo, profile) as binary:
+        yield binary
 
 
 # The real service

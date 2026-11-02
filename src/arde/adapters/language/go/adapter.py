@@ -3,6 +3,7 @@
 import shutil
 import tempfile
 from collections.abc import Iterable, Sequence
+from contextlib import AbstractContextManager
 from pathlib import Path
 
 from arde.adapters.language.go import toolchain
@@ -105,9 +106,10 @@ class GoAdapter(LanguageAdapter):
         require_no_link_leaves(repo)
         return toolchain.run_checks(repo, profile)
 
-    def build_service(self, repo: Path, profile: RepoProfile) -> Path:
+    # A plain method around the context manager, so the gate runs at this call and not at "with".
+    def built_service(self, repo: Path, profile: RepoProfile) -> AbstractContextManager[Path]:
         require_no_link_leaves(repo)
-        return toolchain.build_service(repo, profile)
+        return toolchain.built_service(repo, profile)
 
 
 # The return type is the static proof that GoAdapter satisfies the port: mypy fails here when

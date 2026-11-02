@@ -4,9 +4,9 @@ import json
 import os
 import re
 import shlex
-import shutil
 import tempfile
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import NamedTuple
 
@@ -79,15 +79,14 @@ class BadTestCommandError(ArdeError):
         )
 
 
-def build_service(repo: Path, profile: RepoProfile) -> Path:
+# A cleanup that fails leaves one temporary folder, which must not replace the body's own error.
+@contextmanager
+def built_service(repo: Path, profile: RepoProfile) -> Iterator[Path]:
     _require_one_main_package(repo, profile.main_package)
-    folder = Path(tempfile.mkdtemp(prefix="arde-service-"))
-    try:
-        _build_into(repo, profile, binary=folder / SERVICE_BINARY_NAME)
-    except BaseException:
-        shutil.rmtree(folder, ignore_errors=True)
-        raise
-    return folder / SERVICE_BINARY_NAME
+    with tempfile.TemporaryDirectory(prefix="arde-service-", ignore_cleanup_errors=True) as folder:
+        binary = Path(folder) / SERVICE_BINARY_NAME
+        _build_into(repo, profile, binary=binary)
+        yield binary
 
 
 # Building any other package writes an archive that looks like a binary and cannot be run, and the

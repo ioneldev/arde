@@ -227,10 +227,10 @@ class LanguageAdapter(Protocol):
 
     def run_checks(self, repo: Path, profile: RepoProfile) -> CheckResult: ...
 
-    def build_service(self, repo: Path, profile: RepoProfile) -> Path:
-        """Builds the service and returns the binary, in a new folder outside the repo.
+    def built_service(self, repo: Path, profile: RepoProfile) -> AbstractContextManager[Path]:
+        """Builds the service and hands out the binary, in a new folder outside the repo.
 
-        The caller removes that folder, which is the parent of the path returned.
+        The folder is removed when the body ends, whether it returns, raises or is interrupted.
         """
         ...
 

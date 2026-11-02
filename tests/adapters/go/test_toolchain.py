@@ -14,7 +14,7 @@ from arde.adapters.language.go import toolchain
 from arde.adapters.language.go.errors import BadPackageError, GoCommandError
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
 from arde.adapters.language.go.timeouts import GO_TEST_BINARY_TIMEOUT_S, GO_TEST_TIMEOUT_S
-from arde.adapters.language.go.toolchain import BadTestCommandError, build_service, run_checks
+from arde.adapters.language.go.toolchain import BadTestCommandError, built_service, run_checks
 
 LISTING = (
     "TestAdd\nTestSubtract\nExampleAdd\n"
@@ -343,10 +343,11 @@ def test_a_package_named_main_is_built(
 ) -> None:
     use(monkeypatch, StandInGo(package_name=outcome(stdout=package_name)))
 
-    binary = build_service(repo, shop_profile(main_package="./cmd/app"))
+    with built_service(repo, shop_profile(main_package="./cmd/app")) as binary:
+        assert binary.name == "service"
+        assert binary.parent.is_dir()
 
-    assert binary.name == "service"
-    binary.parent.rmdir()
+    assert not binary.parent.exists()
 
 
 @pytest.mark.parametrize(
@@ -364,8 +365,11 @@ def test_a_package_that_is_not_main_stops_the_build_and_names_main_package(
 ) -> None:
     go = use(monkeypatch, StandInGo(package_name=outcome(stdout=answer)))
 
-    with pytest.raises(BadPackageError) as refused:
-        build_service(repo, shop_profile(main_package=main_package))
+    with (
+        pytest.raises(BadPackageError) as refused,
+        built_service(repo, shop_profile(main_package=main_package)),
+    ):
+        pytest.fail("the body must not run without a binary")
 
     assert f"main_package {main_package}" in str(refused.value)
     assert "main_package" in refused.value.next_action
@@ -378,8 +382,11 @@ def test_a_package_that_cannot_be_listed_stops_the_build_with_the_toolchains_wor
     failed_list = ChildOutcome(exit_code=1, stdout="", stderr="no required module provides ./x\n")
     use(monkeypatch, StandInGo(package_name=failed_list))
 
-    with pytest.raises(BadPackageError, match="no required module provides"):
-        build_service(repo, shop_profile(main_package="./x"))
+    with (
+        pytest.raises(BadPackageError, match="no required module provides"),
+        built_service(repo, shop_profile(main_package="./x")),
+    ):
+        pytest.fail("the body must not run without a binary")
 
 
 # "go:" is the command speaking about the module, before it reached any package, so no other value
@@ -394,8 +401,8 @@ def test_a_module_that_does_not_load_is_no_problem_of_the_profile(
     failed_list = ChildOutcome(exit_code=1, stdout="", stderr=stderr)
     use(monkeypatch, StandInGo(package_name=failed_list))
 
-    with pytest.raises(GoCommandError) as stopped:
-        build_service(repo, shop_profile())
+    with pytest.raises(GoCommandError) as stopped, built_service(repo, shop_profile()):
+        pytest.fail("the body must not run without a binary")
 
     assert "main_package" not in stopped.value.next_action
 
@@ -405,7 +412,8 @@ def test_the_package_is_listed_after_a_double_dash_like_it_is_built(
 ) -> None:
     go = use(monkeypatch, StandInGo(package_name=outcome(stdout="main\n")))
 
-    build_service(repo, shop_profile(main_package="./cmd/app")).parent.rmdir()
+    with built_service(repo, shop_profile(main_package="./cmd/app")):
+        pass
 
     [listed] = [argv for argv in go.asked if "{{.Name}}" in argv]
     assert listed[-2:] == ("--", "./cmd/app")
@@ -431,7 +439,8 @@ def test_every_go_command_and_every_extra_command_runs_with_the_go_environment(
     (repo / "main.go").write_text("package main\n", encoding="utf-8")
 
     run_checks(repo, shop_profile(extra_test_commands=("make smoke",)))
-    build_service(repo, shop_profile()).parent.rmdir()
+    with built_service(repo, shop_profile()):
+        pass
 
     assert len(go.asked) >= 8
     assert go.environments == [{**GO_ENVIRONMENT, "FOR": str(repo)}] * len(go.asked)
@@ -494,8 +503,8 @@ def test_a_package_that_cannot_be_listed_gives_a_short_clean_message(
 ) -> None:
     use(monkeypatch, StandInGo(package_name=NOISY_FAILURE))
 
-    with pytest.raises(BadPackageError) as failed:
-        build_service(repo, shop_profile())
+    with pytest.raises(BadPackageError) as failed, built_service(repo, shop_profile()):
+        pytest.fail("the body must not run without a binary")
 
     assert_bounded_and_clean(str(failed.value))
 
@@ -505,8 +514,8 @@ def test_a_build_that_fails_gives_a_short_clean_message(
 ) -> None:
     use(monkeypatch, StandInGo(package_name=outcome(stdout="main\n"), build=NOISY_FAILURE))
 
-    with pytest.raises(GoCommandError) as failed:
-        build_service(repo, shop_profile())
+    with pytest.raises(GoCommandError) as failed, built_service(repo, shop_profile()):
+        pytest.fail("the body must not run without a binary")
 
     assert_bounded_and_clean(str(failed.value))
 
@@ -617,8 +626,11 @@ def test_thousands_of_package_names_give_a_short_message(
     names = "".join(f"package{number}\n" for number in range(5000))
     use(monkeypatch, StandInGo(package_name=outcome(stdout=names)))
 
-    with pytest.raises(BadPackageError) as failed:
-        build_service(repo, shop_profile(main_package="./..."))
+    with (
+        pytest.raises(BadPackageError) as failed,
+        built_service(repo, shop_profile(main_package="./...")),
+    ):
+        pytest.fail("the body must not run without a binary")
 
     assert "5000 packages" in str(failed.value)
     assert len(str(failed.value)) <= MESSAGE_TAIL_BYTES + MESSAGE_WORDS

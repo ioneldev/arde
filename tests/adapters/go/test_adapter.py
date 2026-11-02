@@ -588,9 +588,8 @@ def test_a_go_work_above_the_repo_cannot_choose_the_code_that_is_built(
         "go 1.22\n\nuse ./repo\n\nreplace example.com/dep => ./planted\n", encoding="utf-8"
     )
 
-    binary = adapter.build_service(repo, shop_profile())
-    ran = subprocess.run([binary], capture_output=True, text=True, timeout=10, check=True)
-    shutil.rmtree(binary.parent)
+    with adapter.built_service(repo, shop_profile()) as binary:
+        ran = subprocess.run([binary], capture_output=True, text=True, timeout=10, check=True)
 
     assert "honest dep" in ran.stderr
     assert "planted dep" not in ran.stderr
@@ -602,9 +601,8 @@ def test_a_repos_own_go_work_still_chooses_its_modules(adapter: GoAdapter, tmp_p
     (tmp_path / "go.work").write_text("go 1.22\n\nuse (\n\t.\n\t./sub\n)\n", encoding="utf-8")
 
     result = adapter.run_checks(tmp_path, shop_profile())
-    binary = adapter.build_service(tmp_path, shop_profile())
-    ran = subprocess.run([binary], capture_output=True, text=True, timeout=10, check=True)
-    shutil.rmtree(binary.parent)
+    with adapter.built_service(tmp_path, shop_profile()) as binary:
+        ran = subprocess.run([binary], capture_output=True, text=True, timeout=10, check=True)
 
     assert (result.build_ok, result.test_ok) == (True, True)
     assert "workspace dep" in ran.stderr
@@ -677,8 +675,11 @@ def test_a_repo_that_needs_a_newer_go_stops_with_gos_own_words(
     monkeypatch.setenv("GOPROXY", "off")
     edit(shop / "go.mod", "go 1.22", "go 1.99.0")
 
-    with pytest.raises(GoCommandError, match=r"go >= 1\.99\.0"):
-        adapter.build_service(shop, shop_profile())
+    with (
+        pytest.raises(GoCommandError, match=r"go >= 1\.99\.0"),
+        adapter.built_service(shop, shop_profile()),
+    ):
+        pytest.fail("the body must not run without a binary")
 
 
 NOISY_TEST = """package noisy
@@ -873,7 +874,7 @@ def test_child_env_has_no_anthropic_vars(
     assert "PATH=" in result.output
 
 
-# build_service
+# built_service
 
 
 @pytest.fixture
@@ -917,26 +918,58 @@ def started(binary: Path, port: int) -> Iterator[None]:
         process.wait(timeout=10)
 
 
-def test_build_service_builds_a_binary_outside_the_repo(
+def test_built_service_builds_a_binary_outside_the_repo(
     adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
 ) -> None:
-    binary = adapter.build_service(shop, shop_profile())
+    with adapter.built_service(shop, shop_profile()) as binary:
+        assert binary.is_file()
+        assert binaries_in_tmp in binary.parents
+        assert shop not in binary.parents
+        assert sorted(path.name for path in shop.iterdir()) == sorted(
+            path.name for path in SHOP.iterdir()
+        )
 
-    assert binary.is_file()
-    assert binaries_in_tmp in binary.parents
-    assert shop not in binary.parents
-    assert sorted(path.name for path in shop.iterdir()) == sorted(
-        path.name for path in SHOP.iterdir()
-    )
+
+def test_the_binary_is_gone_when_the_body_ends(
+    adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
+) -> None:
+    with adapter.built_service(shop, shop_profile()):
+        assert list(binaries_in_tmp.iterdir()) != []
+
+    assert list(binaries_in_tmp.iterdir()) == []
+
+
+@pytest.mark.parametrize("raised", [ValueError, KeyboardInterrupt])
+def test_the_binary_is_gone_when_the_body_raises_and_the_error_is_kept(
+    adapter: GoAdapter, shop: Path, binaries_in_tmp: Path, raised: type[BaseException]
+) -> None:
+    with pytest.raises(raised), adapter.built_service(shop, shop_profile()):
+        raise raised
+
+    assert list(binaries_in_tmp.iterdir()) == []
+
+
+def test_a_build_that_fails_runs_no_body_and_leaves_no_folder(
+    adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
+) -> None:
+    edit(shop / "pricing" / "pricing.go", "return unitCents", "return missing")
+
+    with (
+        pytest.raises(GoCommandError, match="undefined: missing"),
+        adapter.built_service(shop, shop_profile()),
+    ):
+        pytest.fail("the body must not run without a binary")
+
+    assert list(binaries_in_tmp.iterdir()) == []
 
 
 def test_the_service_listens_on_the_port_its_env_var_names(
     adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
 ) -> None:
-    binary = adapter.build_service(shop, shop_profile())
     port = free_port()
 
     with (
+        adapter.built_service(shop, shop_profile()) as binary,
         started(binary, port),
         urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as reply,
     ):
@@ -945,15 +978,16 @@ def test_the_service_listens_on_the_port_its_env_var_names(
     assert '"items"' in body
 
 
-def test_build_service_asks_for_no_version_control_stamp(
+def test_built_service_asks_for_no_version_control_stamp(
     adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
 ) -> None:
     (shop / ".git").mkdir()
 
-    assert adapter.build_service(shop, shop_profile()).is_file()
+    with adapter.built_service(shop, shop_profile()) as binary:
+        assert binary.is_file()
 
 
-def test_build_service_reads_the_package_as_a_package_and_never_as_a_flag(
+def test_built_service_reads_the_package_as_a_package_and_never_as_a_flag(
     adapter: GoAdapter, shop: Path, binaries_in_tmp: Path, tmp_path: Path
 ) -> None:
     ran_the_flag = tmp_path / "ran-the-flag"
@@ -964,8 +998,8 @@ def test_build_service_reads_the_package_as_a_package_and_never_as_a_flag(
         }
     )
 
-    with pytest.raises(BadPackageError):
-        adapter.build_service(shop, hostile)
+    with pytest.raises(BadPackageError), adapter.built_service(shop, hostile):
+        pytest.fail("the body must not run without a binary")
 
     assert not ran_the_flag.exists()
 
@@ -975,8 +1009,11 @@ def test_a_build_that_fails_names_the_error_and_the_next_action(
 ) -> None:
     edit(shop / "pricing" / "pricing.go", "return unitCents", "return missing")
 
-    with pytest.raises(GoCommandError) as failed:
-        adapter.build_service(shop, shop_profile())
+    with (
+        pytest.raises(GoCommandError) as failed,
+        adapter.built_service(shop, shop_profile()),
+    ):
+        pytest.fail("the body must not run without a binary")
 
     assert isinstance(failed.value, ArdeError)
     assert "undefined: missing" in str(failed.value)
@@ -987,8 +1024,11 @@ def test_a_build_that_fails_names_the_error_and_the_next_action(
 def test_a_package_that_is_not_main_is_refused_and_main_package_is_named(
     adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
 ) -> None:
-    with pytest.raises(BadPackageError) as refused:
-        adapter.build_service(shop, shop_profile(main_package="./pricing"))
+    with (
+        pytest.raises(BadPackageError) as refused,
+        adapter.built_service(shop, shop_profile(main_package="./pricing")),
+    ):
+        pytest.fail("the body must not run without a binary")
 
     assert "main_package ./pricing is package pricing" in str(refused.value)
     assert list(binaries_in_tmp.iterdir()) == []
@@ -997,15 +1037,21 @@ def test_a_package_that_is_not_main_is_refused_and_main_package_is_named(
 def test_every_package_at_once_passes_the_type_and_stops_at_the_main_check(
     adapter: GoAdapter, shop: Path
 ) -> None:
-    with pytest.raises(BadPackageError, match=r"main_package \./\.\.\."):
-        adapter.build_service(shop, shop_profile(main_package="./..."))
+    with (
+        pytest.raises(BadPackageError, match=r"main_package \./\.\.\."),
+        adapter.built_service(shop, shop_profile(main_package="./...")),
+    ):
+        pytest.fail("the body must not run without a binary")
 
 
 def test_a_package_that_does_not_exist_is_an_error(
     adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
 ) -> None:
-    with pytest.raises(BadPackageError):
-        adapter.build_service(shop, shop_profile(main_package="./nowhere"))
+    with (
+        pytest.raises(BadPackageError),
+        adapter.built_service(shop, shop_profile(main_package="./nowhere")),
+    ):
+        pytest.fail("the body must not run without a binary")
 
 
 def bad_regex_second_in_the_profile() -> RepoProfile:
@@ -1057,8 +1103,8 @@ def test_a_broken_go_mod_is_no_problem_of_the_profile(adapter: GoAdapter, shop: 
     "exercised",
     [
         pytest.param(
-            lambda adapter, shop: adapter.build_service(shop, shop_profile()),
-            id="build_service",
+            lambda adapter, shop: adapter.built_service(shop, shop_profile()).__enter__(),
+            id="built_service",
         ),
         pytest.param(
             lambda adapter, shop: adapter.extract_inventory(shop, shop_profile()),

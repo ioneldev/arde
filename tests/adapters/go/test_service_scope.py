@@ -87,7 +87,6 @@ def serving(binary: Path, port_env: str) -> Iterator[int]:
     finally:
         process.terminate()
         process.wait(timeout=10)
-        shutil.rmtree(binary.parent)
 
 
 def status_of(port: int, *, method: str, path: str) -> int:
@@ -182,9 +181,10 @@ def test_a_function_written_in_place_has_no_id_and_says_so(adapter: GoAdapter) -
 def test_the_running_service_answers_the_routes_listed_and_not_the_other_mains(
     adapter: GoAdapter,
 ) -> None:
-    binary = adapter.build_service(PARCELS, TRACKER)
-
-    with serving(binary, "TRACKER_PORT") as port:
+    with (
+        adapter.built_service(PARCELS, TRACKER) as binary,
+        serving(binary, "TRACKER_PORT") as port,
+    ):
         assert status_of(port, method="GET", path="/parcels/abc") == 200
         assert status_of(port, method="GET", path="/rollcall") == 204
         assert status_of(port, method="POST", path="/purge") == 404
@@ -210,9 +210,10 @@ def test_every_route_behind_a_mount_has_its_function_and_its_hash(adapter: GoAda
 
 def test_the_running_service_answers_every_route_behind_a_mount(adapter: GoAdapter) -> None:
     routes = adapter.extract_inventory(LIBRARY, LIBRARY_PROFILE).routes
-    binary = adapter.build_service(LIBRARY, LIBRARY_PROFILE)
-
-    with serving(binary, "LIBRARY_PORT") as port:
+    with (
+        adapter.built_service(LIBRARY, LIBRARY_PROFILE) as binary,
+        serving(binary, "LIBRARY_PORT") as port,
+    ):
         statuses = {
             route.key: status_of(
                 port,
