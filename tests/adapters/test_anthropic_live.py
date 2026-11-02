@@ -34,7 +34,7 @@ from arde.application.ports import (
 from arde.application.tool_schema import strict_tool_schema
 from arde.domain.facts import Wiki
 from arde.domain.pricing import cost_usd
-from arde.domain.profile import RepoProfile
+from arde.domain.profile import DiscoveredProfile
 
 pytestmark = pytest.mark.eval
 
@@ -280,10 +280,10 @@ def request_with_one_tool(schema: dict[str, object], *, strict: bool) -> LLMRequ
 @pytest.mark.parametrize(
     ("model", "rejection"),
     [
-        (RepoProfile, "'additionalProperties: object' is not supported"),
+        (DiscoveredProfile, "'additionalProperties: object' is not supported"),
         (Wiki, "Schema type 'oneOf' is not supported"),
     ],
-    ids=["open dict in RepoProfile", "oneOf in the Fact union"],
+    ids=["open dict in DiscoveredProfile", "oneOf in the Fact union"],
 )
 def test_a_schema_the_api_refuses_in_strict_mode_works_with_strict_off(
     live: Live, model: type[BaseModel], rejection: str

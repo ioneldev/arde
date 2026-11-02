@@ -5,11 +5,11 @@ from typing import Any
 from pydantic import BaseModel
 
 from arde.application.tool_schema import strict_tool_schema
-from arde.domain.profile import RepoProfile
+from arde.domain.profile import DiscoveredProfile
 
 
 def test_strict_tool_schema_marks_nested_objects_closed() -> None:
-    assert strict_tool_schema(RepoProfile)["additionalProperties"] is False
+    assert strict_tool_schema(DiscoveredProfile)["additionalProperties"] is False
 
 
 def test_strict_tool_schema_closes_objects_that_were_open() -> None:
@@ -28,9 +28,9 @@ def test_strict_tool_schema_closes_objects_that_were_open() -> None:
 
 
 def test_strict_tool_schema_requires_every_property_even_those_with_defaults() -> None:
-    schema = strict_tool_schema(RepoProfile)
+    schema = strict_tool_schema(DiscoveredProfile)
 
-    assert set(schema["required"]) == set(RepoProfile.model_fields)
+    assert set(schema["required"]) == set(DiscoveredProfile.model_fields)
 
 
 def test_strict_tool_schema_treats_a_field_named_properties_as_a_field() -> None:

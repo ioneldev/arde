@@ -11,6 +11,7 @@ from arde.domain.base import (
     Frozen,
     ParamName,
     QualifiedTypeName,
+    RepoRelativePath,
     RoutePattern,
     SingleLine,
 )
@@ -29,12 +30,22 @@ Topic = Literal[
 
 class CodeQuote(Frozen):
     kind: Literal["code"]
-    file: str
+    file: RepoRelativePath
     # May span lines: code verifies the quote exists in the file as written.
     quote: str
 
 
+class ProbeCitation(Frozen):
+    """Points at a recorded probe. It holds no response, so the model never retypes one."""
+
+    kind: Literal["probe"]
+    method: str
+    path_and_query: str
+
+
 class ProbeRecord(Frozen):
+    """What a probe really returned. Filled by code, never by a model."""
+
     kind: Literal["probe"]
     method: str
     path_and_query: str
@@ -46,20 +57,20 @@ class ProbeRecord(Frozen):
 class Links(Frozen):
     declarations: tuple[str, ...] = ()
     routes: tuple[str, ...] = ()
-    files: tuple[str, ...] = ()
+    files: tuple[RepoRelativePath, ...] = ()
 
 
 class FactBase(Frozen):
     id: str
     topic: Topic
-    evidence: tuple[CodeQuote | ProbeRecord, ...]
+    evidence: tuple[CodeQuote | ProbeCitation, ...]
     links: Links
 
 
 class ParamFact(Frozen):
     name: ParamName
     location: Literal["path", "query"]
-    go_type: Literal["int", "string"]
+    declared_type: Literal["int", "string"]
     required: bool
     description: SingleLine
     minimum: int | None
@@ -70,7 +81,7 @@ class ParamFact(Frozen):
 
 class ResponseFact(Frozen):
     status: int
-    go_type: QualifiedTypeName
+    declared_type: QualifiedTypeName
     description: SingleLine
     error_codes: tuple[ErrorCodeName, ...]
 
@@ -115,7 +126,9 @@ Fact = Annotated[
 
 
 class Wiki(Frozen):
+    schema_version: Literal[1] = 1
     facts: tuple[Fact, ...]
+    probes: tuple[ProbeRecord, ...] = ()
 
     # by_id would otherwise answer with whichever duplicate came first.
     @model_validator(mode="after")
@@ -123,7 +136,26 @@ class Wiki(Frozen):
         counts = Counter(fact.id for fact in self.facts)
         repeated = sorted(fact_id for fact_id, count in counts.items() if count > 1)
         if repeated:
-            raise ValueError(f"fact ids must be unique, repeated: {', '.join(repeated)}")
+            raise ValueError(
+                f"fact ids must be unique, repeated: {', '.join(repeated)}. "
+                "Give each fact its own id"
+            )
+        return self
+
+    # A citation with nothing behind it would claim evidence that no probe produced.
+    @model_validator(mode="after")
+    def _every_citation_resolves(self) -> Self:
+        recorded = {(probe.method, probe.path_and_query) for probe in self.probes}
+        citations = {
+            (evidence.method, evidence.path_and_query)
+            for fact in self.facts
+            for evidence in fact.evidence
+            if isinstance(evidence, ProbeCitation)
+        }
+        missing = sorted(citations - recorded)
+        if missing:
+            cited = ", ".join(f"{method} {path_and_query}" for method, path_and_query in missing)
+            raise ValueError(f"no probe was recorded for: {cited}. Cite a probe that was made")
         return self
 
     def by_topic(self, topic: Topic) -> tuple[Fact, ...]:

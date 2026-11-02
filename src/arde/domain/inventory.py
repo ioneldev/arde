@@ -21,7 +21,7 @@ class ErrorCode(Frozen):
 class ResponseField(Frozen):
     struct: str
     name: str
-    go_type: str
+    declared_type: str
     omitempty: bool
 
 

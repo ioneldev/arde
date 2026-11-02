@@ -1,6 +1,7 @@
 """The base every domain model builds on, and the helpers that keep model text safe."""
 
 import re
+from pathlib import PurePosixPath
 from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, ValidationError
@@ -20,15 +21,24 @@ def describe_problems(error: ValidationError, *, whole: str) -> str:
     )
 
 
-def _reject_line_breaks(text: str) -> str:
+# Go refuses NUL and a byte order mark inside a source file, so either one stops the build after
+# the paid work is done. The other control characters are refused for the same reason: none has a
+# place in a comment or a tag.
+_CONTROL_CHARACTERS = "\x00-\x1f\x7f-\x9f\ufeff"
+_CONTROL_CHARACTER = re.compile(f"[{_CONTROL_CHARACTERS}]")
+
+
+def _require_clean_single_line(text: str) -> str:
     if "\n" in text or "\r" in text:
         raise ValueError("must be a single line: remove the line break")
+    if _CONTROL_CHARACTER.search(text):
+        raise ValueError("must hold no control character or byte order mark: remove it")
     return text
 
 
 # Text the renderer writes into source comments. A second line there could be a compiler
 # directive, so a line break is refused when the model is built, not when it is rendered.
-SingleLine = Annotated[str, AfterValidator(_reject_line_breaks)]
+SingleLine = Annotated[str, AfterValidator(_require_clean_single_line)]
 
 
 # fullmatch rather than "^...$", because "$" also accepts a trailing newline.
@@ -48,7 +58,7 @@ def _matching(pattern: str, requirement: str) -> AfterValidator:
 # nothing more. Identifiers are ASCII only: a name outside it is refused rather than escaped.
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
 _TYPE_PREFIX = r"(?:\[\]|\*)*"  # stacks, as in []*Product
-_PLAIN_CHAR = r"""[^\s"'`]"""
+_PLAIN_CHAR = rf"""[^\s"'`{_CONTROL_CHARACTERS}]"""
 
 CodeIdentifier = Annotated[
     str,
@@ -91,3 +101,27 @@ ParamName = Annotated[
         "a parameter name: use no whitespace, quotes or backticks",
     ),
 ]
+
+# The build tool reads a leading hyphen as a flag, and one of its flags runs any command it is
+# given, so this text could otherwise execute without a single file in the repo changing.
+MainPackage = Annotated[
+    str,
+    _matching(
+        rf"(?!-){_PLAIN_CHAR}+",
+        "a package path: do not start with a hyphen, and use no whitespace, quotes or backticks",
+    ),
+]
+
+
+def _require_repo_relative(path: str) -> str:
+    # A backslash counts as a separator: the host decides what the path means, and code that
+    # joins this text to a root must not need to know which host it is on.
+    parts = PurePosixPath(path.replace("\\", "/"))
+    if not path or "\x00" in path or parts.is_absolute() or ".." in parts.parts:
+        raise ValueError("must be a file path relative to the repo root, with no ..")
+    return path
+
+
+# A path a model chose. Joined to a root, an absolute path discards the root, and that is a route
+# from repo text to any file ARDE can read, the API key among them.
+RepoRelativePath = Annotated[str, AfterValidator(_require_repo_relative)]

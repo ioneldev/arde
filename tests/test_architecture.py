@@ -18,10 +18,12 @@ KEY_READERS = (
 KEY_VARIABLE = "ANTHROPIC_API_KEY"
 ENVIRONMENT_READS = ("get", "getenv", "pop", "setdefault")
 
-DOMAIN_MAY_NOT_IMPORT = ("arde.adapters", "arde.application")
-APPLICATION_MAY_NOT_IMPORT = ("arde.adapters",)
+DOMAIN_MAY_NOT_IMPORT = ("arde.adapters", "arde.application", "arde.cli")
+APPLICATION_MAY_NOT_IMPORT = ("arde.adapters", "arde.cli")
+CHECKS_MAY_NOT_IMPORT = ("arde.adapters", "arde.cli")
 
 GO_ADAPTER = Path("arde") / "adapters" / "language" / "go"
+GO_COMMANDS = ("build", "vet", "test", "list")
 # \b treats "_" as part of a word, so it would miss run_goinspect and swag_version. These
 # patterns match inside identifiers. swag may not be followed by a lowercase letter, and SWAG not
 # by an uppercase one, which keeps Swagger and SWAGGER legal.
@@ -29,7 +31,10 @@ GO_SPECIFIC_PATTERNS = {
     "goinspect": re.compile(r"goinspect", re.IGNORECASE),
     "gofmt": re.compile(r"gofmt", re.IGNORECASE),
     "swag": re.compile(r"[Ss]wag(?![a-z])|SWAG(?![A-Z])"),
-    "go build": re.compile(r"(?<![a-z])go[\W_]+build(?![a-z])", re.IGNORECASE),
+    **{
+        f"go {command}": re.compile(rf"(?<![a-z])go[\W_]+{command}(?![a-z])", re.IGNORECASE)
+        for command in GO_COMMANDS
+    },
 }
 
 
@@ -43,6 +48,10 @@ def test_domain_imports_no_adapters() -> None:
 
 def test_application_imports_no_adapters() -> None:
     assert import_violations(SOURCE_ROOT, "application", APPLICATION_MAY_NOT_IMPORT) == []
+
+
+def test_checks_import_no_adapters() -> None:
+    assert import_violations(SOURCE_ROOT, "checks", CHECKS_MAY_NOT_IMPORT) == []
 
 
 def test_go_specifics_stay_in_go_adapter() -> None:
@@ -138,6 +147,32 @@ def test_application_importing_an_adapter_is_reported(tmp_path: Path) -> None:
     assert violations == ["arde/application/bad.py: imports arde.adapters"]
 
 
+def test_a_check_importing_an_adapter_is_reported(tmp_path: Path) -> None:
+    write(tmp_path, "arde/checks/spec_valid.py", "from arde.adapters.tracer import JsonlTracer")
+
+    violations = import_violations(tmp_path, "checks", CHECKS_MAY_NOT_IMPORT)
+
+    assert violations == ["arde/checks/spec_valid.py: imports arde.adapters"]
+
+
+@pytest.mark.parametrize(
+    ("layer", "forbidden"),
+    [
+        ("domain", DOMAIN_MAY_NOT_IMPORT),
+        ("application", APPLICATION_MAY_NOT_IMPORT),
+        ("checks", CHECKS_MAY_NOT_IMPORT),
+    ],
+)
+def test_no_inner_layer_may_import_the_cli(
+    tmp_path: Path, layer: str, forbidden: tuple[str, ...]
+) -> None:
+    write(tmp_path, f"arde/{layer}/bad.py", "from arde.cli import main")
+
+    violations = import_violations(tmp_path, layer, forbidden)
+
+    assert violations == [f"arde/{layer}/bad.py: imports arde.cli"]
+
+
 def test_allowed_imports_are_accepted(tmp_path: Path) -> None:
     write(
         tmp_path,
@@ -182,6 +217,12 @@ def test_a_layer_with_no_folder_or_no_files_has_no_violations(tmp_path: Path) ->
         ('subprocess.run(["go","build","./..."])', "go build"),
         ('COMMAND = "go  build"', "go build"),
         ("def go_build_cmd():\n    pass", "go build"),
+        ('COMMAND = "go vet ./..."', "go vet"),
+        ('COMMAND = "go test ./..."', "go test"),
+        ('COMMAND = "go list -json"', "go list"),
+        ("subprocess.run(['go', 'vet'])", "go vet"),
+        ('subprocess.run(["go","test","./..."])', "go test"),
+        ("def run_go_list():\n    pass", "go list"),
     ],
 )
 def test_go_specific_shapes_outside_the_go_adapter_are_reported(
@@ -207,6 +248,8 @@ def test_go_specific_shapes_inside_the_go_adapter_are_accepted(tmp_path: Path) -
         "SWAGGER_FILE = 'swagger.json'",
         "def validate_swagger():\n    pass",
         '"""A good build ran in Argo build mode, and we go to build later."""',
+        '"""We go to test later, and the cargo list and mongo vet tools stay legal."""',
+        '"""A latest build, a shortlist and a go-to tester are not commands."""',
     ],
 )
 def test_names_that_only_contain_the_letters_are_not_reported(tmp_path: Path, source: str) -> None:
