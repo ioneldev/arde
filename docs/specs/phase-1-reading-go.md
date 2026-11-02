@@ -11,8 +11,8 @@ This spec says what this phase delivers and how we know it's done. The reasoning
 | 6 | `goinspect`: compare and declarations | Done |
 | 7 | `goinspect`: patterns and call graph | Done |
 | 8 | `GoAdapter` and the `shop` fixture | Done |
-| 9 | Service runner | Done |
-| Review | Architecture, code, bug hunters, security | Not started |
+| 9 | Service runner | In review |
+| Review | Architecture, code, bug hunters, security | In progress |
 | Gate | Ionel reviews, understands and tests | Not started |
 
 ## Purpose
