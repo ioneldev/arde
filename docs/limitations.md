@@ -21,7 +21,13 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 - **Go `net/http` only.** Other frameworks and other languages are not supported. Go idioms sit behind one interface so a second language can be added.
 - **Names in facts are ASCII and plain.** A struct, field, type or error code with a non-ASCII letter, a generic type such as `Page[Product]`, or a `map` or `interface{}` response type fails validation instead of being written into a comment or tag. A service that uses them cannot be documented until the shape is allowed in the domain models.
 - **Router groups are not resolved.** Patterns cannot see a group prefix. In a Gin-style sample the matcher reported `/ping` for `/v1/ping`. A live check should get a 404 and stop the run, but that is untested.
-- **The call graph is static.** It misses calls through interfaces and function values. Stored requests are the backstop.
+- **The call graph is static.** It misses calls through interfaces and through function values it cannot name, such as one read from a struct field or a map. A closure is followed, because a reached function's closures count as reached. Stored requests are the backstop.
+- **A fingerprint covers function bodies, not package state.** A package-level `var` or type, and a function that runs only to fill a `var` or inside `init()`, are outside it. `declarations` reports such a change but cannot say which routes it touches.
+- **A fingerprint sees one build.** A file excluded by build constraints on the machine running it is not hashed, so an edit behind a custom tag, or in `helper_linux.go` on a Mac, moves nothing.
+- **Only Go source in the module is hashed.** Assembly bodies, files read through `//go:embed` and code in other modules, vendored ones included, are outside it.
+- **Code the module's `./...` does not load has no body to hash.** That covers a nested module, a `testdata/` or `_`-prefixed directory that something imports, and a module that a `replace` points at under the same path prefix. A route that reaches one gets no fingerprint and is listed as unresolved, so it counts as changed on every run.
+- **Any edit to a cgo file can move a route that calls C**, even a comment, because cgo names its symbols from a hash of the file. This only over-reports.
+- **Patterns match the callee as text.** An unanchored regex can match text inside a chained call, so anchor them.
 - **Hand-edited `@` lines are overwritten** from the wiki on the next run.
 - **`@version` renders as `0.0.0`**, because the repo has no source for it and ARDE will not invent one.
 - **The comment-only rule is Go-only.**

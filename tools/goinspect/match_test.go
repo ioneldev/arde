@@ -294,6 +294,30 @@ func TestMatchRejectsAPatternsFileItCannotUse(t *testing.T) {
 			patterns:    `not json`,
 			mustMention: "patterns",
 		},
+		"text after the array": {
+			patterns:    `[] not json`,
+			mustMention: "after the array",
+		},
+		"a second array after the first": {
+			patterns:    `[{"kind":"route","call":"^a$","args":{}}] [{"kind":"route","call":"^b$","args":{}}]`,
+			mustMention: "after the array",
+		},
+		"a stray bracket after the array": {
+			patterns:    `[] ]`,
+			mustMention: "after the array",
+		},
+		"a file holding null": {
+			patterns:    `null`,
+			mustMention: "null",
+		},
+		"a pattern with no args": {
+			patterns:    `[{"kind":"route","call":"^a$"}]`,
+			mustMention: "pattern 1",
+		},
+		"a pattern with null args": {
+			patterns:    `[{"kind":"route","call":"^a$","args":null}]`,
+			mustMention: "args",
+		},
 	}
 	// The tree holds no Go file: a bad pattern must fail before any file is read.
 	root := writeTree(t, map[string]string{"README.md": "no go here"})
@@ -319,5 +343,101 @@ func TestMatchAcceptsACallOfExactlyFiveHundredCharacters(t *testing.T) {
 
 	if len(got) != 0 {
 		t.Fatalf("got %v", got)
+	}
+}
+
+// patternsFor builds a patterns file for one route pattern, so a test can write the regex as Go
+// source and not as JSON.
+func patternsFor(t *testing.T, call string) string {
+	t.Helper()
+	encoded, err := json.Marshal([]patternSpec{{Kind: "route", Call: call, Args: map[string]int{"path": 0, "handler": 1}}})
+	assertNoError(t, err)
+	return string(encoded)
+}
+
+// The regex runs against the callee written on one line, with its instantiation and its
+// parentheses taken off.
+func TestMatchNamesTheCalleeTheWayItIsMeantNotTheWayItIsLaidOut(t *testing.T) {
+	cases := map[string]struct {
+		body     string
+		pattern  string
+		wantCall string
+		wantArgs map[string]string
+	}{
+		"a call split after the dot": {
+			body:     "mux.\n\t\tHandleFunc(\"GET /a\", h.a)",
+			pattern:  `^mux\.HandleFunc$`,
+			wantCall: "mux.HandleFunc",
+			wantArgs: map[string]string{"path": `"GET /a"`, "handler": "h.a"},
+		},
+		"a selector chain split over lines": {
+			body:     "r.\n\tURL.\n\tQuery().\n\tGet(\"colour\")",
+			pattern:  `^r\.URL\.Query\(\)\.Get$`,
+			wantCall: "r.URL.Query().Get",
+			wantArgs: map[string]string{"path": `"colour"`},
+		},
+		"a call on the result of another call": {
+			body:     "r.GET(\"/a\", h.a).\n\tPOST(\"/b\", h.b)",
+			pattern:  `\.POST$`,
+			wantCall: `r.GET("/a", h.a).POST`,
+			wantArgs: map[string]string{"path": `"/b"`, "handler": "h.b"},
+		},
+		"an explicit instantiation": {
+			body:     "writeError[int](\"/a\", h.a)",
+			pattern:  `^writeError$`,
+			wantCall: "writeError",
+			wantArgs: map[string]string{"path": `"/a"`, "handler": "h.a"},
+		},
+		"an explicit instantiation with two types": {
+			body:     "writeError[int, string](\"/a\", h.a)",
+			pattern:  `^writeError$`,
+			wantCall: "writeError",
+			wantArgs: map[string]string{"path": `"/a"`, "handler": "h.a"},
+		},
+		"a parenthesised callee": {
+			body:     "(writeError)(\"/a\", h.a)",
+			pattern:  `^writeError$`,
+			wantCall: "writeError",
+			wantArgs: map[string]string{"path": `"/a"`, "handler": "h.a"},
+		},
+	}
+
+	for name, test := range cases {
+		source := "package p\n\nfunc f() {\n\t" + test.body + "\n}\n"
+
+		got := matchesIn(t, map[string]string{"main.go": source}, patternsFor(t, test.pattern))
+
+		if len(got) != 1 {
+			t.Errorf("%s: want 1 match, got %v", name, got)
+			continue
+		}
+		if got[0].Call != test.wantCall || !reflect.DeepEqual(got[0].Args, test.wantArgs) {
+			t.Errorf("%s: got call %q args %v, want call %q args %v", name, got[0].Call, got[0].Args, test.wantCall, test.wantArgs)
+		}
+	}
+}
+
+func TestMatchDoesNotTreatAnInvokedFunctionLiteralAsACalleeNamedAfterItsBody(t *testing.T) {
+	source := "package p\n\nfunc f() {\n\tfunc() { x.HandleFunc(1) }()\n}\n"
+
+	got := matchesIn(t, map[string]string{"main.go": source}, `[{"kind":"route","call":"HandleFunc","args":{}}]`)
+
+	if len(got) != 1 || got[0].Call != "x.HandleFunc" {
+		t.Fatalf("want the one call of x.HandleFunc, got %v", got)
+	}
+}
+
+func TestMatchReportsAChainedCallAtTheLineOfItsOwnParenthesis(t *testing.T) {
+	source := "package p\n\nfunc f() {\n\tr.GET(\"/a\", h.a).\n\t\tPOST(\"/b\", h.b).\n\t\tDELETE(\"/c\", h.c)\n}\n"
+	patterns := `[{"kind":"route","call":"\\.(GET|POST|DELETE)$","args":{"path":0}}]`
+
+	got := matchesIn(t, map[string]string{"main.go": source}, patterns)
+
+	var lines []int
+	for _, found := range got {
+		lines = append(lines, found.Line)
+	}
+	if !reflect.DeepEqual(lines, []int{4, 5, 6}) {
+		t.Fatalf("lines %v, want [4 5 6]", lines)
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"go/ast"
 	"go/printer"
+	"go/types"
+	"io"
 	"maps"
 	"os"
 	"regexp"
@@ -86,14 +88,21 @@ func loadPatterns(path string) ([]callPattern, error) {
 	return patterns, nil
 }
 
-// decodePatternSpecs refuses a field it does not know. A misspelt "args" would otherwise decode
-// as a pattern with no arguments, and every match would come out with nothing in it.
+// decodePatternSpecs refuses what would otherwise read as fewer patterns than the file holds: a
+// field it does not know (a misspelt "args" would decode as no arguments), anything after the
+// array, and a file that holds null.
 func decodePatternSpecs(content []byte) ([]patternSpec, error) {
 	decoder := json.NewDecoder(bytes.NewReader(content))
 	decoder.DisallowUnknownFields()
 	var specs []patternSpec
 	if err := decoder.Decode(&specs); err != nil {
 		return nil, err
+	}
+	if specs == nil {
+		return nil, errors.New("the file holds null")
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil, errors.New("there is content after the array")
 	}
 	return specs, nil
 }
@@ -104,6 +113,9 @@ func compilePattern(spec patternSpec) (callPattern, error) {
 	}
 	if spec.Call == "" {
 		return callPattern{}, errors.New("call is empty, and an empty regex matches every call")
+	}
+	if spec.Args == nil {
+		return callPattern{}, errors.New("args is missing or null; write {} for a call whose arguments do not matter")
 	}
 	if length := utf8.RuneCountInString(spec.Call); length > maxCallPatternLength {
 		return callPattern{}, fmt.Errorf("call is %d characters long, and the limit is %d", length, maxCallPatternLength)
@@ -148,8 +160,25 @@ type fileMatcher struct {
 	patterns []callPattern
 }
 
+// nameOfCallee writes the callee on one line, without the parentheses and type arguments around
+// it. A split `mux.\n HandleFunc`, `writeError[int]` and `(writeError)` then all read as the name
+// a pattern is written against. Without type information `handlers[0](w)` looks the same as an
+// instantiation, so it reads as `handlers`.
+func nameOfCallee(callee ast.Expr) string {
+	for {
+		switch inner := ast.Unparen(callee).(type) {
+		case *ast.IndexExpr:
+			callee = inner.X
+		case *ast.IndexListExpr:
+			callee = inner.X
+		default:
+			return types.ExprString(inner)
+		}
+	}
+}
+
 func (matcher fileMatcher) matchesOf(call *ast.CallExpr) []callMatch {
-	callee := matcher.source.textOf(call.Fun)
+	callee := nameOfCallee(call.Fun)
 	matches := []callMatch{}
 	for _, pattern := range matcher.patterns {
 		if pattern.call.MatchString(callee) {
@@ -157,7 +186,8 @@ func (matcher fileMatcher) matchesOf(call *ast.CallExpr) []callMatch {
 				Kind: pattern.kind,
 				Call: callee,
 				File: matcher.path,
-				Line: matcher.source.lineOf(call.Pos()),
+				// The call's own parenthesis, because a chained call starts on the line of the chain.
+				Line: matcher.source.lineOf(call.Lparen),
 				Args: matcher.source.argumentTexts(call, pattern.argumentPositions),
 			})
 		}

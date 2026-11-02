@@ -6,6 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"go/types"
 	"os"
 	"path/filepath"
@@ -31,9 +34,13 @@ type moduleProgram struct {
 	sourcePackages []*ssa.Package
 }
 
-// fingerprintRoots hashes, for each named function, the SSA of everything it can reach by static
-// calls inside the module. It sees function bodies only: a package-level var, a type or a const
-// that a function uses is not part of its fingerprint, and `declarations` covers those.
+// fingerprintRoots hashes, for each named function, everything it can reach inside the module.
+// SSA decides what is reached, and three inputs say what each reached function does, because
+// none of them is enough alone: see hashFunctions. It hashes what the functions say and not the
+// package state they use: a package-level var or type is outside a fingerprint, and
+// `declarations` covers those. A const is inside, because SSA writes its value into every use.
+// A root is unresolved when no function has its name, and when it reaches code with no body to
+// hash: see hasFunctionWithoutBody.
 func fingerprintRoots(dir string, roots []string) (fingerprintReport, error) {
 	module, err := loadModuleProgram(dir)
 	if err != nil {
@@ -52,6 +59,10 @@ func fingerprintRoots(dir string, roots []string) (fingerprintReport, error) {
 			continue
 		}
 		reached := module.reachFrom(starts)
+		if hasFunctionWithoutBody(reached) {
+			report.Unresolved = append(report.Unresolved, root)
+			continue
+		}
 		report.Fingerprints[root] = hashFunctions(reached)
 		report.Reach[root] = namesOf(reached)
 	}
@@ -74,7 +85,7 @@ func loadModuleProgram(dir string) (moduleProgram, error) {
 	if err != nil {
 		return moduleProgram{}, err
 	}
-	program, ssaPackages := ssautil.Packages(loaded, ssa.BuilderMode(0))
+	program, ssaPackages := ssautil.Packages(loaded, ssa.InstantiateGenerics)
 	program.Build()
 	return moduleProgram{modulePath: modulePath, program: program, sourcePackages: ssaPackages}, nil
 }
@@ -90,7 +101,7 @@ func requireGoMod(dir string) error {
 // loadPackages checks each package's Errors as well as packages.Load's own error, because Load
 // reports a package that does not compile as data and returns no error at all.
 func loadPackages(dir string) ([]*packages.Package, error) {
-	config := &packages.Config{Mode: packages.LoadSyntax | packages.NeedModule, Dir: dir}
+	config := &packages.Config{Mode: packages.LoadSyntax | packages.NeedModule, Dir: dir, ParseFile: parseWithoutComments}
 	loaded, err := packages.Load(config, "./...")
 	if err != nil {
 		return nil, fmt.Errorf("cannot load the packages under %s: %w", dir, err)
@@ -104,6 +115,13 @@ func loadPackages(dir string) ([]*packages.Package, error) {
 		return nil, fmt.Errorf("no Go package under %s; pass the directory that holds the module's code", dir)
 	}
 	return loaded, nil
+}
+
+// parseWithoutComments parses the way `declarations` does, so the syntax a function carries has
+// no comments in it. The loader's own parse keeps doc comments on the tree, and they would move
+// a hash.
+func parseWithoutComments(fileSet *token.FileSet, filename string, source []byte) (*ast.File, error) {
+	return parser.ParseFile(fileSet, filename, source, parser.AllErrors|parser.SkipObjectResolution)
 }
 
 func loadProblems(loaded []*packages.Package) []string {
@@ -126,9 +144,10 @@ func modulePathOf(loaded []*packages.Package) (string, error) {
 	return "", errors.New("the go command named no module for these packages; check the module line in go.mod")
 }
 
-// declaredFunctionsByName keys the module's declared functions and methods by their bare name.
-// It leaves out generated wrappers: a root `init` must find the init functions someone wrote,
-// not the package initialiser the compiler makes.
+// declaredFunctionsByName keys the module's declared functions and methods by their bare name. It
+// leaves out what SSA generates, such as the package initialiser. SSA names the init functions
+// someone wrote init#1, init#2 and so on, so a root `init` matches none and is unresolved. A
+// handler cannot be an init function, so nothing is lost.
 func (module moduleProgram) declaredFunctionsByName() map[string][]*ssa.Function {
 	byName := map[string][]*ssa.Function{}
 	for _, ssaPackage := range module.sourcePackages {
@@ -176,11 +195,12 @@ func (module moduleProgram) isInModule(function *ssa.Function) bool {
 	return path == module.modulePath || strings.HasPrefix(path, module.modulePath+"/")
 }
 
-// reachFrom returns the module functions the starts can reach, sorted by name. The edges are the
-// static calls in each function's SSA, and a function's closures count as reached with it.
-// Closures need that rule because a static call graph has no edge into a function value, such as
-// the comparator handed to sort.Slice. Interface calls and calls through other function values
-// are still not followed, which is a documented limit.
+// reachFrom returns the module functions the starts can reach, sorted by name. An edge is any
+// function an instruction names, whether it calls it or hands it over, such as the comparator
+// given to slices.SortFunc: a fingerprint that moves too often is safe, and one that does not move
+// is not. A function's closures count as reached with it, because SSA has no edge into one that
+// is only passed around. Calls through an interface, or through a function value that is not
+// named where it is used, are not followed, and that is a documented limit.
 func (module moduleProgram) reachFrom(starts []*ssa.Function) []*ssa.Function {
 	walk := &reachWalk{module: module, visited: map[*ssa.Function]bool{}}
 	for _, start := range starts {
@@ -201,45 +221,68 @@ func (walk *reachWalk) visit(function *ssa.Function) {
 		return
 	}
 	walk.visited[function] = true
-	// A generated wrapper (a method value, a method expression, a promoted method, a generic
-	// instantiation) belongs to no package. The walk goes through it to the real function behind
-	// it, and leaves it out of the result.
-	isWrapper := function.Pkg == nil
-	if !isWrapper && !walk.module.isInModule(function) {
+	// SSA gives a function it generates no package: a wrapper for a method value, a method
+	// expression or a promoted method, and an instance of a generic function. The walk goes
+	// through it to the code behind it, and leaves it out of the result.
+	isGenerated := function.Pkg == nil
+	if !isGenerated && !walk.module.isInModule(function) {
 		return
 	}
-	if !isWrapper {
+	if !isGenerated {
 		walk.reached = append(walk.reached, function)
 	}
-	for _, callee := range staticCalleesOf(function) {
-		walk.visit(callee)
+	// An instance is built for one type argument, so x.Size() in it is a call SSA can resolve.
+	// The generic body it came from stays in the hash too, because an edit there changes both.
+	if origin := function.Origin(); origin != nil {
+		walk.visit(origin)
+	}
+	for _, mentioned := range functionsMentionedBy(function) {
+		walk.visit(mentioned)
 	}
 	for _, closure := range function.AnonFuncs {
 		walk.visit(closure)
 	}
 }
 
-func staticCalleesOf(function *ssa.Function) []*ssa.Function {
-	callees := []*ssa.Function{}
+func functionsMentionedBy(function *ssa.Function) []*ssa.Function {
+	mentioned := []*ssa.Function{}
 	for _, block := range function.Blocks {
 		for _, instruction := range block.Instrs {
-			call, isCall := instruction.(ssa.CallInstruction)
-			if !isCall {
-				continue
-			}
-			if callee := call.Common().StaticCallee(); callee != nil {
-				callees = append(callees, callee)
+			for _, operand := range instruction.Operands(nil) {
+				if target, isFunction := (*operand).(*ssa.Function); isFunction {
+					mentioned = append(mentioned, target)
+				}
 			}
 		}
 	}
-	return callees
+	return mentioned
 }
 
+// hasFunctionWithoutBody is true when the walk reached code of the module that ./... never
+// loaded, such as a nested module, a testdata or underscore directory that something imports, or
+// a module that a replace points at. It comes from export data and has no body, so an edit to it
+// cannot show in a hash. The root then gets no fingerprint and is unresolved, which the caller
+// counts as changed on every run. That over-reports and never misses, and it does not stop a repo
+// with such a layout from being documented. A function with syntax but no blocks is assembly,
+// which stays in: its body is outside the hash.
+func hasFunctionWithoutBody(functions []*ssa.Function) bool {
+	return slices.ContainsFunc(functions, func(function *ssa.Function) bool {
+		return function.Blocks == nil && function.Syntax() == nil
+	})
+}
+
+// hashFunctions hashes three inputs for each function, in name order. None is enough alone:
+//   - the SSA listing shows what each name resolved to after type checking;
+//   - every constant in full, because the listing is a debug printer that cuts a string past 20
+//     bytes and prints a float to 6 digits, and because SSA writes named constants into the code;
+//   - the function's own syntax, because the listing shows a type declared inside the function
+//     by its name alone, so its fields and tags would never reach the hash.
 func hashFunctions(functions []*ssa.Function) string {
 	hash := sha256.New()
 	for _, function := range functions {
-		// The NUL ends each entry, so one function's text cannot run into the next one's name.
-		fmt.Fprintf(hash, "%s\n%s\x00", function.String(), listingWithoutPositions(function))
+		// The NUL ends each input, so one cannot run into the next.
+		fmt.Fprintf(hash, "%s\x00%s\x00%s\x00%s\x00",
+			function.String(), listingWithoutPositions(function), exactConstantsOf(function), syntaxFingerprint(function))
 	}
 	return hex.EncodeToString(hash.Sum(nil))
 }
@@ -264,4 +307,32 @@ func namesOf(functions []*ssa.Function) []string {
 		names = append(names, function.String())
 	}
 	return names
+}
+
+// exactConstantsOf writes every constant operand of the function in full, in instruction order.
+func exactConstantsOf(function *ssa.Function) string {
+	var constants strings.Builder
+	for _, block := range function.Blocks {
+		for _, instruction := range block.Instrs {
+			for _, operand := range instruction.Operands(nil) {
+				if constant, isConstant := (*operand).(*ssa.Const); isConstant && constant.Value != nil {
+					constants.WriteString(constant.Value.ExactString())
+					constants.WriteByte('\n')
+				}
+			}
+		}
+	}
+	return constants.String()
+}
+
+// syntaxFingerprint normalises the function's syntax in place the way `compare` and
+// `declarations` do, so comments, moved code and the tags ARDE adds move nothing. By now every
+// error has been reported and the build is done, so nothing else reads the tree.
+func syntaxFingerprint(function *ssa.Function) string {
+	syntax := function.Syntax()
+	if syntax == nil {
+		return ""
+	}
+	normaliseTree(syntax)
+	return fingerprint(syntax)
 }

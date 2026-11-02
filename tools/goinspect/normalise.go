@@ -50,10 +50,11 @@ func normalisedFingerprint(path string, source []byte) (string, error) {
 	return fingerprint(parsed.syntax), nil
 }
 
-// normaliseTree is the step both commands run on a parsed file before they hash anything in it.
-func normaliseTree(file *ast.File) {
-	dropTagsAddedByArde(file)
-	markSyntaxHeldInPositions(file)
+// normaliseTree is the step every command runs on syntax before it hashes anything in it. It
+// changes the tree in place and is safe to run twice.
+func normaliseTree(tree ast.Node) {
+	dropTagsAddedByArde(tree)
+	markSyntaxHeldInPositions(tree)
 }
 
 var positionType = reflect.TypeOf(token.Pos(0))
@@ -69,8 +70,8 @@ func omitPositions(fieldName string, value reflect.Value) bool {
 // a variadic parameter and a [...] array to a fixed value, or to none when the syntax is absent.
 // The parser records `type A = B` and `f(xs...)` only as a valid position in those fields, so
 // dropping them would make an alias equal a new type and a spread call equal a plain one.
-func markSyntaxHeldInPositions(file *ast.File) {
-	ast.Inspect(file, func(node ast.Node) bool {
+func markSyntaxHeldInPositions(tree ast.Node) {
+	ast.Inspect(tree, func(node ast.Node) bool {
 		switch node := node.(type) {
 		case *ast.TypeSpec:
 			node.Assign = presence(node.Assign)
@@ -105,8 +106,8 @@ func fingerprint(nodes ...any) string {
 
 // dropTagsAddedByArde rewrites every struct tag in the tree. An unannotated field and an
 // annotated one must come out the same, so a tag with nothing left becomes no tag at all.
-func dropTagsAddedByArde(file *ast.File) {
-	ast.Inspect(file, func(node ast.Node) bool {
+func dropTagsAddedByArde(tree ast.Node) {
+	ast.Inspect(tree, func(node ast.Node) bool {
 		if field, isField := node.(*ast.Field); isField && field.Tag != nil {
 			dropTagsFromField(field)
 		}
