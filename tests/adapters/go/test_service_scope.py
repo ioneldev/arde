@@ -241,6 +241,32 @@ def test_a_prefix_stripped_before_a_mount_stops_the_run(adapter: GoAdapter, tmp_
     assert stopped.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
 
 
+@pytest.mark.skipif(shutil.which("cc") is None, reason="cgo needs a C compiler")
+def test_a_service_with_a_cgo_file_keeps_its_inventory_and_its_hashes(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    (tmp_path / "go.mod").write_text("module example.com/probe\n\ngo 1.22\n", encoding="utf-8")
+    (tmp_path / "main.go").write_text(
+        '// int seven(void) { return 7; }\nimport "C"\n'.join(["package main\n\n", ""])
+        + 'import "net/http"\n\nfunc main() {\n\t_ = C.seven()\n'
+        '\thttp.HandleFunc("/from-cgo", served)\n}\n\n'
+        "func served(w http.ResponseWriter, r *http.Request) {}\n",
+        encoding="utf-8",
+    )
+    pattern = ExtractionPattern(
+        kind="route", call=r"^http\.HandleFunc$", args={"path": 0, "handler": 1}
+    )
+    profile = RepoProfile(main_package=".", main_file="main.go", port_env="P", patterns=(pattern,))
+
+    inventory = adapter.extract_inventory(tmp_path, profile)
+
+    assert keys_of(inventory) == ["ANY /from-cgo"]
+    assert inventory.dropped == ()
+    assert sorted(
+        adapter.route_fingerprints(tmp_path, inventory.routes, main_package=".").hashes
+    ) == ["ANY /from-cgo"]
+
+
 CONSTANT_PATHS = """package main
 
 import "net/http"

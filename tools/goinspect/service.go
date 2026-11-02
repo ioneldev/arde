@@ -125,17 +125,18 @@ type sourcePlace struct {
 }
 
 // placeOf reads the file as written, because a //line directive can name any path and this one
-// decides where the renderer writes. Only a file cgo generated sits outside the repo as written,
-// and there the directive is the one way back to the source.
-func (service loadedService) placeOf(pos token.Pos) (sourcePlace, error) {
+// decides where the renderer writes. Only a file cgo made sits outside the repo as written, and
+// there the directive is the one way back to the source. It reports false for what cgo added,
+// which has no place in the repo.
+func (service loadedService) placeOf(pos token.Pos) (sourcePlace, bool) {
 	fileSet := service.packages[0].Fset
 	for _, followDirectives := range []bool{false, true} {
 		position := fileSet.PositionFor(pos, followDirectives)
 		if file, isInside := service.relativePath(position.Filename); isInside {
-			return sourcePlace{File: file, Line: position.Line}, nil
+			return sourcePlace{File: file, Line: position.Line}, true
 		}
 	}
-	return sourcePlace{}, fmt.Errorf("%s is outside %s; a route must be registered in the repo's own source", fileSet.Position(pos), service.root)
+	return sourcePlace{}, false
 }
 
 // serviceCall is one call in the service's source, with what the type checker knows about it.
@@ -148,9 +149,8 @@ type serviceCall struct {
 	place     sourcePlace
 }
 
-func (service loadedService) calls() ([]serviceCall, error) {
+func (service loadedService) calls() []serviceCall {
 	calls := []serviceCall{}
-	var problem error
 	for _, loaded := range service.packages {
 		for _, file := range loaded.Syntax {
 			for _, declaration := range file.Decls {
@@ -161,20 +161,18 @@ func (service loadedService) calls() ([]serviceCall, error) {
 						return true
 					}
 					// The call's own parenthesis, as in match, so the two commands agree on a line.
-					place, err := service.placeOf(call.Lparen)
-					if err != nil {
-						problem = err
+					if place, isInTheRepo := service.placeOf(call.Lparen); isInTheRepo {
+						calls = append(calls, serviceCall{
+							syntax: call, info: loaded.TypesInfo, enclosing: enclosing,
+							callee: nameOfCallee(call.Fun), place: place,
+						})
 					}
-					calls = append(calls, serviceCall{
-						syntax: call, info: loaded.TypesInfo, enclosing: enclosing,
-						callee: nameOfCallee(call.Fun), place: place,
-					})
 					return true
 				})
 			}
 		}
 	}
-	return calls, problem
+	return calls
 }
 
 func functionDeclaredBy(declaration ast.Decl, info *types.Info) *types.Func {

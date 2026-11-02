@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -502,6 +503,39 @@ func TestRoutesReadsAFileAsWrittenAndNotWhereALineDirectivePoints(t *testing.T) 
 		if *site.HandlerFile != "main.go" || *site.HandlerLine != 11 {
 			t.Errorf("%s: handler at %s:%d", target, *site.HandlerFile, *site.HandlerLine)
 		}
+	}
+}
+
+func requireACCompiler(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skip("cgo needs a C compiler")
+	}
+}
+
+// cgo rewrites a file and adds one of its own, so the compiler reads paths outside the repo. The
+// rewritten file points back at the source, and the added one holds nothing a repo wrote.
+func TestRoutesReadsAFileThatUsesCgoAtItsOwnPlace(t *testing.T) {
+	requireACCompiler(t)
+	root := writeModule(t, "example.com/depot", map[string]string{
+		"main.go": "// A comment, so the line numbers cgo keeps can be told from its own.\npackage main\n\n// int seven(void) { return 7; }\nimport \"C\"\n\nimport \"net/http\"\n\nfunc main() {\n\t_ = C.seven()\n\thttp.HandleFunc(\"/from-cgo\", served)\n}\n",
+		"c.go":    "package main\n\n// int eight(void) { return 8; }\nimport \"C\"\n\nimport \"net/http\"\n\nfunc served(w http.ResponseWriter, r *http.Request) { _ = C.eight() }\n",
+	})
+
+	output := routesOf(t, root, ".", noPatterns)
+
+	if len(output.Sites) != 1 {
+		t.Fatalf("got %+v", output.Sites)
+	}
+	site := output.Sites[0]
+	if site.File != "main.go" || site.Line != 11 {
+		t.Errorf("site at %s:%d", site.File, site.Line)
+	}
+	if site.HandlerID == nil || *site.HandlerFile != "c.go" || *site.HandlerLine != 8 {
+		t.Errorf("handler %v at %v:%v", site.HandlerID, site.HandlerFile, site.HandlerLine)
+	}
+	if want := []string{"c.go", "main.go"}; !reflect.DeepEqual(output.BuildFiles, want) {
+		t.Errorf("files %v, want %v", output.BuildFiles, want)
 	}
 }
 

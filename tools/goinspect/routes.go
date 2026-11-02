@@ -73,12 +73,9 @@ func findRoutes(request routeRequest) (routeReport, error) {
 	if err != nil {
 		return routeReport{}, err
 	}
-	calls, err := service.calls()
-	if err != nil {
-		return routeReport{}, err
-	}
+	calls := service.calls()
 	reader := routeReader{service: service, patterns: patterns, wrappers: wrappersIn(calls, patterns)}
-	return reader.report(calls)
+	return reader.report(calls), nil
 }
 
 func wrappersIn(calls []serviceCall, patterns []callPattern) wrappersByKind {
@@ -109,7 +106,7 @@ type routeReader struct {
 	wrappers wrappersByKind
 }
 
-func (reader routeReader) report(calls []serviceCall) (routeReport, error) {
+func (reader routeReader) report(calls []serviceCall) routeReport {
 	report := routeReport{
 		PackageFolders:   reader.service.folders,
 		BuildFiles:       reader.service.buildFiles(),
@@ -119,11 +116,7 @@ func (reader routeReader) report(calls []serviceCall) (routeReport, error) {
 		WrapperCalls:     []wrapperCall{},
 	}
 	for _, call := range calls {
-		sites, err := reader.sitesOf(call)
-		if err != nil {
-			return routeReport{}, err
-		}
-		report.Sites = append(report.Sites, sites...)
+		report.Sites = append(report.Sites, reader.sitesOf(call)...)
 		report.WrapperCalls = append(report.WrapperCalls, reader.wrapperCallsOf(call)...)
 		if call.isCallTo(stripPrefixFunction) {
 			report.StrippedPrefixes = append(report.StrippedPrefixes, call.place)
@@ -133,7 +126,7 @@ func (reader routeReader) report(calls []serviceCall) (routeReport, error) {
 		}
 	}
 	report.sort()
-	return report, nil
+	return report
 }
 
 func (report *routeReport) sort() {
@@ -161,18 +154,14 @@ func (call serviceCall) matches(pattern callPattern) bool {
 	return pattern.call.MatchString(call.callee)
 }
 
-func (reader routeReader) sitesOf(call serviceCall) ([]routeSite, error) {
+func (reader routeReader) sitesOf(call serviceCall) []routeSite {
 	sites := []routeSite{}
 	for _, positions := range reader.routePositionsOf(call) {
-		site, isRoute, err := reader.siteAt(call, positions)
-		if err != nil {
-			return nil, err
-		}
-		if isRoute {
+		if site, isRoute := reader.siteAt(call, positions); isRoute {
 			sites = append(sites, site)
 		}
 	}
-	return sites, nil
+	return sites
 }
 
 // routePositionsOf says where a call holds its path and handler. A pattern wins, so that a wrong
@@ -202,25 +191,24 @@ func (reader routeReader) routePositionsOf(call serviceCall) []map[string]int {
 
 // siteAt reports false for a call that adds no route of its own: a mount, or a call inside a
 // wrapper that hands on a path it was given.
-func (reader routeReader) siteAt(call serviceCall, positions map[string]int) (routeSite, bool, error) {
+func (reader routeReader) siteAt(call serviceCall, positions map[string]int) (routeSite, bool) {
 	handlers := handlerReader{info: call.info, service: reader.service}
 	handler := handlers.innermost(argumentAt(call.syntax, positions, "handler"))
 	if handler != nil && handlers.isMount(handler) {
-		return routeSite{}, false, nil
+		return routeSite{}, false
 	}
 	path, pathIsKnown := knownString(call.info, argumentAt(call.syntax, positions, "path"))
 	if _, isInsideAWrapper := reader.wrappers[routeKind][call.enclosing]; isInsideAWrapper && !pathIsKnown {
-		return routeSite{}, false, nil
+		return routeSite{}, false
 	}
 	site := routeSite{callMatch: reader.matchAt(call, positions)}
 	if pathIsKnown {
 		site.Literals["path"] = path
 	}
-	if handler == nil {
-		return site, true, nil
+	if handler != nil {
+		reader.nameTheRoot(&site, handlers.rootOf(handler))
 	}
-	err := reader.nameTheRoot(&site, handlers.rootOf(handler))
-	return site, true, err
+	return site, true
 }
 
 // addsToAWrappedPath is true for a site inside a wrapper whose path holds a constant with a slash.
@@ -266,18 +254,19 @@ func (reader routeReader) matchAt(call serviceCall, positions map[string]int) ca
 	}
 }
 
-func (reader routeReader) nameTheRoot(site *routeSite, root handlerRoot) error {
+// nameTheRoot leaves a function with no place in the repo unnamed, because it has no declaration
+// a comment could go on and nothing of the repo's to hash.
+func (reader routeReader) nameTheRoot(site *routeSite, root handlerRoot) {
 	if root.function == nil {
-		return nil
+		return
 	}
-	place, err := reader.service.placeOf(root.function.Pos())
-	if err != nil {
-		return err
+	place, isInTheRepo := reader.service.placeOf(root.function.Pos())
+	if !isInTheRepo {
+		return
 	}
 	id := functionID(root.function)
 	site.Args["handler"] = reader.service.printerSource().textOf(root.name)
 	site.HandlerID, site.HandlerFile, site.HandlerLine = &id, &place.File, &place.Line
-	return nil
 }
 
 // functionID names one function exactly, across packages. fingerprints finds a root by this text.
