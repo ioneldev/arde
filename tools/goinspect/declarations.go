@@ -253,7 +253,7 @@ func (reader fieldReader) fieldsOf(structName string, structType *ast.StructType
 			File:   reader.path,
 			Struct: structName,
 			Tag:    tagText(field),
-			GoType: types.ExprString(field.Type),
+			GoType: boundedExprString(field.Type),
 		}
 		fields = append(fields, reader.namedAs(template, field)...)
 	}
@@ -279,10 +279,14 @@ func (reader fieldReader) namedAs(template structField, field *ast.Field) []stru
 }
 
 // tagText is the tag without the quotes of its Go literal. The scanner has already accepted the
-// literal, so Unquote is not expected to fail; if it does, the literal is reported as written.
+// literal, so Unquote is not expected to fail; if it does, the literal is reported as written. A
+// tag is repeated for each name in its field, so a long one costs its length many times over.
 func tagText(field *ast.Field) string {
 	if field.Tag == nil {
 		return ""
+	}
+	if len(field.Tag.Value) > maxPrintedBytes {
+		return tooLongToPrint
 	}
 	text, err := strconv.Unquote(field.Tag.Value)
 	if err != nil {

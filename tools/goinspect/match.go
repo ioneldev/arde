@@ -21,6 +21,14 @@ import (
 
 const maxCallPatternLength = 500
 
+// maxPrintedBytes is how much source an expression may span and still be printed. Printing every
+// level of a nested call costs the square of the file's size, and all ARDE reads from this text is
+// a plain name or the first words of a status.
+const maxPrintedBytes = 1024
+
+// tooLongToPrint stands in a reply for an expression past that size.
+const tooLongToPrint = "(too long to print)"
+
 // patternSpec is one entry of the profile's patterns file, as written.
 type patternSpec struct {
 	Kind string         `json:"kind"`
@@ -177,9 +185,19 @@ func nameOfCallee(callee ast.Expr) string {
 		case *ast.IndexListExpr:
 			callee = inner.X
 		default:
-			return types.ExprString(inner)
+			return boundedCalleeName(inner)
 		}
 	}
+}
+
+// boundedCalleeName keeps the last name of a chain too long to print, so that a pattern on the end
+// of the chain still finds the call.
+func boundedCalleeName(callee ast.Expr) string {
+	selector, isSelector := callee.(*ast.SelectorExpr)
+	if isSelector && isTooLongToPrint(callee) {
+		return tooLongToPrint + "." + selector.Sel.Name
+	}
+	return boundedExprString(callee)
 }
 
 func (matcher fileMatcher) matchesOf(call *ast.CallExpr) []callMatch {
@@ -234,11 +252,25 @@ func literalValues(call *ast.CallExpr, positions map[string]int) map[string]stri
 }
 
 func (source *parsedSource) textOf(expression ast.Expr) string {
+	if isTooLongToPrint(expression) {
+		return tooLongToPrint
+	}
 	var text bytes.Buffer
 	if err := printer.Fprint(&text, source.fileSet, expression); err != nil {
 		panic(fmt.Sprintf("printing an expression into memory cannot fail: %v", err))
 	}
 	return text.String()
+}
+
+func boundedExprString(expression ast.Expr) string {
+	if isTooLongToPrint(expression) {
+		return tooLongToPrint
+	}
+	return types.ExprString(expression)
+}
+
+func isTooLongToPrint(expression ast.Expr) bool {
+	return int(expression.End()-expression.Pos()) > maxPrintedBytes
 }
 
 func sortMatches(matches []callMatch) {

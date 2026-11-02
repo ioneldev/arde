@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -92,16 +91,16 @@ func presence(pos token.Pos) token.Pos {
 }
 
 // fingerprint hashes a dump of the nodes. Each dump closes its own braces, so joining several
-// cannot make two different lists read the same.
+// cannot make two different lists read the same. A dump's size is its nodes times their depth, so
+// it goes straight into the hash and is never held in memory.
 func fingerprint(nodes ...any) string {
-	var dump bytes.Buffer
+	hash := sha256.New()
 	for _, node := range nodes {
-		if err := ast.Fprint(&dump, nil, node, omitPositions); err != nil {
-			panic(fmt.Sprintf("dumping a syntax tree into memory cannot fail: %v", err))
+		if err := ast.Fprint(hash, nil, node, omitPositions); err != nil {
+			panic(fmt.Sprintf("dumping a syntax tree into a hash cannot fail: %v", err))
 		}
 	}
-	sum := sha256.Sum256(dump.Bytes())
-	return hex.EncodeToString(sum[:])
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 // dropTagsAddedByArde rewrites every struct tag in the tree. An unannotated field and an
