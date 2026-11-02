@@ -16,12 +16,14 @@ from arde.adapters.language.go.goinspect_client import (
     RouteSite,
     RoutesReply,
     SourcePlace,
+    UnmatchedPattern,
 )
 from arde.domain.base import Frozen, describe_problems, one_line, printable_name
 from arde.domain.errors import ArdeError
 from arde.domain.inventory import (
     INLINE_HANDLER,
     PATH_LIMIT,
+    PATTERN_LIMIT,
     STATUS_LIMIT,
     DeclarationText,
     ErrorCode,
@@ -45,6 +47,8 @@ _DROPPED_TEXT_LENGTH = 40
 # How much of the reason a dropped line keeps. Several fields of one model can fail together.
 _DROPPED_REASON_LENGTH = 250
 _ROUTE_NOT_IN_THIS_BUILD = "route in a file this build leaves out"
+# The argument each kind is read for, which tells a wrapper's body from a call worth reporting.
+_ARGUMENT_READ = {"param": "name", "env": "name", "error": "code"}
 _NAME_TEXT: TypeAdapter[str] = TypeAdapter(NameText)
 _DECLARATION_TEXT: TypeAdapter[str] = TypeAdapter(DeclarationText)
 
@@ -53,6 +57,7 @@ class SourceReading(Frozen):
     main_package: str
     service: RoutesReply
     matches: tuple[CallMatch, ...]
+    unmatched_patterns: tuple[UnmatchedPattern, ...]
     declarations: tuple[DeclarationReply, ...]
     fields: tuple[FieldReply, ...]
     make_targets: tuple[str, ...]
@@ -74,6 +79,10 @@ USE_A_PATH_PATTERN = (
 PREFIXES_ARE_NOT_RESOLVED = (
     f"ARDE does not resolve path prefixes, so this repo cannot be documented yet: report that. "
     f"{DO_NOT_NARROW}"
+)
+GIVE_THE_HANDLER_POSITION = (
+    "The route pattern gives a handler position past the end of this call. Correct that position "
+    "in the profile, then run again."
 )
 USE_A_READABLE_ROUTE = (
     f"ARDE reads a route as one line of plain text, with a path of at most {PATH_LIMIT} "
@@ -134,6 +143,10 @@ def build_inventory(reading: SourceReading) -> Inventory:
         env_vars=_sorted_unique(env_vars, key=str),
         make_targets=_sorted_unique(targets, key=str),
         declarations=_sorted_unique(declaration_ids, key=str),
+        unmatched_patterns=_sorted_unique(
+            (one_line(f"{p.kind} {p.call}", PATTERN_LIMIT) for p in reading.unmatched_patterns),
+            key=str,
+        ),
         dropped=_dropped_lines(
             [
                 *matches_outside,
@@ -165,6 +178,7 @@ class _Scope:
     main_package: str
     folders: frozenset[str]
     build_files: frozenset[str]
+    wrapper_calls: frozenset[tuple[str, str, int]]
 
     @classmethod
     def of(cls, reading: SourceReading) -> "_Scope":
@@ -172,6 +186,9 @@ class _Scope:
             main_package=reading.main_package,
             folders=frozenset(reading.service.package_folders),
             build_files=frozenset(reading.service.build_files),
+            wrapper_calls=frozenset(
+                (call.kind, call.file, call.line) for call in reading.service.wrapper_calls
+            ),
         )
 
     def holds(self, source: _Located) -> bool:
@@ -203,11 +220,17 @@ class _Scope:
         for match in matches:
             if not self.holds(match):
                 dropped.append(self.outside(match.kind, match))
-            elif match.kind != "route":
+            elif match.kind == "route":
+                if match.file not in self.build_files:
+                    dropped.append(_Dropped(match.file, match.line, _ROUTE_NOT_IN_THIS_BUILD))
+            elif not self._hands_on_a_value(match):
                 kept.append(match)
-            elif match.file not in self.build_files:
-                dropped.append(_Dropped(match.file, match.line, _ROUTE_NOT_IN_THIS_BUILD))
         return kept, dropped
+
+    # The pattern on the wrapper's calls reads that value, so this call has lost nothing.
+    def _hands_on_a_value(self, match: CallMatch) -> bool:
+        is_inside = (match.kind, match.file, match.line) in self.wrapper_calls
+        return is_inside and _ARGUMENT_READ[match.kind] not in match.literals
 
 
 # Every field takes part, so nothing that differs merges and ties never fall back on set order.
@@ -297,7 +320,11 @@ def _verb_ending(callee: str) -> str:
 
 
 def _handler_name(site: RouteSite) -> str:
-    handler = site.args.get("handler", "")
+    handler = site.args.get("handler")
+    if handler is None:
+        raise RouteNotUnderstoodError(
+            site, "its handler argument is missing", next_action=GIVE_THE_HANDLER_POSITION
+        )
     return handler if _PLAIN_NAME.fullmatch(handler) else INLINE_HANDLER
 
 

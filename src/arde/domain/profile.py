@@ -6,8 +6,9 @@ from pydantic import model_validator
 
 from arde.domain.base import Frozen, MainFile, MainPackage
 
-# The argument names that code reads for each kind. A pattern without one could match a call and
-# give nothing from it, every time, and look like a repo without that fact.
+# The argument names that code reads for each kind, and it reads no others. A pattern without one
+# could match a call and give nothing from it, every time, and look like a repo without that fact.
+# A pattern with another would be ignored, which reads as a method it never gave ARDE.
 REQUIRED_ARGUMENTS: dict[str, frozenset[str]] = {
     "route": frozenset({"path", "handler"}),
     "param": frozenset({"name"}),
@@ -22,11 +23,18 @@ class ExtractionPattern(Frozen):
     args: dict[str, int]
 
     @model_validator(mode="after")
-    def _name_the_arguments_the_kind_needs(self) -> Self:
-        missing = sorted(REQUIRED_ARGUMENTS[self.kind] - self.args.keys())
+    def _name_exactly_the_arguments_the_kind_reads(self) -> Self:
+        read = REQUIRED_ARGUMENTS[self.kind]
+        missing = sorted(read - self.args.keys())
         if missing:
             raise ValueError(
                 f"a {self.kind} pattern must give a position for {', '.join(missing)} in args"
+            )
+        unknown = sorted(self.args.keys() - read)
+        if unknown:
+            raise ValueError(
+                f"a {self.kind} pattern reads only {', '.join(sorted(read))}: remove "
+                f"{', '.join(unknown)} from args"
             )
         return self
 

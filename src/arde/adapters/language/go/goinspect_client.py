@@ -80,8 +80,15 @@ class CallMatch(Frozen):
     literals: dict[str, str]
 
 
+class UnmatchedPattern(Frozen):
+    kind: str
+    call: str
+
+
 class MatchReply(Frozen):
     matches: tuple[CallMatch, ...]
+    # The patterns that matched no call anywhere in the tree.
+    unmatched_patterns: tuple[UnmatchedPattern, ...]
 
 
 class RouteSite(CallMatch):

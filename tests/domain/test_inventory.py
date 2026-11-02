@@ -10,6 +10,7 @@ from arde.domain.inventory import (
     FUNCTION_LIMIT,
     NAME_LIMIT,
     PATH_LIMIT,
+    PATTERN_LIMIT,
     STATUS_LIMIT,
     TYPE_LIMIT,
     ErrorCode,
@@ -82,6 +83,10 @@ def test_an_inventory_has_nothing_dropped_unless_it_says_so() -> None:
 
 def test_an_inventory_lists_no_declaration_unless_it_says_so() -> None:
     assert Inventory.model_validate(EMPTY_INVENTORY).declarations == ()
+
+
+def test_an_inventory_lists_no_unmatched_pattern_unless_it_says_so() -> None:
+    assert Inventory.model_validate(EMPTY_INVENTORY).unmatched_patterns == ()
 
 
 def a_route(**changes: object) -> Route:
@@ -192,7 +197,9 @@ def test_an_error_code_is_a_name_no_fact_would_refuse(code: str) -> None:
         ErrorCode(code=code, status="500")
 
 
-@pytest.mark.parametrize("field", ["env_vars", "make_targets", "dropped", "declarations"])
+@pytest.mark.parametrize(
+    "field", ["env_vars", "make_targets", "dropped", "declarations", "unmatched_patterns"]
+)
 @pytest.mark.parametrize("text", HOSTILE_TEXT)
 def test_the_inventorys_own_lists_refuse_a_control_character(field: str, text: str) -> None:
     with pytest.raises(ValidationError):
@@ -206,6 +213,7 @@ def test_the_inventorys_own_lists_refuse_a_control_character(field: str, text: s
         ("make_targets", NAME_LIMIT),
         ("dropped", DROPPED_LIMIT),
         ("declarations", DECLARATION_LIMIT),
+        ("unmatched_patterns", PATTERN_LIMIT),
     ],
 )
 def test_the_inventorys_own_lists_are_capped_too(field: str, limit: int) -> None:

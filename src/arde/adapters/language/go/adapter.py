@@ -2,12 +2,16 @@
 
 import shutil
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from arde.adapters.language.go import toolchain
 from arde.adapters.language.go.directives import files_differ_only_in_ordinary_comments
-from arde.adapters.language.go.goinspect_client import GoinspectClient, build_goinspect
+from arde.adapters.language.go.goinspect_client import (
+    GoinspectClient,
+    UnmatchedPattern,
+    build_goinspect,
+)
 from arde.adapters.language.go.inventory_builder import SourceReading, build_inventory
 from arde.adapters.language.go.makefile import make_targets_of
 from arde.adapters.repo_links import require_no_link_leaves
@@ -15,8 +19,15 @@ from arde.application.ports import CheckResult, LanguageAdapter, RouteHashes, Un
 from arde.domain.inventory import INLINE_HANDLER, Inventory, Route
 from arde.domain.profile import ExtractionPattern, RepoProfile
 
-# Added to the profile's patterns, so a repo that reads its settings with os.Getenv needs none.
-DEFAULT_ENV_PATTERN = ExtractionPattern(kind="env", call=r"^os\.Getenv$", args={"name": 0})
+# Added to the profile's patterns, so a repo that reads its settings from os needs none. A service
+# with no variable to read has no use for it, so it never counts as a pattern that matched nothing.
+DEFAULT_ENV_PATTERN = ExtractionPattern(
+    kind="env", call=r"^os\.(Getenv|LookupEnv)$", args={"name": 0}
+)
+
+
+def patterns_of(profile: RepoProfile) -> tuple[ExtractionPattern, ...]:
+    return (*profile.patterns, DEFAULT_ENV_PATTERN)
 
 
 class GoAdapter(LanguageAdapter):
@@ -60,12 +71,14 @@ class GoAdapter(LanguageAdapter):
 
     def extract_inventory(self, repo: Path, profile: RepoProfile) -> Inventory:
         require_no_link_leaves(repo)
-        patterns = (DEFAULT_ENV_PATTERN, *profile.patterns)
+        patterns = patterns_of(profile)
         declared = self._goinspect.declarations(repo)
+        matched = self._goinspect.matches(repo, patterns)
         reading = SourceReading(
             main_package=profile.main_package,
             service=self._goinspect.routes(repo, patterns, main_package=profile.main_package),
-            matches=self._goinspect.matches(repo, patterns).matches,
+            matches=matched.matches,
+            unmatched_patterns=_of_the_profile(matched.unmatched_patterns),
             declarations=declared.declarations,
             fields=declared.fields,
             make_targets=make_targets_of(repo),
@@ -101,6 +114,11 @@ class GoAdapter(LanguageAdapter):
 # the port gains a method that GoAdapter lacks, or when a signature drifts.
 def go_adapter(bin_dir: Path) -> LanguageAdapter:
     return GoAdapter(build_goinspect(bin_dir))
+
+
+def _of_the_profile(unmatched: Iterable[UnmatchedPattern]) -> tuple[UnmatchedPattern, ...]:
+    default = (DEFAULT_ENV_PATTERN.kind, DEFAULT_ENV_PATTERN.call)
+    return tuple(pattern for pattern in unmatched if (pattern.kind, pattern.call) != default)
 
 
 # An added or removed file reaches this call too, and so may a folder or a template.

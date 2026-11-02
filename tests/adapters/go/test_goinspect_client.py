@@ -24,6 +24,7 @@ from arde.adapters.language.go.goinspect_client import (
     GoinspectClient,
     GoinspectError,
     SourcePlace,
+    UnmatchedPattern,
     WrapperCall,
     build_goinspect,
 )
@@ -133,7 +134,8 @@ def test_declarations_are_read_with_their_fields(stand_in: StandIn, folder: Path
 def test_matches_hand_the_patterns_over_as_a_file(stand_in: StandIn, folder: Path) -> None:
     stand_in.replies_with(
         '{"matches": [{"kind": "env", "call": "os.Getenv", "file": "m.go", "line": 4,'
-        ' "args": {"name": "\\"PORT\\""}, "literals": {"name": "PORT"}}]}'
+        ' "args": {"name": "\\"PORT\\""}, "literals": {"name": "PORT"}}],'
+        ' "unmatched_patterns": [{"kind": "param", "call": "^q$"}]}'
     )
     pattern = ExtractionPattern(kind="env", call=r"^os\.Getenv$", args={"name": 0})
 
@@ -149,6 +151,7 @@ def test_matches_hand_the_patterns_over_as_a_file(stand_in: StandIn, folder: Pat
             literals={"name": "PORT"},
         ),
     )
+    assert reply.unmatched_patterns == (UnmatchedPattern(kind="param", call="^q$"),)
     assert stand_in.file_it_was_given == [
         {"kind": "env", "call": r"^os\.Getenv$", "args": {"name": 0}}
     ]
@@ -159,7 +162,7 @@ def test_matches_hand_the_patterns_over_as_a_file(stand_in: StandIn, folder: Pat
 def test_a_match_reply_with_no_literals_object_is_refused(stand_in: StandIn, folder: Path) -> None:
     stand_in.replies_with(
         '{"matches": [{"kind": "env", "call": "os.Getenv", "file": "m.go", "line": 4,'
-        ' "args": {"name": "name"}}]}'
+        ' "args": {"name": "name"}}], "unmatched_patterns": []}'
     )
     pattern = ExtractionPattern(kind="env", call=r"^os\.Getenv$", args={"name": 0})
 

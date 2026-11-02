@@ -18,6 +18,7 @@ STATUS_LIMIT = 80
 DROPPED_LIMIT = 500
 FUNCTION_LIMIT = 1000
 DECLARATION_LIMIT = FILE_LIMIT + NAME_LIMIT + 10
+PATTERN_LIMIT = 600
 
 NameText = Annotated[SingleLine, Field(max_length=NAME_LIMIT)]
 TypeText = Annotated[SingleLine, Field(max_length=TYPE_LIMIT)]
@@ -27,6 +28,7 @@ StatusText = Annotated[SingleLine, Field(max_length=STATUS_LIMIT)]
 DroppedLine = Annotated[SingleLine, Field(max_length=DROPPED_LIMIT)]
 FunctionText = Annotated[SingleLine, Field(max_length=FUNCTION_LIMIT)]
 DeclarationText = Annotated[SingleLine, Field(max_length=DECLARATION_LIMIT)]
+PatternText = Annotated[SingleLine, Field(max_length=PATTERN_LIMIT)]
 CodeText = Annotated[ErrorCodeName, Field(max_length=NAME_LIMIT)]
 
 # What Route.handler holds when the registration gives no plain name to show, such as a function
@@ -86,3 +88,6 @@ class Inventory(Frozen):
     # string literal, its text could not be read or it lies outside the service. Without it a repo
     # with constant error codes looks like one with none.
     dropped: tuple[DroppedLine, ...] = ()
+    # Each pattern of the profile that matched no call, as "kind regex". A dead pattern looks the
+    # same as a repo with no such calls, and only this tells them apart.
+    unmatched_patterns: tuple[PatternText, ...] = ()

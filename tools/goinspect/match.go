@@ -54,8 +54,17 @@ type callMatch struct {
 	Literals map[string]string `json:"literals"`
 }
 
+// patternName says which pattern is meant. Two kinds can share a regex.
+type patternName struct {
+	Kind string `json:"kind"`
+	Call string `json:"call"`
+}
+
+// matchReport lists a pattern that matched nothing, because a profile with a dead pattern otherwise
+// looks the same as a repo with none of those calls.
 type matchReport struct {
-	Matches []callMatch `json:"matches"`
+	Matches           []callMatch   `json:"matches"`
+	UnmatchedPatterns []patternName `json:"unmatched_patterns"`
 }
 
 // findMatches reads every pattern before it opens a Go file, so a bad pattern stops the run even
@@ -78,7 +87,21 @@ func findMatches(root, patternsPath string) (matchReport, error) {
 		report.Matches = append(report.Matches, found...)
 	}
 	sortMatches(report.Matches)
+	report.UnmatchedPatterns = patternsWithNoMatch(patterns, report.Matches)
 	return report, nil
+}
+
+func patternsWithNoMatch(patterns []callPattern, matches []callMatch) []patternName {
+	unmatched := []patternName{}
+	for _, pattern := range patterns {
+		matched := slices.ContainsFunc(matches, func(match callMatch) bool {
+			return match.Kind == pattern.kind && pattern.call.MatchString(match.Call)
+		})
+		if !matched {
+			unmatched = append(unmatched, patternName{Kind: pattern.kind, Call: pattern.call.String()})
+		}
+	}
+	return unmatched
 }
 
 func loadPatterns(path string) ([]callPattern, error) {

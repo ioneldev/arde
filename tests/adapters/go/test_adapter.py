@@ -137,9 +137,8 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
     )
     assert inventory.env_vars == ("SHOP_PORT", "SHOP_VERBOSE")
     assert inventory.make_targets == ("lint", "serve", "smoke", "unit")
-    assert inventory.dropped == (
-        "settings.go:7: env argument `name` is `name`, not a string literal",
-    )
+    assert inventory.dropped == ()
+    assert inventory.unmatched_patterns == ()
     assert inventory.response_fields == (
         field("ItemView", "PriceCents", "price_cents", "int64"),
         field("ItemView", "SKU", "sku", "string"),
@@ -166,6 +165,43 @@ def test_a_profile_that_repeats_the_default_pattern_lists_nothing_twice(adapter:
     profile = shop_profile(patterns=(*shop_profile().patterns, repeated))
 
     assert adapter.extract_inventory(SHOP, profile).env_vars == ("SHOP_PORT", "SHOP_VERBOSE")
+
+
+def test_the_default_pattern_reports_a_wrappers_body_when_no_pattern_covers_the_wrapper(
+    adapter: GoAdapter,
+) -> None:
+    inventory = adapter.extract_inventory(SHOP, shop_profile(patterns=ROUTE_PATTERNS))
+
+    assert inventory.dropped == (
+        "settings.go:7: env argument `name` is `name`, not a string literal",
+    )
+
+
+def test_the_default_pattern_reads_lookup_env_too(adapter: GoAdapter, shop: Path) -> None:
+    (shop / "lookup.go").write_text(
+        'package main\n\nimport "os"\n\n'
+        'func secret() bool {\n\t_, found := os.LookupEnv("SHOP_SECRET")\n\treturn found\n}\n',
+        encoding="utf-8",
+    )
+
+    assert "SHOP_SECRET" in adapter.extract_inventory(shop, shop_profile()).env_vars
+
+
+def test_a_pattern_that_matched_nothing_is_named_and_the_default_pattern_never_is(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    write_go(
+        tmp_path,
+        {
+            "main.go": 'package main\n\nimport "net/http"\n\n'
+            'func main() {\n\thttp.HandleFunc("/x", http.NotFound)\n}\n'
+        },
+    )
+    never = {"kind": "param", "call": r"^q\.Get$", "args": {"name": 0}}
+
+    inventory = adapter.extract_inventory(tmp_path, shop_profile(patterns=(never,)))
+
+    assert inventory.unmatched_patterns == (r"param ^q\.Get$",)
 
 
 def test_zero_routes_raises_no_routes_error(adapter: GoAdapter, tmp_path: Path) -> None:

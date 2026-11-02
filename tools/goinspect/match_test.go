@@ -218,8 +218,48 @@ func TestMatchWithNothingFoundPrintsAnEmptyList(t *testing.T) {
 
 	exitCode, stdout, _ := runCommand(t, "match", "--patterns", patternsFile, root)
 
-	if exitCode != 0 || stdout != `{"matches":[]}`+"\n" {
+	if exitCode != 0 || !strings.HasPrefix(stdout, `{"matches":[],`) {
 		t.Fatalf("exit %d, stdout %q", exitCode, stdout)
+	}
+}
+
+func unmatchedPatternsOf(t *testing.T, root, patterns string) string {
+	t.Helper()
+	patternsFile := writeTree(t, map[string]string{"patterns.json": patterns}) + "/patterns.json"
+	exitCode, stdout, stderr := runCommand(t, "match", "--patterns", patternsFile, root)
+	if exitCode != 0 || stderr != "" {
+		t.Fatalf("exit %d, stderr %q", exitCode, stderr)
+	}
+	return stdout[strings.Index(stdout, `"unmatched_patterns"`):]
+}
+
+func TestMatchListsEachPatternWithNoMatchUnderItsKind(t *testing.T) {
+	root := writeTree(t, map[string]string{"main.go": "package p\n\nfunc f() { used(\"a\") }\n"})
+	patterns := `[{"kind":"env","call":"^used$","args":{}},{"kind":"param","call":"^unused$","args":{}}]`
+
+	got := unmatchedPatternsOf(t, root, patterns)
+
+	if want := `"unmatched_patterns":[{"kind":"param","call":"^unused$"}]}` + "\n"; got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestMatchTellsApartTwoKindsOfOnePattern(t *testing.T) {
+	root := writeTree(t, map[string]string{"main.go": "package p\n\nfunc f() { used(\"a\") }\n"})
+	patterns := `[{"kind":"env","call":"^used$","args":{}},{"kind":"param","call":"^used$","args":{}}]`
+
+	got := unmatchedPatternsOf(t, root, patterns)
+
+	if want := `"unmatched_patterns":[]}` + "\n"; got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestMatchPrintsAnEmptyListWhenEveryPatternMatched(t *testing.T) {
+	root := writeTree(t, map[string]string{"main.go": "package p\n"})
+
+	if got, want := unmatchedPatternsOf(t, root, "[]"), `"unmatched_patterns":[]}`+"\n"; got != want {
+		t.Fatalf("got %s, want %s", got, want)
 	}
 }
 

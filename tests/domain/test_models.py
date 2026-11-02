@@ -418,7 +418,6 @@ PROFILE_FIELDS: dict[str, Any] = {
         ("param", {"name": 0}),
         ("env", {"name": 0}),
         ("error", {"status": 1, "code": 2}),
-        ("route", {"path": 0, "handler": 1, "middleware": 2}),
     ],
 )
 def test_a_pattern_that_names_the_arguments_its_kind_needs_is_accepted(
@@ -443,6 +442,23 @@ def test_a_pattern_missing_an_argument_its_kind_needs_is_refused_and_names_it(
     kind: str, args: dict[str, int], missing: str
 ) -> None:
     with pytest.raises(ValidationError, match=missing):
+        ExtractionPattern(kind=kind, call="^f$", args=args)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("kind", "args", "unknown"),
+    [
+        ("route", {"path": 0, "handler": 1, "method": 2}, "method"),
+        ("route", {"path": 0, "handler": 1, "middleware": 2}, "middleware"),
+        ("param", {"name": 0, "default": 1}, "default"),
+        ("env", {"name": 0, "fallback": 1}, "fallback"),
+        ("error", {"code": 0, "status": 1, "message": 2}, "message"),
+    ],
+)
+def test_a_pattern_with_an_argument_nothing_reads_is_refused_and_names_it(
+    kind: str, args: dict[str, int], unknown: str
+) -> None:
+    with pytest.raises(ValidationError, match=unknown):
         ExtractionPattern(kind=kind, call="^f$", args=args)  # type: ignore[arg-type]
 
 

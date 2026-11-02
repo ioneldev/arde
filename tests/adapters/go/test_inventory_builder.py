@@ -14,6 +14,8 @@ from arde.adapters.language.go.goinspect_client import (
     RouteSite,
     RoutesReply,
     SourcePlace,
+    UnmatchedPattern,
+    WrapperCall,
 )
 from arde.adapters.language.go.inventory_builder import (
     NoRoutesError,
@@ -29,6 +31,7 @@ from arde.domain.inventory import (
     INLINE_HANDLER,
     NAME_LIMIT,
     PATH_LIMIT,
+    PATTERN_LIMIT,
     STATUS_LIMIT,
     ErrorCode,
     Inventory,
@@ -108,6 +111,8 @@ def inventory_of(
     stripped_prefixes: tuple[SourcePlace, ...] = (),
     folders: tuple[str, ...] | None = None,
     build_files: tuple[str, ...] | None = None,
+    wrapper_calls: tuple[WrapperCall, ...] = (),
+    unmatched_patterns: tuple[UnmatchedPattern, ...] = (),
 ) -> Inventory:
     sites = tuple(item for item in found if isinstance(item, RouteSite))
     matches = tuple(item for item in found if not isinstance(item, RouteSite))
@@ -117,12 +122,13 @@ def inventory_of(
         build_files=tuple(files) if build_files is None else build_files,
         sites=sites,
         stripped_prefixes=stripped_prefixes,
-        wrapper_calls=(),
+        wrapper_calls=wrapper_calls,
     )
     reading = SourceReading(
         main_package="./cmd/api",
         service=service,
         matches=matches,
+        unmatched_patterns=unmatched_patterns,
         declarations=declarations,
         fields=fields,
         make_targets=make_targets,
@@ -283,10 +289,12 @@ def test_a_handler_that_is_not_a_plain_name_is_inline(handler: str) -> None:
     assert route.handler == INLINE_HANDLER
 
 
-def test_a_route_call_with_no_handler_argument_is_inline() -> None:
-    [route] = routes_of(a_site(path=Lit("GET /x")))
+def test_a_route_with_no_handler_argument_stops_the_run_because_the_pattern_is_wrong() -> None:
+    with pytest.raises(RouteNotUnderstoodError, match="handler") as stopped:
+        routes_of(a_site(path=Lit("GET /x")))
 
-    assert route.handler == INLINE_HANDLER
+    assert stopped.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
+    assert "position" in stopped.value.next_action
 
 
 def test_a_route_keeps_where_it_is_registered_and_what_resolved_its_handler() -> None:
@@ -733,6 +741,74 @@ def test_what_is_read_in_full_is_not_reported_as_dropped() -> None:
     )
 
     assert inventory.dropped == ()
+
+
+def test_a_wrappers_own_call_that_hands_on_a_name_says_nothing() -> None:
+    inventory = inventory_of(
+        registering(Lit("GET /x")),
+        call("env", "os.Getenv", line=7, name="name"),
+        call("env", "setting", line=9, name=Lit("DEPOT_PORT")),
+        wrapper_calls=(WrapperCall(kind="env", file="main.go", line=7),),
+    )
+
+    assert inventory.dropped == ()
+    assert inventory.env_vars == ("DEPOT_PORT",)
+
+
+def test_a_wrappers_own_call_with_a_literal_is_still_read() -> None:
+    inventory = inventory_of(
+        registering(Lit("GET /x")),
+        call("env", "os.Getenv", line=7, name=Lit("ALSO_READ")),
+        wrapper_calls=(WrapperCall(kind="env", file="main.go", line=7),),
+    )
+
+    assert inventory.env_vars == ("ALSO_READ",)
+
+
+def test_a_call_inside_a_wrapper_of_another_kind_is_still_reported() -> None:
+    inventory = inventory_of(
+        registering(Lit("GET /x")),
+        call("env", "os.Getenv", line=7, name="name"),
+        wrapper_calls=(WrapperCall(kind="param", file="main.go", line=7),),
+    )
+
+    assert inventory.dropped == ("main.go:7: env argument `name` is `name`, not a string literal",)
+
+
+def test_a_wrappers_own_call_for_an_error_is_judged_by_its_code() -> None:
+    inventory = inventory_of(
+        registering(Lit("GET /x")),
+        call("error", "refuse", line=7, code="code", status="status"),
+        wrapper_calls=(WrapperCall(kind="error", file="main.go", line=7),),
+    )
+
+    assert inventory.dropped == ()
+
+
+def test_a_pattern_that_matched_nothing_is_carried_with_its_kind() -> None:
+    inventory = inventory_of(
+        registering(Lit("GET /x")),
+        unmatched_patterns=(
+            UnmatchedPattern(kind="param", call=r"^q\.Get$"),
+            UnmatchedPattern(kind="env", call=r"^setting$"),
+        ),
+    )
+
+    assert inventory.unmatched_patterns == ("env ^setting$", r"param ^q\.Get$")
+
+
+def test_an_unmatched_pattern_with_a_line_break_or_past_its_limit_does_not_stop_the_run() -> None:
+    inventory = inventory_of(
+        registering(Lit("GET /x")),
+        unmatched_patterns=(
+            UnmatchedPattern(kind="env", call="a\nb\x1b"),
+            UnmatchedPattern(kind="env", call="x" * (2 * PATTERN_LIMIT)),
+        ),
+    )
+
+    assert len(inventory.unmatched_patterns) == 2
+    assert all(line.isprintable() for line in inventory.unmatched_patterns)
+    assert all(len(line) <= PATTERN_LIMIT for line in inventory.unmatched_patterns)
 
 
 def test_a_long_argument_is_cut_in_the_dropped_line() -> None:
