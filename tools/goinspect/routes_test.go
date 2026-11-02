@@ -380,6 +380,35 @@ func main() {
 	}
 }
 
+// Both of these sit inside the repo, so only the module tells them apart, and a root here would
+// send the renderer's comment into code the repo does not own.
+func TestRoutesGivesNoRootToAFunctionOfAnotherModuleInsideTheRepo(t *testing.T) {
+	const serve = "package dep\n\nimport \"net/http\"\n\nfunc Serve(w http.ResponseWriter, r *http.Request) {}\n"
+	const main = "package main\n\nimport (\n\t\"net/http\"\n\n\t\"example.com/dep\"\n)\n\nfunc main() {\n\thttp.HandleFunc(\"/x\", dep.Serve)\n}\n"
+	layouts := map[string]map[string]string{
+		"a nested module": {
+			"go.mod":     "module example.com/depot\n\ngo 1.22\n\nrequire example.com/dep v0.0.0\n\nreplace example.com/dep => ./dep\n",
+			"main.go":    main,
+			"dep/go.mod": "module example.com/dep\n\ngo 1.22\n",
+			"dep/dep.go": serve,
+		},
+		"a vendored module": {
+			"go.mod":                      "module example.com/depot\n\ngo 1.22\n\nrequire example.com/dep v1.0.0\n",
+			"main.go":                     main,
+			"vendor/modules.txt":          "# example.com/dep v1.0.0\n## explicit; go 1.22\nexample.com/dep\n",
+			"vendor/example.com/dep/d.go": serve,
+		},
+	}
+
+	for name, files := range layouts {
+		site := routesOf(t, writeTree(t, files), ".", noPatterns).Sites[0]
+
+		if site.HandlerID != nil || site.HandlerFile != nil {
+			t.Errorf("%s: got root %s in %s", name, *site.HandlerID, *site.HandlerFile)
+		}
+	}
+}
+
 func TestRoutesKeepsTheTextOfAHandlerWithNoRoot(t *testing.T) {
 	source := `package main
 
