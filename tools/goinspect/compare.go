@@ -15,10 +15,10 @@ type treePair struct {
 
 // compareDirs may report a change that is not one, and never misses a change to code, except in
 // what it cannot see. Files with the same relative path are compared as normalised syntax trees,
-// and by raw bytes when either side does not parse. It looks at regular .go files only, and at
-// comments not at all. Two kinds of comment are code, and the caller must check them itself: a
-// directive such as //go:build or //go:embed changes a build, and a cgo preamble, the comment
-// before `import "C"`, is C source. Task 8 treats any comment edit in a file that imports "C" as
+// and by raw bytes when either side does not parse. It looks at .go files and links to regular
+// files only, and at comments not at all. Two kinds of comment are code, and the caller must check
+// them itself: a directive such as //go:build or //go:embed changes a build, and a cgo preamble,
+// the comment before `import "C"`, is C source. Task 8 treats any comment edit in a file that imports "C" as
 // a real change. The struct tags ARDE adds, any oneOf and binding:"optional", are ignored on
 // purpose: ARDE writing them must not count as a change.
 func compareDirs(oldRoot, newRoot string) (compareReport, error) {

@@ -63,8 +63,10 @@ func startsWithUnderscoreOrDot(name string) bool {
 	return strings.HasPrefix(name, "_") || strings.HasPrefix(name, ".")
 }
 
-// listGoFiles returns the regular .go files under root as sorted, slash-separated paths relative
-// to root. The root itself is never skipped, whatever its name.
+// listGoFiles returns the .go files under root, and the links to regular files named like them, as
+// sorted, slash-separated paths relative to root. The root itself is never skipped, whatever its
+// name. A link is read wherever it leads, so ARDE refuses a repo with a link that leaves it before
+// it calls this.
 func listGoFiles(root string, policy walkPolicy) ([]string, error) {
 	walkRoot, err := resolveDirectory(root)
 	if err != nil {
@@ -81,7 +83,7 @@ func listGoFiles(root string, policy walkPolicy) ([]string, error) {
 			}
 			return nil
 		}
-		if !isListedFile(entry, policy) {
+		if !isListedFile(path, policy) {
 			return nil
 		}
 		requiresIgnore, err := skipsForItsBuildConstraint(path, policy)
@@ -245,10 +247,15 @@ func parseConstraint(line string) constraint.Expr {
 	return expression
 }
 
-func isListedFile(entry fs.DirEntry, policy walkPolicy) bool {
-	return entry.Type().IsRegular() &&
-		strings.HasSuffix(entry.Name(), ".go") &&
-		!policy.skipsFile(entry.Name())
+// isListedFile follows a link, because the Go tool compiles a link to a regular file. A link to
+// anything else, a broken one included, is not source, and the Go tool stops on a broken one itself.
+func isListedFile(path string, policy walkPolicy) bool {
+	name := filepath.Base(path)
+	if !strings.HasSuffix(name, ".go") || policy.skipsFile(name) {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // resolveDirectory follows a symlinked root, which WalkDir would otherwise report as one

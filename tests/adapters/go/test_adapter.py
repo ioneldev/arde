@@ -2,6 +2,7 @@
 
 import json
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -213,6 +214,56 @@ def test_a_route_in_a_file_for_another_platform_is_listed_because_some_build_inc
     paths = {route.path for route in adapter.extract_inventory(shop, shop_profile()).routes}
 
     assert "/only-on-windows" in paths
+
+
+LINKED_SOURCE = """package web
+
+import "net/http"
+
+func init() {
+	http.HandleFunc("GET /linked-in", behindTheLink)
+}
+
+func behindTheLink(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(204)
+}
+"""
+
+
+def add_a_linked_source_file(shop: Path) -> None:
+    (shop / "source_kept_elsewhere").mkdir()
+    (shop / "source_kept_elsewhere" / "extra.txt").write_text(LINKED_SOURCE, encoding="utf-8")
+    (shop / "web" / "extra.go").symlink_to(Path("..") / "source_kept_elsewhere" / "extra.txt")
+
+
+def test_a_link_to_a_source_file_inside_the_repo_is_read_like_the_file_it_builds_as(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    add_a_linked_source_file(shop)
+    profile = shop_profile(
+        patterns=(
+            *shop_profile().patterns,
+            {"kind": "route", "call": r"^http\.HandleFunc$", "args": {"path": 0, "handler": 1}},
+        )
+    )
+
+    routes = adapter.extract_inventory(shop, profile).routes
+    fingerprints = adapter.route_fingerprints(shop, routes)
+    checks = adapter.run_checks(shop, shop_profile())
+
+    assert Route(method="GET", path="/linked-in", handler="behindTheLink") in routes
+    assert "GET /linked-in" in fingerprints
+    assert checks.build_ok
+
+
+def test_an_edit_behind_a_link_moves_a_declaration_of_the_link(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    add_a_linked_source_file(shop)
+    edited = shutil.copytree(shop, shop.parent / "edited", symlinks=True)
+    edit(edited / "source_kept_elsewhere" / "extra.txt", "WriteHeader(204)", "WriteHeader(205)")
+
+    assert adapter.changed_declarations(shop, edited) == ["web/extra.go::func behindTheLink"]
 
 
 def test_a_go_file_that_does_not_parse_stops_the_run_and_names_it(

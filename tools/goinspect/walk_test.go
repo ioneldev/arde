@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -104,20 +105,141 @@ func TestWalkNeverSkipsTheRootItself(t *testing.T) {
 	}
 }
 
-func TestWalkSkipsFilesThatAreNotRegular(t *testing.T) {
+func TestWalkListsALinkToARegularFile(t *testing.T) {
 	root := writeTree(t, map[string]string{
-		"real.go":   emptyPackage,
-		"elsewhere": "unused",
+		"real.go":            emptyPackage,
+		"src_real/extra.txt": emptyPackage,
+		"sub/placeholder":    "unused",
 	})
-	outside := writeTree(t, map[string]string{"outside.go": emptyPackage})
-	linkOrSkip(t, filepath.Join(root, "real.go"), filepath.Join(root, "link_to_file.go"))
-	linkOrSkip(t, outside, filepath.Join(root, "link_to_dir"))
+	linkOrSkip(t, filepath.Join(root, "real.go"), filepath.Join(root, "link_to_go_file.go"))
+	linkOrSkip(t, filepath.Join("src_real", "extra.txt"), filepath.Join(root, "extra.go"))
+	linkOrSkip(t, filepath.Join("..", "real.go"), filepath.Join(root, "sub", "nested.go"))
+
+	for name, policy := range map[string]walkPolicy{
+		"compare":      skipOnlyGit,
+		"declarations": skipWhatTheGoToolIgnores,
+		"match":        skipTestsAndWhatTheGoToolIgnores,
+	} {
+		got, err := listGoFiles(root, policy)
+
+		assertNoError(t, err)
+		want := []string{"extra.go", "link_to_go_file.go", "real.go", "sub/nested.go"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestWalkFollowsALinkThroughAnotherLink(t *testing.T) {
+	root := writeTree(t, map[string]string{"real.txt": emptyPackage})
+	linkOrSkip(t, "real.txt", filepath.Join(root, "second.txt"))
+	linkOrSkip(t, "second.txt", filepath.Join(root, "first.go"))
 
 	got, err := listGoFiles(root, skipOnlyGit)
 
 	assertNoError(t, err)
-	if !reflect.DeepEqual(got, []string{"real.go"}) {
-		t.Fatalf("got %v, want only real.go", got)
+	if want := []string{"first.go"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestWalkSkipsALinkToAnythingButARegularFile(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"real.go":        emptyPackage,
+		"folder/deep.go": emptyPackage,
+	})
+	fifo := filepath.Join(root, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Skipf("cannot create a FIFO here: %v", err)
+	}
+	linkOrSkip(t, "folder", filepath.Join(root, "link_to_folder.go"))
+	linkOrSkip(t, "not-there", filepath.Join(root, "broken.go"))
+	linkOrSkip(t, "loop_b.go", filepath.Join(root, "loop_a.go"))
+	linkOrSkip(t, "loop_a.go", filepath.Join(root, "loop_b.go"))
+	linkOrSkip(t, "pipe", filepath.Join(root, "link_to_fifo.go"))
+
+	got, err := listGoFiles(root, skipOnlyGit)
+
+	assertNoError(t, err)
+	if want := []string{"folder/deep.go", "real.go"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestWalkSkipsAFileThatIsNotRegular(t *testing.T) {
+	root := writeTree(t, map[string]string{"real.go": emptyPackage})
+	if err := syscall.Mkfifo(filepath.Join(root, "pipe.go"), 0o644); err != nil {
+		t.Skipf("cannot create a FIFO here: %v", err)
+	}
+
+	got, err := listGoFiles(root, skipOnlyGit)
+
+	assertNoError(t, err)
+	if want := []string{"real.go"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestWalkJudgesALinkByItsOwnName(t *testing.T) {
+	root := writeTree(t, map[string]string{"real.go": emptyPackage})
+	linkOrSkip(t, "real.go", filepath.Join(root, "alias.txt"))
+	linkOrSkip(t, "real.go", filepath.Join(root, "_alias.go"))
+	linkOrSkip(t, "real.go", filepath.Join(root, "alias_test.go"))
+
+	got, err := listGoFiles(root, skipTestsAndWhatTheGoToolIgnores)
+
+	assertNoError(t, err)
+	if want := []string{"real.go"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestWalkSkipsALinkToAFileThatRequiresTheIgnoreTag(t *testing.T) {
+	root := writeTree(t, map[string]string{"gen.txt": "//go:build ignore\n\npackage p\n"})
+	linkOrSkip(t, "gen.txt", filepath.Join(root, "gen.go"))
+
+	got, err := listGoFiles(root, skipWhatTheGoToolIgnores)
+
+	assertNoError(t, err)
+	if len(got) != 0 {
+		t.Fatalf("got %v, want nothing", got)
+	}
+}
+
+func TestDeclarationsAndMatchReadALinkedFile(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"main.go":            "package p\n\nfunc Visible() { pick(\"seen\") }\n",
+		"src_real/extra.txt": "package p\n\nfunc Hidden() { pick(\"hidden\") }\n",
+	})
+	linkOrSkip(t, filepath.Join("src_real", "extra.txt"), filepath.Join(root, "extra.go"))
+
+	if files := declarationFiles(t, root); !slices.Contains(files, "extra.go") {
+		t.Errorf("declarations did not read the link: %v", files)
+	}
+	if files := matchFiles(t, root); !slices.Contains(files, "extra.go") {
+		t.Errorf("match did not read the link: %v", files)
+	}
+}
+
+func TestCompareSeesALinkRetargetedToDifferentCode(t *testing.T) {
+	oldRoot := writeTree(t, map[string]string{
+		"a.txt": "package p\n\nfunc F() int { return 1 }\n",
+		"b.txt": "package p\n\nfunc F() int { return 2 }\n",
+	})
+	newRoot := writeTree(t, map[string]string{
+		"a.txt": "package p\n\nfunc F() int { return 1 }\n",
+		"b.txt": "package p\n\nfunc F() int { return 2 }\n",
+	})
+	linkOrSkip(t, "a.txt", filepath.Join(oldRoot, "linked.go"))
+	linkOrSkip(t, "b.txt", filepath.Join(newRoot, "linked.go"))
+
+	exitCode, stdout, stderr := runCommand(t, "compare", "--old", oldRoot, "--new", newRoot)
+
+	if exitCode != 0 || stderr != "" {
+		t.Fatalf("exit %d, stderr %q", exitCode, stderr)
+	}
+	if !strings.Contains(stdout, `"changed":["linked.go"]`) {
+		t.Fatalf("compare must see the retargeted link, got %s", stdout)
 	}
 }
 
