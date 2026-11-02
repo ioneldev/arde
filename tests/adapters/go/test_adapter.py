@@ -13,7 +13,6 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
 from doubtful_edits import EVERY_DOUBTFUL_EDIT, ORDINARY_EDITS, DoubtfulEdit
 from pydantic import ValidationError
 from shop_support import ROUTE_PATTERNS, SHOP, shop_profile
@@ -22,6 +21,7 @@ from arde.adapters.child_process import ChildStartError
 from arde.adapters.language.go.adapter import GoAdapter, go_adapter
 from arde.adapters.language.go.goinspect_client import GoinspectError
 from arde.adapters.language.go.inventory_builder import NoRoutesError, RouteNotUnderstoodError
+from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
 from arde.adapters.language.go.toolchain import BadTestCommandError, GoCommandError
 from arde.application.ports import LanguageAdapter
 from arde.domain.errors import ArdeError
@@ -188,6 +188,45 @@ def test_a_handler_written_in_place_is_listed_as_inline(adapter: GoAdapter, shop
     handlers = {r.path: r.handler for r in adapter.extract_inventory(shop, shop_profile()).routes}
 
     assert handlers == {"/": "s.listing", "/health": INLINE_HANDLER}
+
+
+def a_file_registering(path: str) -> str:
+    return f'package main\n\nfunc ghosts(app router) {{\n\tapp.get("{path}", h)\n}}\n'
+
+
+def add_code_the_build_leaves_out(shop: Path) -> None:
+    ignored = "//go:build ignore\n\n" + a_file_registering("/ghost-from-ignored-file")
+    (shop / "web" / "generate.go").write_text(ignored, encoding="utf-8")
+    (shop / "tools").mkdir()
+    (shop / "tools" / "go.mod").write_text("module example.com/tools\n", encoding="utf-8")
+    nested_type = 'type NestedOnly struct {\n\tN int `json:"n"`\n}\n'
+    nested = a_file_registering("/ghost-from-nested-module") + nested_type
+    (shop / "tools" / "nested.go").write_text(nested, encoding="utf-8")
+
+
+def test_the_inventory_holds_nothing_from_code_the_go_tool_never_builds(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    before = adapter.extract_inventory(shop, shop_profile())
+    add_code_the_build_leaves_out(shop)
+
+    after = adapter.extract_inventory(shop, shop_profile())
+
+    assert after.routes == before.routes
+    assert after.response_fields == before.response_fields
+
+
+def test_a_route_in_a_file_for_another_platform_is_listed_because_some_build_includes_it(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    (shop / "web" / "extra_windows.go").write_text(
+        'package web\n\nfunc more(app router) {\n\tapp.get("/only-on-windows", h)\n}\n',
+        encoding="utf-8",
+    )
+
+    paths = {route.path for route in adapter.extract_inventory(shop, shop_profile()).routes}
+
+    assert "/only-on-windows" in paths
 
 
 def test_a_go_file_that_does_not_parse_stops_the_run_and_names_it(

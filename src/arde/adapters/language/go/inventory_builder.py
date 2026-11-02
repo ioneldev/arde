@@ -1,8 +1,6 @@
 """Turns what goinspect reports into the inventory. Pure: it reads no file and runs nothing."""
 
-import ast
 import re
-import warnings
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -24,8 +22,6 @@ _HTTP_VERBS = frozenset(
 )
 _METHOD_THEN_PATH = re.compile(r"([A-Z]+)[ \t]+(.*)", re.DOTALL)
 _PLAIN_NAME = re.compile(r"[^\W\d]\w*(?:\.[^\W\d]\w*)*")
-_INTERPRETED_LITERAL = re.compile(r'"(?:[^"\\\n]|\\.)*"')
-_RAW_LITERAL = re.compile(r"`[^`]*`")
 _TAG_ENTRY = re.compile(r' *([^\s:"\x7f]+):"((?:[^"\\]|\\.)*)"')
 # Where the text of an argument is cut when it goes into a message.
 _SHOWN_LENGTH = 80
@@ -90,29 +86,8 @@ def _of_kind(matches: Iterable[CallMatch], kind: str) -> list[CallMatch]:
     return [match for match in matches if match.kind == kind]
 
 
-def unquote_string_literal(text: str) -> str | None:
-    """The value of a Go string literal, or None for anything else, such as a name or a sum."""
-    if _RAW_LITERAL.fullmatch(text):
-        return text[1:-1].replace("\r", "")
-    if _INTERPRETED_LITERAL.fullmatch(text):
-        return _decode_escapes(text)
-    return None
-
-
-# Go refuses an escape it does not know, and Python only warns, so the warning is made an error.
-def _decode_escapes(quoted: str) -> str | None:
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        try:
-            value = ast.literal_eval(quoted)
-        except (SyntaxError, ValueError):
-            return None
-    return value if isinstance(value, str) else None
-
-
 def _literal_argument(match: CallMatch, name: str) -> str | None:
-    text = match.args.get(name)
-    return None if text is None else unquote_string_literal(text)
+    return match.literals.get(name)
 
 
 def _route_from(match: CallMatch) -> Route:

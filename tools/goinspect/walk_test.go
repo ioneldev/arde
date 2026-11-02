@@ -231,3 +231,129 @@ func TestWalkSkipsTestFilesOnTopOfWhatTheGoToolIgnores(t *testing.T) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 }
+
+func TestWalkSkipsADirectoryWithItsOwnGoModAndNeverTheRoot(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"go.mod":          "module example.com/m\n",
+		"keep.go":         emptyPackage,
+		"sub/ok.go":       emptyPackage,
+		"tools/go.mod":    "module example.com/tools\n",
+		"tools/x.go":      emptyPackage,
+		"tools/deep/y.go": emptyPackage,
+	})
+
+	for name, policy := range map[string]walkPolicy{
+		"declarations": skipWhatTheGoToolIgnores,
+		"match":        skipTestsAndWhatTheGoToolIgnores,
+	} {
+		got, err := listGoFiles(root, policy)
+
+		assertNoError(t, err)
+		if want := []string{"keep.go", "sub/ok.go"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestWalkKeepsAnEmptyGoModDirectoryNamedGoModWhichIsNotAModule(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"keep.go":         emptyPackage,
+		"odd/go.mod/z.go": emptyPackage,
+	})
+
+	got, err := listGoFiles(root, skipWhatTheGoToolIgnores)
+
+	assertNoError(t, err)
+	if want := []string{"keep.go", "odd/go.mod/z.go"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestWalkKeepsNestedModulesWhenOnlyGitIsSkipped(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"keep.go":      emptyPackage,
+		"tools/go.mod": "module example.com/tools\n",
+		"tools/x.go":   emptyPackage,
+	})
+
+	got, err := listGoFiles(root, skipOnlyGit)
+
+	assertNoError(t, err)
+	if want := []string{"keep.go", "tools/x.go"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("a compare must not miss a file in a nested module: got %v, want %v", got, want)
+	}
+}
+
+// A file whose build constraint is false whatever the other tags are can never be built unless
+// someone passes -tags ignore. Everything else may be built on some machine, so it stays.
+var filesByBuildConstraint = map[string]struct {
+	content string
+	skipped bool
+}{
+	"go:build ignore":                {"//go:build ignore\n\npackage main\n", true},
+	"go:build ignore, no blank line": {"//go:build ignore\npackage main\n", true},
+	"+build ignore":                  {"// +build ignore\n\npackage main\n", true},
+	"+build ignore with a note":      {"// +build ignore\n// a note\n\npackage main\n", true},
+	"ignore and linux":               {"//go:build ignore && linux\n\npackage main\n", true},
+	"ignore after a doc comment":     {"// Command gen makes tables.\n//\n//go:build ignore\n\npackage main\n", true},
+	"byte order mark first":          {"\ufeff//go:build ignore\n\npackage main\n", true},
+	"CRLF line endings":              {"//go:build ignore\r\n\r\npackage main\r\n", true},
+	"two +build lines, one false":    {"// +build linux\n// +build ignore\n\npackage main\n", true},
+	"go:build wins over +build":      {"//go:build linux\n// +build ignore\n\npackage main\n", false},
+	"+build without a blank line":    {"// +build ignore\npackage main\n", false},
+	"after the package clause":       {"package main\n\n//go:build ignore\n", false},
+	"after a block comment":          {"/* licence */\n//go:build ignore\n\npackage main\n", false},
+	"not ignore":                     {"//go:build !ignore\n\npackage main\n", false},
+	"ignore or linux":                {"//go:build linux || ignore\n\npackage main\n", false},
+	"a platform":                     {"//go:build windows\n\npackage main\n", false},
+	"a custom tag":                   {"//go:build e2e\n\npackage main\n", false},
+	"no constraint":                  {"package main\n", false},
+	"a constraint that is malformed": {"//go:build (ignore\n\npackage main\n", false},
+}
+
+func TestWalkSkipsFilesThatAreBuiltOnlyWithTheIgnoreTag(t *testing.T) {
+	for name, scenario := range filesByBuildConstraint {
+		root := writeTree(t, map[string]string{"gen.go": scenario.content, "keep.go": emptyPackage})
+
+		got, err := listGoFiles(root, skipWhatTheGoToolIgnores)
+
+		assertNoError(t, err)
+		want := []string{"gen.go", "keep.go"}
+		if scenario.skipped {
+			want = []string{"keep.go"}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestWalkKeepsPerPlatformFilesAndCustomTagsWhateverTheMachine(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"only_windows.go": emptyPackage,
+		"only_plan9.go":   emptyPackage,
+		"tagged.go":       "//go:build integration\n\npackage p\n",
+	})
+
+	got, err := listGoFiles(root, skipWhatTheGoToolIgnores)
+
+	assertNoError(t, err)
+	want := []string{"only_plan9.go", "only_windows.go", "tagged.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestWalkKeepsIgnoreTaggedFilesWhenOnlyGitIsSkipped(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"gen.go":  "//go:build ignore\n\npackage main\n",
+		"keep.go": emptyPackage,
+	})
+
+	got, err := listGoFiles(root, skipOnlyGit)
+
+	assertNoError(t, err)
+	if want := []string{"gen.go", "keep.go"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("a compare must not miss a changed generator: got %v, want %v", got, want)
+	}
+}

@@ -66,7 +66,7 @@ What exists today:
 - `src/arde/adapters/tracer.py`: writes `trace.jsonl` and `debug.log`.
 - `src/arde/adapters/models_file.py`: reads the model settings per role.
 - `tests/fixtures/shop/`: a small `net/http` service that the adapter tests treat as a real repo. It shares no names or layout with any repo ARDE was built against.
-- `tools/goinspect/`: the Go helper. `compare` lists the Go files that changed, ignoring comments, formatting, line endings and the two struct tags ARDE adds. `declarations` hashes every top-level declaration and lists struct fields. `match` applies the profile's call patterns to every non-test Go file and prints each call that matches. `fingerprints` hashes everything a route's handler reaches by static calls, closures included, so a later run knows which routes changed.
+- `tools/goinspect/`: the Go helper. `compare` lists the Go files that changed, ignoring comments, formatting, line endings and the two struct tags ARDE adds. `declarations` hashes every top-level declaration and lists struct fields. `match` applies the profile's call patterns to every non-test Go file and prints each call that matches, with the value of each argument that is a string literal. Both skip what the Go tool never builds, such as a folder with its own `go.mod` or a file that only `-tags ignore` builds. `fingerprints` hashes everything a route's handler reaches by static calls, closures included, so a later run knows which routes changed.
 
 Imports go inward. These rules are enforced by `tests/test_architecture.py`:
 

@@ -8,7 +8,6 @@ from arde.adapters.language.go.inventory_builder import (
     RouteNotUnderstoodError,
     SourceReading,
     build_inventory,
-    unquote_string_literal,
 )
 from arde.domain.errors import ArdeError
 from arde.domain.inventory import (
@@ -22,11 +21,23 @@ from arde.domain.inventory import (
 from arde.domain.report import ExitCode
 
 
+class Lit(str):
+    """An argument that is one string literal: the str is its value, which the helper reports."""
+
+
 def call(kind: str, callee: str, *, line: int = 1, **args: str) -> CallMatch:
-    return CallMatch(kind=kind, call=callee, file="main.go", line=line, args=args)
+    texts = {
+        name: f'"{value}"' if isinstance(value, Lit) else value for name, value in args.items()
+    }
+    literals = {name: str(value) for name, value in args.items() if isinstance(value, Lit)}
+    return CallMatch(
+        kind=kind, call=callee, file="main.go", line=line, args=texts, literals=literals
+    )
 
 
-def registering(path: str, handler: str = "s.show", *, callee: str = "app.handle") -> CallMatch:
+def registering(
+    path: str | Lit, handler: str = "s.show", *, callee: str = "app.handle"
+) -> CallMatch:
     return call("route", callee, path=path, handler=handler)
 
 
@@ -62,23 +73,23 @@ def routes_of(*matches: CallMatch) -> tuple[Route, ...]:
 
 
 def with_one_route(*matches: CallMatch) -> Inventory:
-    return inventory_of(registering('"GET /ping"'), *matches)
+    return inventory_of(registering(Lit("GET /ping")), *matches)
 
 
 def test_the_method_and_path_are_parsed_from_a_stdlib_pattern() -> None:
-    assert routes_of(registering('"GET /{$}"')) == (
+    assert routes_of(registering(Lit("GET /{$}"))) == (
         Route(method="GET", path="/", handler="s.show"),
     )
 
 
 def test_a_path_wildcard_is_kept() -> None:
-    [route] = routes_of(registering('"GET /products/{id}"'))
+    [route] = routes_of(registering(Lit("GET /products/{id}")))
 
     assert (route.method, route.path) == ("GET", "/products/{id}")
 
 
 def test_a_trailing_slash_pattern_keeps_its_slash() -> None:
-    [route] = routes_of(registering('"GET /files/{$}"'))
+    [route] = routes_of(registering(Lit("GET /files/{$}")))
 
     assert route.path == "/files/"
 
@@ -97,34 +108,22 @@ def test_a_trailing_slash_pattern_keeps_its_slash() -> None:
     ],
 )
 def test_a_path_with_no_method_takes_it_from_the_end_of_the_call(callee: str, method: str) -> None:
-    [route] = routes_of(registering('"/items"', callee=callee))
+    [route] = routes_of(registering(Lit("/items"), callee=callee))
 
     assert (route.method, route.path) == (method, "/items")
 
 
 @pytest.mark.parametrize("callee", ["mux.HandleFunc", "r.Handle", "r.Any", "route", "r.GetAll"])
 def test_a_path_with_no_method_and_no_verb_in_the_call_is_any(callee: str) -> None:
-    [route] = routes_of(registering('"/items"', callee=callee))
+    [route] = routes_of(registering(Lit("/items"), callee=callee))
 
     assert route.method == "ANY"
 
 
 def test_the_method_in_the_path_wins_over_the_verb_in_the_call() -> None:
-    [route] = routes_of(registering('"GET /items"', callee="r.POST"))
+    [route] = routes_of(registering(Lit("GET /items"), callee="r.POST"))
 
     assert route.method == "GET"
-
-
-def test_a_raw_string_path_is_read() -> None:
-    [route] = routes_of(registering("`GET /raw/{id}`"))
-
-    assert (route.method, route.path) == ("GET", "/raw/{id}")
-
-
-def test_an_escape_in_a_quoted_path_is_decoded() -> None:
-    [route] = routes_of(registering('"GET /\\u0041"'))
-
-    assert route.path == "/A"
 
 
 @pytest.mark.parametrize(
@@ -156,7 +155,8 @@ def test_a_route_call_with_no_path_argument_stops_the_run() -> None:
 
 
 @pytest.mark.parametrize(
-    "path", ['"GET items"', '"get /items"', '"GET example.com/items"', '"items"', '""']
+    "path",
+    [Lit("GET items"), Lit("get /items"), Lit("GET example.com/items"), Lit("items"), Lit("")],
 )
 def test_a_path_that_does_not_start_with_a_slash_stops_the_run(path: str) -> None:
     with pytest.raises(RouteNotUnderstoodError, match="start with"):
@@ -165,7 +165,7 @@ def test_a_path_that_does_not_start_with_a_slash_stops_the_run(path: str) -> Non
 
 @pytest.mark.parametrize("handler", ["s.show", "show", "handlers.Show", "pkg.Type.Method", "_x1"])
 def test_a_plain_handler_name_is_kept(handler: str) -> None:
-    [route] = routes_of(registering('"GET /x"', handler))
+    [route] = routes_of(registering(Lit("GET /x"), handler))
 
     assert route.handler == handler
 
@@ -184,23 +184,23 @@ def test_a_plain_handler_name_is_kept(handler: str) -> None:
     ],
 )
 def test_a_handler_that_is_not_a_plain_name_is_inline(handler: str) -> None:
-    [route] = routes_of(registering('"GET /x"', handler))
+    [route] = routes_of(registering(Lit("GET /x"), handler))
 
     assert route.handler == INLINE_HANDLER
 
 
 def test_a_route_call_with_no_handler_argument_is_inline() -> None:
-    [route] = routes_of(call("route", "app.handle", path='"GET /x"'))
+    [route] = routes_of(call("route", "app.handle", path=Lit("GET /x")))
 
     assert route.handler == INLINE_HANDLER
 
 
 def test_the_same_route_registered_twice_is_listed_once_and_routes_are_sorted() -> None:
     found = routes_of(
-        registering('"POST /b"'),
-        registering('"GET /b"'),
-        registering('"GET /a"'),
-        registering('"GET /b"'),
+        registering(Lit("POST /b")),
+        registering(Lit("GET /b")),
+        registering(Lit("GET /a")),
+        registering(Lit("GET /b")),
     )
 
     assert [(route.path, route.method) for route in found] == [
@@ -212,7 +212,7 @@ def test_the_same_route_registered_twice_is_listed_once_and_routes_are_sorted() 
 
 def test_no_route_at_all_stops_the_run_and_asks_for_a_pattern() -> None:
     with pytest.raises(NoRoutesError) as stopped:
-        inventory_of(call("param", "q.Get", name='"x"'))
+        inventory_of(call("param", "q.Get", name=Lit("x")))
 
     assert isinstance(stopped.value, ArdeError)
     assert stopped.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
@@ -226,9 +226,9 @@ def test_a_reading_with_nothing_in_it_has_no_routes() -> None:
 
 def test_params_are_the_literal_names_without_duplicates_in_order() -> None:
     inventory = with_one_route(
-        call("param", "q.Get", name='"qty"'),
-        call("param", "q.Get", name="`currency`"),
-        call("param", "q.Get", name='"qty"'),
+        call("param", "q.Get", name=Lit("qty")),
+        call("param", "q.Get", name=Lit("currency")),
+        call("param", "q.Get", name=Lit("qty")),
     )
 
     assert inventory.params == (Param(name="currency"), Param(name="qty"))
@@ -246,9 +246,9 @@ def test_a_param_whose_name_is_not_a_literal_is_left_out() -> None:
 
 def test_error_codes_keep_the_status_as_written() -> None:
     inventory = with_one_route(
-        call("error", "refuse", code='"bad_qty"', status="http.StatusBadRequest"),
-        call("error", "refuse", code='"gone"', status="410"),
-        call("error", "refuse", code='"odd"', status="statusFor(err)"),
+        call("error", "refuse", code=Lit("bad_qty"), status="http.StatusBadRequest"),
+        call("error", "refuse", code=Lit("gone"), status="410"),
+        call("error", "refuse", code=Lit("odd"), status="statusFor(err)"),
     )
 
     assert inventory.error_codes == (
@@ -260,9 +260,9 @@ def test_error_codes_keep_the_status_as_written() -> None:
 
 def test_one_code_raised_in_many_places_is_listed_once_and_with_each_status() -> None:
     inventory = with_one_route(
-        call("error", "refuse", code='"bad"', status="400"),
-        call("error", "refuse", code='"bad"', status="400"),
-        call("error", "refuse", code='"bad"', status="422"),
+        call("error", "refuse", code=Lit("bad"), status="400"),
+        call("error", "refuse", code=Lit("bad"), status="400"),
+        call("error", "refuse", code=Lit("bad"), status="422"),
     )
 
     assert inventory.error_codes == (
@@ -275,7 +275,7 @@ def test_an_error_whose_code_or_status_cannot_be_read_is_left_out() -> None:
     inventory = with_one_route(
         call("error", "refuse", code="problem.Code", status="400"),
         call("error", "refuse", status="400"),
-        call("error", "refuse", code='"no_status"'),
+        call("error", "refuse", code=Lit("no_status")),
     )
 
     assert inventory.error_codes == ()
@@ -283,9 +283,9 @@ def test_an_error_whose_code_or_status_cannot_be_read_is_left_out() -> None:
 
 def test_env_vars_are_the_literal_names_sorted_and_listed_once() -> None:
     inventory = with_one_route(
-        call("env", "os.Getenv", name='"B_VAR"'),
-        call("env", "setting", name='"A_VAR"'),
-        call("env", "os.Getenv", name='"B_VAR"'),
+        call("env", "os.Getenv", name=Lit("B_VAR")),
+        call("env", "setting", name=Lit("A_VAR")),
+        call("env", "os.Getenv", name=Lit("B_VAR")),
     )
 
     assert inventory.env_vars == ("A_VAR", "B_VAR")
@@ -298,7 +298,7 @@ def test_an_env_var_read_through_a_name_in_a_variable_is_left_out() -> None:
 
 
 def test_make_targets_pass_through() -> None:
-    inventory = inventory_of(registering('"GET /x"'), make_targets=("serve", "unit"))
+    inventory = inventory_of(registering(Lit("GET /x")), make_targets=("serve", "unit"))
 
     assert inventory.make_targets == ("serve", "unit")
 
@@ -308,7 +308,7 @@ def fields_of(*fields: FieldReply) -> tuple[ResponseField, ...]:
 
 
 def with_one_route_and(fields: tuple[FieldReply, ...]) -> Inventory:
-    return inventory_of(registering('"GET /ping"'), fields=fields)
+    return inventory_of(registering(Lit("GET /ping")), fields=fields)
 
 
 def test_a_tagged_field_keeps_the_go_name_the_json_name_and_the_declared_type() -> None:
@@ -425,25 +425,3 @@ def test_fields_are_sorted_by_struct_then_name_and_listed_once() -> None:
         ("Quote", "Id"),
         ("Quote", "Total"),
     ]
-
-
-@pytest.mark.parametrize(
-    ("text", "value"),
-    [
-        ('"abc"', "abc"),
-        ("`abc`", "abc"),
-        ('""', ""),
-        ('"a\\tb"', "a\tb"),
-        ('"\\u00e9"', "\u00e9"),
-        ("`a\\tb`", "a\\tb"),
-    ],
-)
-def test_a_go_string_literal_is_unquoted(text: str, value: str) -> None:
-    assert unquote_string_literal(text) == value
-
-
-@pytest.mark.parametrize(
-    "text", ["abc", '"a" + "b"', '"a" "b"', '"abc', "'a'", "name", 'f("a")', "", '"\\z"', "1"]
-)
-def test_text_that_is_not_one_string_literal_is_not_unquoted(text: str) -> None:
-    assert unquote_string_literal(text) is None

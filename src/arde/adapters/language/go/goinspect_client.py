@@ -59,7 +59,10 @@ class CallMatch(Frozen):
     call: str
     file: str
     line: int
+    # The text of each argument as written.
     args: dict[str, str]
+    # The value of each argument that is one string literal, decoded by the Go compiler's own rules.
+    literals: dict[str, str]
 
 
 class MatchReply(Frozen):

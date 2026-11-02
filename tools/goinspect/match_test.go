@@ -441,3 +441,111 @@ func TestMatchReportsAChainedCallAtTheLineOfItsOwnParenthesis(t *testing.T) {
 		t.Fatalf("lines %v, want [4 5 6]", lines)
 	}
 }
+
+// literalsOf returns the literals object of each match, as the helper printed it.
+func literalsOf(t *testing.T, source, patterns string) []map[string]string {
+	t.Helper()
+	root := writeTree(t, map[string]string{"main.go": source})
+	patternsFile := writeTree(t, map[string]string{"patterns.json": patterns}) + "/patterns.json"
+
+	exitCode, stdout, stderr := runCommand(t, "match", "--patterns", patternsFile, root)
+
+	if exitCode != 0 || stderr != "" {
+		t.Fatalf("exit %d, stderr %q", exitCode, stderr)
+	}
+	var report struct {
+		Matches []struct {
+			Literals map[string]string `json:"literals"`
+		} `json:"matches"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("stdout is not the match report: %v\n%s", err, stdout)
+	}
+	found := []map[string]string{}
+	for _, match := range report.Matches {
+		found = append(found, match.Literals)
+	}
+	return found
+}
+
+const oneArgumentPattern = `[{"kind":"param","call":"^pick$","args":{"name":0}}]`
+
+func TestMatchReportsTheValueOfEachArgumentThatIsAStringLiteral(t *testing.T) {
+	got := literalsOf(t, stdlibStyleService, stdlibPatterns)
+
+	want := []map[string]string{
+		{"path": "GET /widgets/{id}"},
+		{"name": "id"},
+		{"code": "missing_id"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestMatchDecodesEscapesTheWayTheCompilerDoes(t *testing.T) {
+	source := "package main\n\nfunc f() {\n" +
+		"\tpick(\"/caf\\xc3\\xa9\")\n" +
+		"\tpick(\"tab\\there\")\n" +
+		"\tpick(\"\\u00e9\")\n" +
+		"\tpick(`raw\\n`)\n" +
+		"\tpick(\"\")\n" +
+		"}\n"
+
+	got := literalsOf(t, source, oneArgumentPattern)
+
+	want := []map[string]string{
+		{"name": "/caf\u00e9"},
+		{"name": "tab\there"},
+		{"name": "\u00e9"},
+		{"name": `raw\n`},
+		{"name": ""},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestMatchLeavesOutAnArgumentThatIsNotOneStringLiteral(t *testing.T) {
+	source := "package main\n\nfunc f(name string) {\n" +
+		"\tpick(name)\n" +
+		"\tpick(\"a\" + name)\n" +
+		"\tpick('x')\n" +
+		"\tpick(400)\n" +
+		"\tpick(fmt.Sprintf(\"%s\", name))\n" +
+		"\tpick((\"in parentheses\"))\n" +
+		"\tpick(prefix + \"suffix\")\n" +
+		"}\n"
+
+	got := literalsOf(t, source, oneArgumentPattern)
+
+	if len(got) != 7 {
+		t.Fatalf("want the 7 matches, got %d", len(got))
+	}
+	for index, literals := range got {
+		if len(literals) != 0 {
+			t.Errorf("match %d: want no literal, got %v", index, literals)
+		}
+	}
+}
+
+func TestMatchLiteralsAreAnEmptyObjectAndNeverNull(t *testing.T) {
+	root := writeTree(t, map[string]string{"main.go": "package main\n\nfunc f(n string) {\n\tpick(n)\n}\n"})
+	patternsFile := writeTree(t, map[string]string{"patterns.json": oneArgumentPattern}) + "/patterns.json"
+
+	_, stdout, _ := runCommand(t, "match", "--patterns", patternsFile, root)
+
+	if !strings.Contains(stdout, `"literals":{}`) {
+		t.Fatalf("want an empty literals object in %s", stdout)
+	}
+}
+
+func TestMatchLiteralsLeaveOutAPositionPastTheLastArgument(t *testing.T) {
+	patterns := `[{"kind":"error","call":"^fail$","args":{"status":1,"code":2}}]`
+
+	got := literalsOf(t, "package main\n\nfunc f() {\n\tfail(w, 400)\n}\n", patterns)
+
+	if want := []map[string]string{{}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}

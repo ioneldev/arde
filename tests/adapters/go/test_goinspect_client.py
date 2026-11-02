@@ -116,20 +116,38 @@ def test_declarations_are_read_with_their_fields(stand_in: StandIn, folder: Path
 def test_matches_hand_the_patterns_over_as_a_file(stand_in: StandIn, folder: Path) -> None:
     stand_in.replies_with(
         '{"matches": [{"kind": "env", "call": "os.Getenv", "file": "m.go", "line": 4,'
-        ' "args": {"name": "\\"PORT\\""}}]}'
+        ' "args": {"name": "\\"PORT\\""}, "literals": {"name": "PORT"}}]}'
     )
     pattern = ExtractionPattern(kind="env", call=r"^os\.Getenv$", args={"name": 0})
 
     reply = GoinspectClient(stand_in.binary).matches(folder, [pattern])
 
     assert reply.matches == (
-        CallMatch(kind="env", call="os.Getenv", file="m.go", line=4, args={"name": '"PORT"'}),
+        CallMatch(
+            kind="env",
+            call="os.Getenv",
+            file="m.go",
+            line=4,
+            args={"name": '"PORT"'},
+            literals={"name": "PORT"},
+        ),
     )
     assert stand_in.patterns_it_was_given == [
         {"kind": "env", "call": r"^os\.Getenv$", "args": {"name": 0}}
     ]
     assert stand_in.arguments[:2] == ["match", "--patterns"]
     assert stand_in.arguments[3] == str(folder)
+
+
+def test_a_match_reply_with_no_literals_object_is_refused(stand_in: StandIn, folder: Path) -> None:
+    stand_in.replies_with(
+        '{"matches": [{"kind": "env", "call": "os.Getenv", "file": "m.go", "line": 4,'
+        ' "args": {"name": "name"}}]}'
+    )
+    pattern = ExtractionPattern(kind="env", call=r"^os\.Getenv$", args={"name": 0})
+
+    with pytest.raises(GoinspectError, match="literals"):
+        GoinspectClient(stand_in.binary).matches(folder, [pattern])
 
 
 def test_fingerprints_pass_the_roots_as_one_comma_separated_list(

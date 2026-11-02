@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"go/ast"
 	"go/printer"
+	"go/token"
 	"go/types"
 	"io"
 	"maps"
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"unicode/utf8"
 )
 
@@ -39,6 +41,9 @@ type callMatch struct {
 	File string            `json:"file"`
 	Line int               `json:"line"`
 	Args map[string]string `json:"args"`
+	// Literals holds the value of each argument that is one string literal, decoded as the
+	// compiler decodes it. An argument that is anything else is in Args only.
+	Literals map[string]string `json:"literals"`
 }
 
 type matchReport struct {
@@ -187,8 +192,9 @@ func (matcher fileMatcher) matchesOf(call *ast.CallExpr) []callMatch {
 				Call: callee,
 				File: matcher.path,
 				// The call's own parenthesis, because a chained call starts on the line of the chain.
-				Line: matcher.source.lineOf(call.Lparen),
-				Args: matcher.source.argumentTexts(call, pattern.argumentPositions),
+				Line:     matcher.source.lineOf(call.Lparen),
+				Args:     matcher.source.argumentTexts(call, pattern.argumentPositions),
+				Literals: literalValues(call, pattern.argumentPositions),
 			})
 		}
 	}
@@ -205,6 +211,26 @@ func (source *parsedSource) argumentTexts(call *ast.CallExpr, positions map[stri
 		}
 	}
 	return texts
+}
+
+// literalValues leaves out a name whose argument is not one string literal: a name, a sum, a
+// call and a parenthesised literal all have no value to read without evaluating code.
+func literalValues(call *ast.CallExpr, positions map[string]int) map[string]string {
+	values := map[string]string{}
+	for name, position := range positions {
+		if position >= len(call.Args) {
+			continue
+		}
+		literal, isLiteral := call.Args[position].(*ast.BasicLit)
+		if !isLiteral || literal.Kind != token.STRING {
+			continue
+		}
+		// The scanner has already accepted the literal, so Unquote is not expected to fail.
+		if value, err := strconv.Unquote(literal.Value); err == nil {
+			values[name] = value
+		}
+	}
+	return values
 }
 
 func (source *parsedSource) textOf(expression ast.Expr) string {
