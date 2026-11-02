@@ -63,9 +63,11 @@ def _shown_command(command: ChildCommand) -> str:
 
 
 class ChildTimeoutError(ArdeError):
-    def __init__(self, command: ChildCommand) -> None:
+    def __init__(self, command: ChildCommand, *, output_tail: str) -> None:
+        printed = f"\nThe end of what it printed:\n{output_tail}" if output_tail else ""
         super().__init__(
-            f"`{_shown_command(command)}` ran longer than {command.timeout_s:g} s and was stopped.",
+            f"`{_shown_command(command)}` ran longer than {command.timeout_s:g} s and was stopped."
+            f"{printed}",
             next_action=(
                 f"Run it by hand in {command.cwd} to see where it hangs, fix that, and run again."
             ),
@@ -101,7 +103,8 @@ class ChildStartError(ArdeError):
 def run_child(command: ChildCommand) -> ChildOutcome:
     with tempfile.TemporaryFile() as stdout_file, tempfile.TemporaryFile() as stderr_file:
         process = _start(command, stdout_file=stdout_file, stderr_file=stderr_file)
-        _wait_for_exit(process, command)
+        if not _exited_in_time(process, command):
+            raise ChildTimeoutError(command, output_tail=_end_of_both(stdout_file, stderr_file))
         # What the child started in its group is not left running after it, such as a server.
         signal_group(process, signal.SIGKILL)
         stdout, stdout_was_cut = _read_back(stdout_file, command, stream="stdout")
@@ -139,16 +142,29 @@ def describe_os_error(error: OSError) -> str:
     return f"{reason}: {error.filename}" if error.filename else reason
 
 
-def _wait_for_exit(process: subprocess.Popen[bytes], command: ChildCommand) -> None:
+def _exited_in_time(process: subprocess.Popen[bytes], command: ChildCommand) -> bool:
     try:
         process.wait(timeout=command.timeout_s)
     except subprocess.TimeoutExpired:
         force_stop(process)
-        raise ChildTimeoutError(command) from None
+        return False
     except BaseException:
         # Ctrl-C reaches us and not the child, which runs in its own session.
         force_stop(process)
         raise
+    return True
+
+
+# What a hung child printed last is often the one clue to what it was waiting for.
+def _end_of_both(stdout_file: IO[bytes], stderr_file: IO[bytes]) -> str:
+    output = read_tail(stdout_file, MESSAGE_TAIL_BYTES) + read_tail(stderr_file, MESSAGE_TAIL_BYTES)
+    return bounded_text(output.strip(), MESSAGE_TAIL_BYTES)
+
+
+def read_tail(file: IO[bytes], max_bytes: int) -> str:
+    size = file.seek(0, os.SEEK_END)
+    file.seek(max(size - max_bytes, 0))
+    return file.read().decode("utf-8", errors="replace")
 
 
 # A grandchild that started its own session is out of reach of the group, and the wait is bounded

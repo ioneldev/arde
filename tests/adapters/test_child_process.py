@@ -172,6 +172,68 @@ def test_a_child_past_its_timeout_is_stopped_and_the_error_names_the_next_action
     assert str(tmp_path) in stopped.value.next_action
 
 
+# Flushed, because a child that is killed never empties its buffers. The text is worked out as it
+# runs, because the message quotes the command, and with it the code that python -c was given.
+PRINTS_THEN_HANGS = """
+import sys, time
+print("stdout-clue-" + str(6 * 7), flush=True)
+print("stderr-clue-" + str(6 * 8), file=sys.stderr, flush=True)
+time.sleep(60)
+"""
+
+
+def test_a_timeout_keeps_the_end_of_what_the_child_printed_on_both_streams(
+    tmp_path: Path,
+) -> None:
+    command = python_command(PRINTS_THEN_HANGS, cwd=tmp_path, timeout_s=1)
+
+    with pytest.raises(ChildTimeoutError) as stopped:
+        run_child(command)
+
+    assert "stdout-clue-42" in str(stopped.value)
+    assert "stderr-clue-48" in str(stopped.value)
+
+
+def test_a_child_that_printed_nothing_times_out_with_a_message_that_stops_at_the_timeout(
+    tmp_path: Path,
+) -> None:
+    command = python_command("import time; time.sleep(60)", cwd=tmp_path, timeout_s=0.5)
+
+    with pytest.raises(ChildTimeoutError) as stopped:
+        run_child(command)
+
+    assert str(stopped.value).endswith("and was stopped.")
+
+
+def test_the_output_in_a_timeout_is_short_and_shows_no_control_character(tmp_path: Path) -> None:
+    code = (
+        "import sys, time\n"
+        "print('\\x1b[2J' + 'x' * 100_000, flush=True)\n"
+        "print('\\x1b]0;last-' + str(6 * 7), flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    command = python_command(code, cwd=tmp_path, timeout_s=1)
+
+    with pytest.raises(ChildTimeoutError) as stopped:
+        run_child(command)
+
+    message = str(stopped.value)
+    assert "last-42" in message
+    assert "\x1b" not in message
+    assert len(message.encode()) <= 2 * MESSAGE_TAIL_BYTES
+
+
+def test_a_timeout_does_not_read_the_whole_of_what_the_child_printed(tmp_path: Path) -> None:
+    code = "import time\nprint('y' * 5_000_000, flush=True)\ntime.sleep(60)\n"
+    command = python_command(code, cwd=tmp_path, timeout_s=2)
+
+    with pytest.raises(ChildTimeoutError) as stopped:
+        run_child(command)
+
+    assert "yyy" in str(stopped.value)
+    assert len(str(stopped.value).encode()) <= 2 * MESSAGE_TAIL_BYTES
+
+
 GRANDCHILD_THAT_KEEPS_THE_OUTPUT_OPEN = """
 import subprocess, sys, time
 grandchild = subprocess.Popen(

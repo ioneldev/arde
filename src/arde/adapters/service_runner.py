@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from arde.adapters.child_env import ALLOWED_VARIABLES, child_environment
-from arde.adapters.child_process import describe_os_error, force_stop, signal_group
+from arde.adapters.child_process import describe_os_error, force_stop, read_tail, signal_group
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text
 from arde.application.ports import (
     ServiceConfig,
@@ -230,9 +230,7 @@ def _died_while_in_use(started: _Started, *, exit_code: int) -> ServiceDiedError
 def _log_tail(log: Path) -> str:
     try:
         with log.open("rb") as file:
-            size = file.seek(0, os.SEEK_END)
-            file.seek(max(size - MESSAGE_TAIL_BYTES, 0))
-            tail = file.read().decode("utf-8", errors="replace").strip()
+            tail = read_tail(file, MESSAGE_TAIL_BYTES).strip()
     except OSError as error:
         return f"{log} could not be read: {describe_os_error(error)}."
     if not tail:

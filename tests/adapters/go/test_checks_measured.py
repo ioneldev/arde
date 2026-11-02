@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from shop_support import shop_profile
 
+from arde.adapters.child_process import ChildTimeoutError
 from arde.adapters.language.go import toolchain
 from arde.adapters.language.go.adapter import GoAdapter
 
@@ -144,6 +145,24 @@ def test_a_test_that_hangs_is_a_red_result_that_names_it(
     assert "test timed out after 1s" in result.output
     assert "TestWaitsForever" in result.output
     assert "waiting for the broker at queue:5672" in result.output
+
+
+def test_a_hang_past_ardes_clock_stops_the_run_with_what_go_had_printed(
+    adapter: GoAdapter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(toolchain, "GO_TEST_TIMEOUT_S", 6)
+    source = (
+        'package main\n\nimport (\n\t"fmt"\n\t"testing"\n\t"time"\n)\n\n'
+        "func TestWaitsForever(t *testing.T) {\n"
+        '\tfmt.Println("waiting for the broker at queue:5672")\n'
+        "\ttime.Sleep(time.Hour)\n}\n"
+    )
+    repo = repo_of(tmp_path, {"main_test.go": source})
+
+    with pytest.raises(ChildTimeoutError) as stopped:
+        adapter.run_checks(repo, shop_profile())
+
+    assert "waiting for the broker at queue:5672" in str(stopped.value)
 
 
 def test_benchmarks_are_listed_and_do_not_run(adapter: GoAdapter, tmp_path: Path) -> None:
