@@ -14,7 +14,6 @@ import tempfile
 from pathlib import Path
 from typing import IO, Literal
 
-from arde.adapters.child_env import child_environment
 from arde.domain.base import Frozen
 from arde.domain.errors import ArdeError
 from arde.domain.report import ExitCode
@@ -37,6 +36,9 @@ class ChildCommand(Frozen):
     cwd: Path
     timeout_s: float
     output: OutputLimit
+    # The whole environment of the child. The caller builds it, from child_environment() or from a
+    # list of its own, because what a child may see depends on what it is.
+    env: dict[str, str]
 
 
 class ChildOutcome(Frozen):
@@ -112,7 +114,7 @@ def _start(
         return subprocess.Popen(
             command.argv,
             cwd=command.cwd,
-            env=child_environment(),
+            env=command.env,
             stdin=subprocess.DEVNULL,
             stdout=stdout_file,
             stderr=stderr_file,

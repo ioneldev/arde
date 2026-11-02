@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from arde.adapters import child_process
+from arde.adapters.child_env import child_environment
 from arde.adapters.child_process import (
     ChildCommand,
     ChildOutputTooLongError,
@@ -30,7 +31,11 @@ def python_command(
     code: str, *, cwd: Path, timeout_s: float = 20, output: OutputLimit = ROOMY
 ) -> ChildCommand:
     return ChildCommand(
-        argv=(sys.executable, "-c", code), cwd=cwd, timeout_s=timeout_s, output=output
+        argv=(sys.executable, "-c", code),
+        cwd=cwd,
+        timeout_s=timeout_s,
+        output=output,
+        env=child_environment(),
     )
 
 
@@ -52,6 +57,20 @@ def test_a_child_runs_in_the_folder_it_is_given(tmp_path: Path) -> None:
     outcome = run_child(python_command("import os; print(os.getcwd())", cwd=tmp_path))
 
     assert Path(outcome.stdout.strip()).resolve() == tmp_path.resolve()
+
+
+def test_a_child_gets_the_environment_it_is_given_and_nothing_else(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("SOMETHING_ELSE", "x")
+    command = python_command("import json, os; print(json.dumps(dict(os.environ)))", cwd=tmp_path)
+    command = command.model_copy(update={"env": {"ONLY_THIS": "yes"}})
+
+    seen = json.loads(run_child(command).stdout)
+
+    assert seen.get("ONLY_THIS") == "yes"
+    assert "SOMETHING_ELSE" not in seen
+    assert "PATH" not in seen
 
 
 def test_a_child_inherits_no_secret_from_the_parent(
@@ -294,7 +313,11 @@ def test_an_interrupted_wait_stops_the_child_before_the_interrupt_goes_on(
 
 def test_a_command_that_cannot_start_names_the_next_action(tmp_path: Path) -> None:
     command = ChildCommand(
-        argv=("no-such-program-anywhere",), cwd=tmp_path, timeout_s=5, output=ROOMY
+        argv=("no-such-program-anywhere",),
+        cwd=tmp_path,
+        timeout_s=5,
+        output=ROOMY,
+        env=child_environment(),
     )
 
     with pytest.raises(ChildStartError) as refused:
@@ -325,32 +348,3 @@ def test_no_temporary_file_is_left_behind(monkeypatch: pytest.MonkeyPatch, tmp_p
         run_child(python_command("import time; time.sleep(60)", cwd=tmp_path, timeout_s=0.3))
 
     assert list(scratch.iterdir()) == []
-
-
-# The go env file lives under HOME, which a child may keep, and it can hold GOFLAGS with a
-# -toolexec that every build step then runs.
-@pytest.mark.integration
-def test_a_go_env_file_in_home_does_not_reach_a_child(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    home = tmp_path / "home"
-    home.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    for name in ("XDG_CONFIG_HOME", "GOENV", "GOFLAGS"):
-        monkeypatch.delenv(name, raising=False)
-    plain_go = {"HOME": str(home), "PATH": os.environ["PATH"]}
-    env_file = Path(
-        subprocess.run(
-            ["go", "env", "GOENV"], env=plain_go, capture_output=True, text=True, check=True
-        ).stdout.strip()
-    )
-    env_file.parent.mkdir(parents=True, exist_ok=True)
-    env_file.write_text("GOFLAGS=-mod=readonly\n", encoding="utf-8")
-
-    control = subprocess.run(
-        ["go", "env", "GOFLAGS"], env=plain_go, capture_output=True, text=True, check=True
-    )
-    command = ChildCommand(argv=("go", "env", "GOFLAGS"), cwd=tmp_path, timeout_s=60, output=ROOMY)
-
-    assert control.stdout.strip() == "-mod=readonly", "the control must read the file"
-    assert run_child(command).stdout.strip() == ""

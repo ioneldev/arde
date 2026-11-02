@@ -19,10 +19,11 @@ from shop_support import ROUTE_PATTERNS, SHOP, shop_profile
 
 from arde.adapters.child_process import ChildStartError
 from arde.adapters.language.go.adapter import GoAdapter, go_adapter
+from arde.adapters.language.go.errors import GoCommandError
 from arde.adapters.language.go.goinspect_client import GoinspectError
 from arde.adapters.language.go.inventory_builder import NoRoutesError, RouteNotUnderstoodError
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
-from arde.adapters.language.go.toolchain import BadTestCommandError, GoCommandError
+from arde.adapters.language.go.toolchain import BadTestCommandError
 from arde.domain.errors import ArdeError
 from arde.domain.inventory import (
     INLINE_HANDLER,

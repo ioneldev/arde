@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from arde.adapters.child_process import ChildCommand, ChildOutcome, run_child
+from arde.adapters.language.go.go_environment import go_environment
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT, GOINSPECT_REPLY_LIMIT
 from arde.adapters.language.go.timeouts import GO_BUILD_TIMEOUT_S, GOINSPECT_TIMEOUT_S
 from arde.domain.base import Frozen, describe_problems
@@ -92,6 +93,7 @@ def build_goinspect(bin_dir: Path) -> Path:
         cwd=GOINSPECT_SOURCE,
         timeout_s=GO_BUILD_TIMEOUT_S,
         output=CHECK_OUTPUT_LIMIT,
+        env=go_environment(),
     )
     outcome = run_child(command)
     if not outcome.succeeded:
@@ -146,6 +148,7 @@ class GoinspectClient:
             cwd=question.cwd,
             timeout_s=GOINSPECT_TIMEOUT_S,
             output=GOINSPECT_REPLY_LIMIT,
+            env=go_environment(),
         )
         outcome = run_child(command)
         if not outcome.succeeded:

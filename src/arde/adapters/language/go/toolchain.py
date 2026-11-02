@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import NamedTuple
 
 from arde.adapters.child_process import ChildCommand, ChildOutcome, run_child
+from arde.adapters.language.go.errors import GoCommandError
+from arde.adapters.language.go.go_environment import go_environment
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
 from arde.adapters.language.go.timeouts import (
     EXTRA_TEST_COMMAND_TIMEOUT_S,
@@ -33,11 +35,6 @@ _IGNORED_FILES_TEMPLATE = '{{range .IgnoredGoFiles}}{{$.Dir}}/{{.}}{{"\\n"}}{{en
 class GoStep(NamedTuple):
     arguments: tuple[str, ...]
     timeout_s: float
-
-
-class GoCommandError(ArdeError):
-    def __init__(self, message: str, *, next_action: str) -> None:
-        super().__init__(message, next_action=next_action, exit_code=ExitCode.CHECKS_FAILED)
 
 
 class BadTestCommandError(ArdeError):
@@ -202,7 +199,11 @@ def _split_command(command: str) -> tuple[str, ...]:
 
 def _run_extra(repo: Path, words: tuple[str, ...]) -> ChildOutcome:
     extra = ChildCommand(
-        argv=words, cwd=repo, timeout_s=EXTRA_TEST_COMMAND_TIMEOUT_S, output=CHECK_OUTPUT_LIMIT
+        argv=words,
+        cwd=repo,
+        timeout_s=EXTRA_TEST_COMMAND_TIMEOUT_S,
+        output=CHECK_OUTPUT_LIMIT,
+        env=go_environment(),
     )
     return run_child(extra)
 
@@ -213,5 +214,6 @@ def _go(repo: Path, step: GoStep) -> ChildOutcome:
         cwd=repo,
         timeout_s=step.timeout_s,
         output=CHECK_OUTPUT_LIMIT,
+        env=go_environment(),
     )
     return run_child(command)

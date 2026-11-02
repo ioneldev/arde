@@ -1,4 +1,8 @@
-"""What a child process may inherit. An allow-list, because a deny-list forgets the next secret."""
+"""What a child process may inherit. An allow-list, because a deny-list forgets the next secret.
+
+This is the generic list, which a service started for the judge gets too. The toolchain's own
+variables are in the Go adapter, and a service must get none of them.
+"""
 
 import pytest
 
@@ -10,45 +14,49 @@ SECRETS_AND_RISKS = {
     "AWS_SECRET_ACCESS_KEY": "not-a-real-secret",
     "GITHUB_TOKEN": "not-a-real-token",
     "ARDE_HOME": "/somewhere",
-    "GOFLAGS": "-toolexec=/tmp/run-me",
 }
+
+TOOLCHAIN_VARIABLES = (
+    "GOPATH",
+    "GOCACHE",
+    "GOMODCACHE",
+    "GOROOT",
+    "GOPROXY",
+    "GOPRIVATE",
+    "GONOPROXY",
+    "GONOSUMDB",
+    "GOSUMDB",
+    "GOINSECURE",
+    "GOTOOLCHAIN",
+    "GOFLAGS",
+    "GOENV",
+)
 
 
 @pytest.fixture
 def clean_environment(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
-    for name in (*ALLOWED_VARIABLES, *SECRETS_AND_RISKS):
+    for name in (*ALLOWED_VARIABLES, *SECRETS_AND_RISKS, *TOOLCHAIN_VARIABLES):
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
 
 
-def test_the_allow_list_is_exactly_what_the_toolchain_needs() -> None:
-    assert set(ALLOWED_VARIABLES) == {
-        "PATH",
-        "HOME",
-        "TMPDIR",
-        "LANG",
-        "LC_ALL",
-        "GOPATH",
-        "GOCACHE",
-        "GOMODCACHE",
-        "GOROOT",
-        "GOPROXY",
-    }
+def test_the_allow_list_is_only_what_any_program_needs() -> None:
+    assert set(ALLOWED_VARIABLES) == {"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"}
 
 
 def test_a_child_gets_the_allowed_variables_that_are_set(
     clean_environment: pytest.MonkeyPatch,
 ) -> None:
     clean_environment.setenv("PATH", "/usr/bin")
-    clean_environment.setenv("GOPATH", "/work/go")
+    clean_environment.setenv("LANG", "C.UTF-8")
 
-    assert child_environment() == {"PATH": "/usr/bin", "GOPATH": "/work/go", "GOENV": "off"}
+    assert child_environment() == {"PATH": "/usr/bin", "LANG": "C.UTF-8"}
 
 
 def test_a_variable_that_is_not_set_is_not_invented(
     clean_environment: pytest.MonkeyPatch,
 ) -> None:
-    assert child_environment() == {"GOENV": "off"}
+    assert child_environment() == {}
 
 
 @pytest.mark.parametrize("name", SECRETS_AND_RISKS)
@@ -61,24 +69,14 @@ def test_nothing_outside_the_allow_list_reaches_a_child(
     assert name not in child_environment()
 
 
-def test_goflags_stays_out_because_it_can_name_a_program_to_run(
-    clean_environment: pytest.MonkeyPatch,
+@pytest.mark.parametrize("name", TOOLCHAIN_VARIABLES)
+def test_a_service_style_child_gets_no_toolchain_variable(
+    clean_environment: pytest.MonkeyPatch, name: str
 ) -> None:
-    clean_environment.setenv("GOFLAGS", SECRETS_AND_RISKS["GOFLAGS"])
+    for each in TOOLCHAIN_VARIABLES:
+        clean_environment.setenv(each, "set-by-the-test")
 
-    assert "GOFLAGS" not in ALLOWED_VARIABLES
-    assert "GOFLAGS" not in child_environment()
+    environment = child_environment()
 
-
-def test_the_go_env_file_is_switched_off_because_it_can_carry_goflags(
-    clean_environment: pytest.MonkeyPatch,
-) -> None:
-    assert child_environment()["GOENV"] == "off"
-
-
-def test_the_parents_choice_of_env_file_does_not_reach_a_child(
-    clean_environment: pytest.MonkeyPatch,
-) -> None:
-    clean_environment.setenv("GOENV", "/somewhere/with/flags")
-
-    assert child_environment()["GOENV"] == "off"
+    assert name not in environment
+    assert not [variable for variable in environment if variable.startswith("GO")]

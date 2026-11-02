@@ -57,6 +57,15 @@ class StandIn:
         return json.loads(Path(f"{self.binary}.patterns").read_text(encoding="utf-8"))
 
 
+GO_ENVIRONMENT = {"PATH": os.environ["PATH"], "GOPRIVATE": "corp.example/*", "GOENV": "off"}
+
+
+# The real environment is read from the toolchain, which these tests do without.
+@pytest.fixture(autouse=True)
+def a_known_go_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(goinspect_client, "go_environment", lambda: dict(GO_ENVIRONMENT))
+
+
 @pytest.fixture
 def stand_in(tmp_path: Path) -> StandIn:
     folder = tmp_path / "helper"
@@ -336,3 +345,40 @@ def test_a_relative_folder_for_the_helper_is_built_where_the_caller_stands(
 
     assert binary == (tmp_path / "relative-bin" / "goinspect").resolve()
     assert built_at == [str(binary)]
+
+
+class RecordingRun:
+    def __init__(self, stdout: str = '{"declarations": [], "fields": []}') -> None:
+        self.commands: list[ChildCommand] = []
+        self.stdout = stdout
+
+    def __call__(self, command: ChildCommand) -> ChildOutcome:
+        self.commands.append(command)
+        if "-o" in command.argv:
+            Path(command.argv[command.argv.index("-o") + 1]).write_text("binary", encoding="utf-8")
+        return ChildOutcome(exit_code=0, stdout=self.stdout, stderr="")
+
+
+def test_every_call_to_goinspect_runs_with_the_go_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, folder: Path
+) -> None:
+    recording = RecordingRun()
+    monkeypatch.setattr(goinspect_client, "run_child", recording)
+
+    GoinspectClient(tmp_path / "goinspect").declarations(folder)
+
+    [command] = recording.commands
+    assert command.env == GO_ENVIRONMENT
+
+
+def test_the_build_of_goinspect_runs_with_the_go_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    recording = RecordingRun()
+    monkeypatch.setattr(goinspect_client, "run_child", recording)
+    monkeypatch.setattr(goinspect_client, "_built", set())
+
+    build_goinspect(tmp_path / "bin")
+
+    [command] = recording.commands
+    assert command.env == GO_ENVIRONMENT

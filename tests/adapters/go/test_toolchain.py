@@ -7,12 +7,8 @@ from shop_support import shop_profile
 
 from arde.adapters.child_process import ChildCommand, ChildOutcome
 from arde.adapters.language.go import toolchain
-from arde.adapters.language.go.toolchain import (
-    BadTestCommandError,
-    GoCommandError,
-    build_service,
-    run_checks,
-)
+from arde.adapters.language.go.errors import GoCommandError
+from arde.adapters.language.go.toolchain import BadTestCommandError, build_service, run_checks
 
 LISTING = (
     "TestAdd\nTestSubtract\nExampleAdd\n"
@@ -26,9 +22,11 @@ class StandInGo:
     def __init__(self, **answers: ChildOutcome) -> None:
         self.answers = answers
         self.asked: list[tuple[str, ...]] = []
+        self.environments: list[dict[str, str]] = []
 
     def __call__(self, command: ChildCommand) -> ChildOutcome:
         self.asked.append(command.argv)
+        self.environments.append(command.env)
         return self.answers.get(
             self._which(command.argv), ChildOutcome(exit_code=0, stdout="", stderr="")
         )
@@ -46,6 +44,15 @@ class StandInGo:
 
 def outcome(exit_code: int = 0, stdout: str = "", *, cut: bool = False) -> ChildOutcome:
     return ChildOutcome(exit_code=exit_code, stdout=stdout, stderr="", output_was_cut=cut)
+
+
+GO_ENVIRONMENT = {"PATH": "/usr/bin", "GOPRIVATE": "corp.example/*", "GOENV": "off"}
+
+
+# The real environment is read from the toolchain, which these tests do without.
+@pytest.fixture(autouse=True)
+def a_known_go_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(toolchain, "go_environment", lambda: dict(GO_ENVIRONMENT))
 
 
 @pytest.fixture
@@ -186,3 +193,17 @@ def test_an_extra_command_that_is_not_a_command_stops_the_run_before_any_command
         run_checks(repo, profile)
 
     assert go.asked == [], "a typo in the override file must not wait for build, vet and test"
+
+
+def test_every_go_command_and_every_extra_command_runs_with_the_go_environment(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    go = use(monkeypatch, StandInGo(package_name=outcome(stdout="main\n")))
+    (repo / "main.go").write_text("package main\n", encoding="utf-8")
+
+    run_checks(repo, shop_profile(extra_test_commands=("make smoke",)))
+    build_service(repo, shop_profile()).parent.rmdir()
+
+    assert len(go.asked) >= 8
+    assert go.environments == [GO_ENVIRONMENT] * len(go.asked)
+    assert ("make", "smoke") in go.asked
