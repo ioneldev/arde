@@ -1,13 +1,14 @@
 """The interfaces the application needs from the outside world. Adapters implement them."""
 
 from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Literal, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from arde.application.models_config import RoleConfig
-from arde.domain.base import Frozen
+from arde.domain.base import CodeIdentifier, Frozen
 from arde.domain.errors import ArdeError
 from arde.domain.inventory import Inventory, Route
 from arde.domain.profile import RepoProfile
@@ -188,5 +189,50 @@ class LanguageAdapter(Protocol):
         """Builds the service and returns the binary, in a new folder outside the repo.
 
         The caller removes that folder, which is the parent of the path returned.
+        """
+        ...
+
+
+class ServiceConfig(Frozen):
+    """How to start one service and where to look when it will not start."""
+
+    binary: Path
+    # A service that reads a file by a relative path must start in its own repo, so the runner
+    # never falls back on the folder ARDE happens to run in.
+    cwd: Path
+    # It comes from a model, so it is checked before it names an environment variable.
+    port_env: CodeIdentifier
+    log: Path
+    timeout_s: float = Field(default=10, gt=0, allow_inf_nan=False)
+
+
+class ServiceHandle(Frozen):
+    base_url: str
+    port: int
+
+
+# These live with the port, not the adapter, because application code catches them and may not
+# import an adapter.
+class ServiceError(ArdeError):
+    def __init__(self, message: str, *, next_action: str) -> None:
+        super().__init__(message, next_action=next_action, exit_code=ExitCode.CHECKS_FAILED)
+
+
+class ServiceStartError(ServiceError):
+    """The service did not open its port: it exited, it never listened, or it could not be run."""
+
+
+class ServiceStopError(ServiceError):
+    """The service is still running after it was killed, and still holds its port."""
+
+
+class ServiceRunner(Protocol):
+    def running(self, config: ServiceConfig) -> AbstractContextManager[ServiceHandle]:
+        """Starts the service, waits until its port accepts a connection, and hands out its address.
+
+        Raises ServiceStartError before the body runs when the service cannot be started. The
+        service is stopped when the body ends, whether it returns, raises or is interrupted, and
+        a service that cannot be stopped raises ServiceStopError. That error never replaces one
+        already on its way out.
         """
         ...

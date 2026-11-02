@@ -2,7 +2,7 @@
 
 This is the short map. The reasoning and the measurements are in the [design](superpowers/specs/2026-11-01-arde-design.md).
 
-**Status:** Phase 0 is built: the domain models, the agent loop, the Anthropic client, the tracer, the cost cap and the model settings. Phase 1 has started: the Go helper answers four questions and the Go language adapter calls it, but no pipeline calls the adapter and nothing runs a service yet, so read the steps below as intent until later phases land them.
+**Status:** Phase 0 is built: the domain models, the agent loop, the Anthropic client, the tracer, the cost cap and the model settings. Phase 1 has started: the Go helper answers four questions, the Go language adapter calls it, and the service runner starts a built service on a free port and always stops it. No pipeline calls the adapter or the runner yet, so read the steps below as intent until later phases land them.
 
 ## The orchestrator is code
 
@@ -58,11 +58,12 @@ Each layer is a folder under `src/arde/`, created by the task that first needs i
 What exists today:
 
 - `src/arde/application/agent_loop.py`: the one loop every agent runs, plus `record_model_call` and `record_failed_call`, which trace and charge every paid call, failed or not.
-- `src/arde/application/ports.py`: the `LLMClient`, `Tracer` and `LanguageAdapter` interfaces. `LanguageAdapter` holds seven methods so far, each with an implementation: it detects a repo, tells a comment-only edit from a real one, lists changed declarations, extracts the inventory, fingerprints routes, runs the repo's own checks and builds the service.
+- `src/arde/application/ports.py`: the `LLMClient`, `Tracer`, `LanguageAdapter` and `ServiceRunner` interfaces. `LanguageAdapter` holds seven methods so far, each with an implementation: it detects a repo, tells a comment-only edit from a real one, lists changed declarations, extracts the inventory, fingerprints routes, runs the repo's own checks and builds the service. `ServiceRunner` has one method, `running`, which takes a `ServiceConfig` and hands out a `ServiceHandle` (the base URL and the port). The errors a runner raises, `ServiceStartError` and `ServiceStopError`, live here too, because the application catches them.
 - `src/arde/application/budget.py`: the cost cap and the totals per role.
 - `src/arde/adapters/llm/anthropic_client.py`: the Anthropic API behind `LLMClient`.
 - `src/arde/adapters/language/go/`: the Go language adapter, which holds every Go idiom. `adapter.py` is `GoAdapter`. `goinspect_client.py` builds the helper and reads its JSON replies into typed models. `inventory_builder.py` turns the helper's matches into the inventory. `directives.py` and `makefile.py` hold the comment-only rule and the make targets. `toolchain.py` runs build, vet and test, and builds the service.
 - `src/arde/adapters/child_env.py` and `src/arde/adapters/child_process.py`: every child process gets an allow-listed environment, never a copy of ours, and a timeout that also stops what the child started. A child's output goes to temporary files and is read back with a limit, so a chatty command costs disk and never memory. `child_env.py` holds the generic list and no Go variable, so a service started to be probed gets none, and `src/arde/adapters/language/go/go_environment.py` builds the Go commands' environment on it.
+- `src/arde/adapters/service_runner.py`: `LocalServiceRunner`, the one `ServiceRunner`. It reserves a free port by binding port 0 and closing, starts the binary itself (never through a make target) in the folder `ServiceConfig.cwd` names, in its own process group, with the allow-listed environment plus the port variable, and sends its output to a log only the owner can read. It then waits for a TCP connection, with no health route. A service that exits first fails at once with its exit code and the end of the log, and one that never opens the port fails after `timeout_s`, naming the port variable and the log. When the body ends, whether it returned, raised or was interrupted, it sends SIGTERM to the whole group, waits 5 s, then kills the group. The process-group code is shared with `child_process.py`, and this file names no language and no repo.
 - `src/arde/adapters/tracer.py`: writes `trace.jsonl` and `debug.log`.
 - `src/arde/adapters/models_file.py`: reads the model settings per role.
 - `tests/fixtures/shop/`: a small `net/http` service that the adapter tests treat as a real repo. It shares no names or layout with any repo ARDE was built against.

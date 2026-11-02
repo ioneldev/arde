@@ -97,7 +97,7 @@ def run_child(command: ChildCommand) -> ChildOutcome:
         process = _start(command, stdout_file=stdout_file, stderr_file=stderr_file)
         _wait_for_exit(process, command)
         # What the child started in its group is not left running after it, such as a server.
-        _kill_group(process)
+        signal_group(process, signal.SIGKILL)
         stdout, stdout_was_cut = _read_back(stdout_file, command, stream="stdout")
         stderr, stderr_was_cut = _read_back(stderr_file, command, stream="stderr")
     return ChildOutcome(
@@ -123,11 +123,11 @@ def _start(
             start_new_session=True,
         )
     except OSError as error:
-        raise ChildStartError(command, _describe(error)) from error
+        raise ChildStartError(command, describe_os_error(error)) from error
 
 
 # The file named is the program, or the folder to run it in, whichever the system could not find.
-def _describe(error: OSError) -> str:
+def describe_os_error(error: OSError) -> str:
     reason = error.strerror or str(error)
     return f"{reason}: {error.filename}" if error.filename else reason
 
@@ -136,27 +136,28 @@ def _wait_for_exit(process: subprocess.Popen[bytes], command: ChildCommand) -> N
     try:
         process.wait(timeout=command.timeout_s)
     except subprocess.TimeoutExpired:
-        _stop(process)
+        force_stop(process)
         raise ChildTimeoutError(command) from None
     except BaseException:
         # Ctrl-C reaches us and not the child, which runs in its own session.
-        _stop(process)
+        force_stop(process)
         raise
 
 
 # A grandchild that started its own session is out of reach of the group, and the wait is bounded
 # so that nothing it does can hold the caller.
-def _stop(process: subprocess.Popen[bytes]) -> None:
-    _kill_group(process)
+def force_stop(process: subprocess.Popen[bytes]) -> None:
+    signal_group(process, signal.SIGKILL)
     with contextlib.suppress(ProcessLookupError):
         process.kill()
     with contextlib.suppress(subprocess.TimeoutExpired):
         process.wait(timeout=WAIT_AFTER_KILL_S)
 
 
-def _kill_group(process: subprocess.Popen[bytes]) -> None:
+# The child leads its own group, so its process id is the group's.
+def signal_group(process: subprocess.Popen[bytes], signal_number: int) -> None:
     with contextlib.suppress(ProcessLookupError, PermissionError):
-        os.killpg(process.pid, signal.SIGKILL)
+        os.killpg(process.pid, signal_number)
 
 
 def _read_back(file: IO[bytes], command: ChildCommand, *, stream: str) -> tuple[str, bool]:
