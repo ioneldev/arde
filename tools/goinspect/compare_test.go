@@ -179,24 +179,34 @@ func TestCompareOfIdenticalTreesHoldsEmptyListsNotNull(t *testing.T) {
 }
 
 func TestCompareSkipsOnlyTheGitDirectory(t *testing.T) {
-	oldFiles := map[string]string{
-		".git/x.go":     "package p\nvar x = 1\n",
-		"vendor/x.go":   "package p\nvar x = 1\n",
-		"testdata/x.go": "package p\nvar x = 1\n",
-		"_old/x.go":     "package p\nvar x = 1\n",
-		".dot/x.go":     "package p\nvar x = 1\n",
+	before := "package p\nvar x = 1\n"
+	after := "package p\nvar x = 2\n"
+	paths := []string{
+		".git/x.go", "vendor/x.go", "testdata/x.go", "_old/x.go", ".dot/x.go", "_gen.go", ".swap.go", "pkg/_x.go",
 	}
-	newFiles := map[string]string{
-		".git/x.go":     "package p\nvar x = 2\n",
-		"vendor/x.go":   "package p\nvar x = 2\n",
-		"testdata/x.go": "package p\nvar x = 2\n",
-		"_old/x.go":     "package p\nvar x = 2\n",
-		".dot/x.go":     "package p\nvar x = 2\n",
+	oldFiles, newFiles := map[string]string{}, map[string]string{}
+	for _, path := range paths {
+		oldFiles[path], newFiles[path] = before, after
 	}
 
 	report := compareFiles(t, oldFiles, newFiles)
 
-	assertChanged(t, report, ".dot/x.go", "_old/x.go", "testdata/x.go", "vendor/x.go")
+	// A file the Go tool ignores can still be read by the service at run time, or become part of
+	// the build later, so an edit to it is never skipped.
+	assertChanged(t, report,
+		".dot/x.go", ".swap.go", "_gen.go", "_old/x.go", "pkg/_x.go", "testdata/x.go", "vendor/x.go")
+}
+
+func TestCompareListsAddedAndRemovedFilesTheGoToolIgnores(t *testing.T) {
+	report := compareFiles(t,
+		map[string]string{"_removed.go": "package p\n", "keep.go": "package p\n"},
+		map[string]string{".added.go": "package p\n", "keep.go": "package p\n"},
+	)
+
+	want := compareReport{Changed: []string{}, Added: []string{".added.go"}, Removed: []string{"_removed.go"}}
+	if !reflect.DeepEqual(report, want) {
+		t.Fatalf("got %+v, want %+v", report, want)
+	}
 }
 
 func TestCompareLooksAtGoFilesOnly(t *testing.T) {
@@ -238,4 +248,60 @@ func TestCompareRejectsARootThatDoesNotExist(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error")
 	}
+}
+
+func TestCompareFlagsSyntaxTheParserKeepsOnlyAsAPosition(t *testing.T) {
+	for name, c := range syntaxHeldInPositions {
+		forward := compareOneFile(t, c.before, c.after)
+		backward := compareOneFile(t, c.after, c.before)
+
+		if !reflect.DeepEqual(forward.Changed, []string{"shop.go"}) {
+			t.Errorf("%s: forward edit changed %v, want shop.go", name, forward.Changed)
+		}
+		if !reflect.DeepEqual(backward.Changed, []string{"shop.go"}) {
+			t.Errorf("%s: reverse edit changed %v, want shop.go", name, backward.Changed)
+		}
+	}
+}
+
+func TestCompareIgnoresMovedAliasesAndSpreads(t *testing.T) {
+	report := compareOneFile(t, sameSyntaxMovedBefore, sameSyntaxMovedAfter)
+
+	assertChanged(t, report)
+}
+
+func TestCompareFlagsADroppedRequiredBehindARepeatedBindingKey(t *testing.T) {
+	required := structSource("`binding:\"required\"`")
+	cases := map[string]string{
+		"optional added in front": structSource("`binding:\"optional\" binding:\"required\"`"),
+		"optional added behind":   structSource("`binding:\"required\" binding:\"optional\"`"),
+		"required, then repeated": structSource("`binding:\"required\" binding:\"required\"`"),
+	}
+
+	for name, edited := range cases {
+		report := compareOneFile(t, required, edited)
+
+		if !reflect.DeepEqual(report.Changed, []string{"shop.go"}) {
+			t.Errorf("%s: want shop.go changed, got %v", name, report.Changed)
+		}
+	}
+}
+
+func TestCompareRejectsAnEmptyRoot(t *testing.T) {
+	_, err := compareDirs("", writeTree(t, nil))
+
+	if err == nil {
+		t.Fatal("want an error: an empty path would scan the current directory")
+	}
+}
+
+func TestCompareFlagsAnEscapedOptionalAsAChange(t *testing.T) {
+	// reflect reads the escaped spelling as binding "optional", but only the plain spelling is
+	// ours to ignore: an unfamiliar spelling failing safe means it counts as a change.
+	plain := structSource("`json:\"rating\"`")
+	escaped := structSource("`json:\"rating\" binding:\"opt\\x69onal\"`")
+
+	report := compareOneFile(t, plain, escaped)
+
+	assertChanged(t, report, "shop.go")
 }

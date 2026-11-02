@@ -19,7 +19,7 @@ func TestWalkListsGoFilesWithRelativeSlashPathsSorted(t *testing.T) {
 		"a/notes.text": "not go",
 	})
 
-	got, err := listGoFiles(root, skipGitDirectory)
+	got, err := listGoFiles(root, skipOnlyGit)
 
 	assertNoError(t, err)
 	// "a.go" sorts before "a/inner.go" as a string, though a directory walk visits "a/" first.
@@ -36,9 +36,9 @@ func TestWalkSkipsGitDirectoryUnderEveryPolicy(t *testing.T) {
 		"sub/.git/nested.go": emptyPackage,
 	})
 
-	for name, policy := range map[string]directoryFilter{
-		"git only":             skipGitDirectory,
-		"go tool ignored dirs": skipDirectoriesTheGoToolIgnores,
+	for name, policy := range map[string]walkPolicy{
+		"git only":             skipOnlyGit,
+		"go tool ignored dirs": skipWhatTheGoToolIgnores,
 	} {
 		got, err := listGoFiles(root, policy)
 
@@ -60,7 +60,7 @@ func TestWalkSkipsWhatTheGoToolIgnores(t *testing.T) {
 		"vendored/kept.go":     emptyPackage,
 	})
 
-	got, err := listGoFiles(root, skipDirectoriesTheGoToolIgnores)
+	got, err := listGoFiles(root, skipWhatTheGoToolIgnores)
 
 	assertNoError(t, err)
 	want := []string{"keep.go", "vendored/kept.go"}
@@ -78,7 +78,7 @@ func TestWalkKeepsVendorAndTestdataWhenOnlyGitIsSkipped(t *testing.T) {
 		".git/ignored.go": emptyPackage,
 	})
 
-	got, err := listGoFiles(root, skipGitDirectory)
+	got, err := listGoFiles(root, skipOnlyGit)
 
 	assertNoError(t, err)
 	want := []string{".hidden/x.go", "_scratch/x.go", "testdata/x.go", "vendor/lib.go"}
@@ -92,7 +92,7 @@ func TestWalkNeverSkipsTheRootItself(t *testing.T) {
 		root := filepath.Join(t.TempDir(), rootName)
 		writeFiles(t, root, map[string]string{"x.go": emptyPackage})
 
-		got, err := listGoFiles(root, skipDirectoriesTheGoToolIgnores)
+		got, err := listGoFiles(root, skipWhatTheGoToolIgnores)
 
 		assertNoError(t, err)
 		if !reflect.DeepEqual(got, []string{"x.go"}) {
@@ -110,7 +110,7 @@ func TestWalkSkipsFilesThatAreNotRegular(t *testing.T) {
 	linkOrSkip(t, filepath.Join(root, "real.go"), filepath.Join(root, "link_to_file.go"))
 	linkOrSkip(t, outside, filepath.Join(root, "link_to_dir"))
 
-	got, err := listGoFiles(root, skipGitDirectory)
+	got, err := listGoFiles(root, skipOnlyGit)
 
 	assertNoError(t, err)
 	if !reflect.DeepEqual(got, []string{"real.go"}) {
@@ -121,7 +121,7 @@ func TestWalkSkipsFilesThatAreNotRegular(t *testing.T) {
 func TestWalkDescendsIntoADirectoryNamedLikeAGoFile(t *testing.T) {
 	root := writeTree(t, map[string]string{"generated.go/inner.go": emptyPackage})
 
-	got, err := listGoFiles(root, skipGitDirectory)
+	got, err := listGoFiles(root, skipOnlyGit)
 
 	assertNoError(t, err)
 	if !reflect.DeepEqual(got, []string{"generated.go/inner.go"}) {
@@ -134,7 +134,7 @@ func TestWalkFollowsARootThatIsASymlink(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "link")
 	linkOrSkip(t, target, root)
 
-	got, err := listGoFiles(root, skipGitDirectory)
+	got, err := listGoFiles(root, skipOnlyGit)
 
 	assertNoError(t, err)
 	if !reflect.DeepEqual(got, []string{"x.go"}) {
@@ -143,7 +143,7 @@ func TestWalkFollowsARootThatIsASymlink(t *testing.T) {
 }
 
 func TestWalkReportsAnEmptyDirectoryAsNoFiles(t *testing.T) {
-	got, err := listGoFiles(t.TempDir(), skipGitDirectory)
+	got, err := listGoFiles(t.TempDir(), skipOnlyGit)
 
 	assertNoError(t, err)
 	if got == nil || len(got) != 0 {
@@ -156,7 +156,7 @@ func TestWalkRejectsARootThatIsMissingOrNotADirectory(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "nope")
 
 	for _, root := range []string{missing, file} {
-		if _, err := listGoFiles(root, skipGitDirectory); err == nil {
+		if _, err := listGoFiles(root, skipOnlyGit); err == nil {
 			t.Errorf("root %q: want an error", root)
 		}
 	}
@@ -166,5 +166,49 @@ func linkOrSkip(t *testing.T, target, link string) {
 	t.Helper()
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("cannot create symlinks here: %v", err)
+	}
+}
+
+func TestWalkRejectsAnEmptyRoot(t *testing.T) {
+	// An empty path would otherwise scan the current directory and report its files.
+	if _, err := listGoFiles("", skipOnlyGit); err == nil {
+		t.Fatal("want an error for an empty root")
+	}
+}
+
+func TestWalkSkipsGoFilesTheGoToolIgnores(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"keep.go":          emptyPackage,
+		"x_gen.go":         emptyPackage,
+		"pkg/keep_test.go": emptyPackage,
+		"_gen.go":          emptyPackage,
+		".swap.go":         emptyPackage,
+		"pkg/_scratch.go":  emptyPackage,
+		"pkg/.hidden.go":   emptyPackage,
+	})
+
+	got, err := listGoFiles(root, skipWhatTheGoToolIgnores)
+
+	assertNoError(t, err)
+	want := []string{"keep.go", "pkg/keep_test.go", "x_gen.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestWalkKeepsGoFilesTheGoToolIgnoresWhenOnlyGitIsSkipped(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"keep.go":         emptyPackage,
+		"_gen.go":         emptyPackage,
+		".swap.go":        emptyPackage,
+		"pkg/_scratch.go": emptyPackage,
+	})
+
+	got, err := listGoFiles(root, skipOnlyGit)
+
+	assertNoError(t, err)
+	want := []string{".swap.go", "_gen.go", "keep.go", "pkg/_scratch.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
 	}
 }

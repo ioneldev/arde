@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -73,14 +72,10 @@ func runDeclarations(args []string) (any, error) {
 }
 
 // writeJSON keeps < and > as written. Python decodes the escaped form too, so this only keeps a
-// type such as <-chan int readable in a trace.
+// type such as <-chan int readable in a trace. Encode marshals the whole value before it writes,
+// so a value that cannot be encoded leaves stdout empty.
 func writeJSON(writer io.Writer, value any) error {
-	var encoded bytes.Buffer
-	encoder := json.NewEncoder(&encoded)
+	encoder := json.NewEncoder(writer)
 	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(value); err != nil {
-		return err
-	}
-	_, err := writer.Write(encoded.Bytes())
-	return err
+	return encoder.Encode(value)
 }

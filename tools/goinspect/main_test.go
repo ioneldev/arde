@@ -77,17 +77,20 @@ func TestBadInputExitsOneWithAMessageAndNothingOnStdout(t *testing.T) {
 	missing := goodRoot + "/does-not-exist"
 
 	cases := map[string][]string{
-		"no command":                  {},
-		"unknown command":             {"explode"},
-		"compare without arguments":   {"compare"},
-		"compare without --new":       {"compare", "--old", goodRoot},
-		"compare without --old":       {"compare", "--new", goodRoot},
-		"compare with a stray word":   {"compare", "--old", goodRoot, "--new", goodRoot, "extra"},
-		"compare with unknown flag":   {"compare", "--old", goodRoot, "--new", goodRoot, "--fast"},
-		"compare with missing root":   {"compare", "--old", missing, "--new", goodRoot},
-		"declarations without a root": {"declarations"},
-		"declarations with two roots": {"declarations", goodRoot, goodRoot},
-		"declarations missing root":   {"declarations", missing},
+		"no command":                                                   {},
+		"unknown command":                                              {"explode"},
+		"compare without arguments":                                    {"compare"},
+		"compare without --new":                                        {"compare", "--old", goodRoot},
+		"compare without --old":                                        {"compare", "--new", goodRoot},
+		"compare with a stray word":                                    {"compare", "--old", goodRoot, "--new", goodRoot, "extra"},
+		"compare with unknown flag":                                    {"compare", "--old", goodRoot, "--new", goodRoot, "--fast"},
+		"compare with missing root":                                    {"compare", "--old", missing, "--new", goodRoot},
+		"declarations without a root":                                  {"declarations"},
+		"declarations with two roots":                                  {"declarations", goodRoot, goodRoot},
+		"declarations missing root":                                    {"declarations", missing},
+		"declarations, empty root":                                     {"declarations", ""},
+		"compare with an empty --old":                                  {"compare", "--old", "", "--new", goodRoot},
+		"compare with an empty --new":                                  {"compare", "--old", goodRoot, "--new", ""},
 		"declarations, a file that does not parse after one that does": {"declarations", halfBrokenRoot},
 	}
 

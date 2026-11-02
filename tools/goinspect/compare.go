@@ -13,15 +13,16 @@ type treePair struct {
 	newRoot string
 }
 
-// compareDirs may report a change that is not one, and never misses one. Files with the same
-// relative path are compared as normalised syntax trees, and by raw bytes when either side does
-// not parse. Only .go files are looked at.
+// compareDirs may report a change that is not one, and never misses a change to code. Files with
+// the same relative path are compared as normalised syntax trees, and by raw bytes when either
+// side does not parse. It looks at regular .go files only, and at comments not at all: a directive
+// comment such as //go:build or //go:embed changes a build, and the caller must check those itself.
 func compareDirs(oldRoot, newRoot string) (compareReport, error) {
-	oldFiles, err := listGoFiles(oldRoot, skipGitDirectory)
+	oldFiles, err := listGoFiles(oldRoot, skipOnlyGit)
 	if err != nil {
 		return compareReport{}, err
 	}
-	newFiles, err := listGoFiles(newRoot, skipGitDirectory)
+	newFiles, err := listGoFiles(newRoot, skipOnlyGit)
 	if err != nil {
 		return compareReport{}, err
 	}

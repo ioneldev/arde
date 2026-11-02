@@ -475,3 +475,62 @@ func TestDeclarationHashIsIdenticalForCRLFAndLFCheckouts(t *testing.T) {
 		t.Fatalf("line endings changed %v", changed)
 	}
 }
+
+func TestDeclarationHashFlagsSyntaxTheParserKeepsOnlyAsAPosition(t *testing.T) {
+	for name, c := range syntaxHeldInPositions {
+		changed := changedIDs(t, inspectOneFile(t, c.before), inspectOneFile(t, c.after))
+
+		if !reflect.DeepEqual(changed, []string{c.changedID}) {
+			t.Errorf("%s: changed %v, want %v", name, changed, c.changedID)
+		}
+	}
+}
+
+func TestDeclarationHashIgnoresMovedAliasesAndSpreads(t *testing.T) {
+	before := inspectOneFile(t, sameSyntaxMovedBefore)
+	after := inspectOneFile(t, sameSyntaxMovedAfter)
+
+	if changed := changedIDs(t, before, after); len(changed) != 0 {
+		t.Fatalf("moving code changed %v", changed)
+	}
+}
+
+func TestDeclarationHashFlagsADroppedRequiredBehindARepeatedBindingKey(t *testing.T) {
+	required := structSource("`binding:\"required\"`")
+	edited := structSource("`binding:\"optional\" binding:\"required\"`")
+
+	changed := changedIDs(t, inspectOneFile(t, required), inspectOneFile(t, edited))
+
+	if want := []string{"shop.go::type Product"}; !reflect.DeepEqual(changed, want) {
+		t.Fatalf("changed %v, want %v", changed, want)
+	}
+}
+
+func TestFieldsOfAParenthesisedStructAreListed(t *testing.T) {
+	report := inspectOneFile(t, "package shop\n\ntype P (struct{ X int })\n\ntype Q ((struct{ Y string }))\n")
+
+	var seen []string
+	for _, field := range report.Fields {
+		seen = append(seen, field.Struct+"."+field.Name)
+	}
+	if want := []string{"P.X", "Q.Y"}; !reflect.DeepEqual(seen, want) {
+		t.Fatalf("got %v, want %v", seen, want)
+	}
+}
+
+func TestDeclarationsSkipGoFilesTheGoToolIgnores(t *testing.T) {
+	broken := "package p\nfunc ("
+	report := inspectFiles(t, map[string]string{
+		"keep.go":        "package p\nvar kept = 1\n",
+		"x_gen.go":       "package p\nvar generated = 1\n",
+		"_gen.go":        broken,
+		".swap.go":       broken,
+		"pkg/_other.go":  "package p\nvar hidden = 1\n",
+		"pkg/.editor.go": broken,
+	})
+
+	want := []string{"keep.go::var kept", "x_gen.go::var generated"}
+	if got := sortedIDs(report); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}

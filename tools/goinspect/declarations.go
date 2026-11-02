@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strconv"
 )
 
 type declaration struct {
@@ -33,7 +34,7 @@ type declarationReport struct {
 // inspectDeclarations lists files in path order and each file's entries in source order, which
 // is the sorted order the report promises.
 func inspectDeclarations(root string) (declarationReport, error) {
-	files, err := listGoFiles(root, skipDirectoriesTheGoToolIgnores)
+	files, err := listGoFiles(root, skipWhatTheGoToolIgnores)
 	if err != nil {
 		return declarationReport{}, err
 	}
@@ -60,12 +61,9 @@ func inspectFile(root, path string) (declarationReport, error) {
 			"cannot parse %s, which would leave its declarations out of the inventory; fix the syntax error and run again: %w",
 			path, err)
 	}
-	fields, err := structFieldsIn(path, parsed)
-	if err != nil {
-		return declarationReport{}, err
-	}
 	// Fields report tags as written, so they are read before the tree is normalised for hashing.
-	dropTagsAddedByArde(parsed.syntax)
+	fields := structFieldsIn(path, parsed)
+	normaliseTree(parsed.syntax)
 	return declarationReport{Declarations: declarationsIn(path, parsed), Fields: fields}, nil
 }
 
@@ -144,13 +142,13 @@ func (collector *declarationCollector) addVars(group *ast.GenDecl) {
 }
 
 func (collector *declarationCollector) addConsts(group *ast.GenDecl) {
-	var lastStating *ast.ValueSpec
+	var lastValueSource *ast.ValueSpec
 	for index, spec := range group.Specs {
 		valueSpec := spec.(*ast.ValueSpec)
 		if valueSpec.Type != nil || len(valueSpec.Values) > 0 {
-			lastStating = valueSpec
+			lastValueSource = valueSpec
 		}
-		meaning := constMeaning{spec: valueSpec, stating: lastStating, iotaValue: index}
+		meaning := constMeaning{spec: valueSpec, valueSource: lastValueSource, iotaValue: index}
 		hash := meaning.fingerprint()
 		for _, name := range valueSpec.Names {
 			collector.add(foundDeclaration{kind: "const", name: name.Name, hash: hash, pos: name.Pos()})
@@ -188,23 +186,24 @@ func functionName(function *ast.FuncDecl) string {
 
 // constMeaning is what a const spec means once Go's implicit repetition is applied: a spec with
 // no type and no value repeats the type and values of the last spec that stated them, with its
-// own iota. Hashing the spec as written would miss an edit to the spec it repeats.
+// own iota. Hashing the spec as written would miss an edit to the spec it repeats. valueSource is
+// the spec whose type and values apply: the spec itself, or the last earlier spec that stated them.
 type constMeaning struct {
-	spec      *ast.ValueSpec
-	stating   *ast.ValueSpec
-	iotaValue int
+	spec        *ast.ValueSpec
+	valueSource *ast.ValueSpec
+	iotaValue   int
 }
 
 func (meaning constMeaning) fingerprint() string {
 	parts := []any{meaning.spec}
-	stating := meaning.stating
-	if stating == nil {
-		stating = meaning.spec
+	valueSource := meaning.valueSource
+	if valueSource == nil {
+		valueSource = meaning.spec
 	}
-	if stating != meaning.spec {
-		parts = append(parts, stating.Type, stating.Values)
+	if valueSource != meaning.spec {
+		parts = append(parts, valueSource.Type, valueSource.Values)
 	}
-	if mentionsIota(stating.Values) {
+	if mentionsIota(valueSource.Values) {
 		parts = append(parts, meaning.iotaValue)
 	}
 	return fingerprint(parts...)
@@ -223,7 +222,7 @@ func mentionsIota(values []ast.Expr) bool {
 	return found
 }
 
-func structFieldsIn(path string, source *parsedSource) ([]structField, error) {
+func structFieldsIn(path string, source *parsedSource) []structField {
 	reader := fieldReader{path: path, source: source}
 	fields := []structField{}
 	for _, topLevel := range source.syntax.Decls {
@@ -233,18 +232,13 @@ func structFieldsIn(path string, source *parsedSource) ([]structField, error) {
 		}
 		for _, spec := range group.Specs {
 			typeSpec := spec.(*ast.TypeSpec)
-			structType, isStruct := typeSpec.Type.(*ast.StructType)
-			if !isStruct {
-				continue
+			structType, isStruct := ast.Unparen(typeSpec.Type).(*ast.StructType)
+			if isStruct {
+				fields = append(fields, reader.fieldsOf(typeSpec.Name.Name, structType)...)
 			}
-			read, err := reader.fieldsOf(typeSpec.Name.Name, structType)
-			if err != nil {
-				return nil, err
-			}
-			fields = append(fields, read...)
 		}
 	}
-	return fields, nil
+	return fields
 }
 
 type fieldReader struct {
@@ -252,23 +246,18 @@ type fieldReader struct {
 	source *parsedSource
 }
 
-func (reader fieldReader) fieldsOf(structName string, structType *ast.StructType) ([]structField, error) {
+func (reader fieldReader) fieldsOf(structName string, structType *ast.StructType) []structField {
 	fields := []structField{}
 	for _, field := range structType.Fields.List {
-		tag, err := tagText(field)
-		if err != nil {
-			return nil, fmt.Errorf("%s:%d: cannot read the tag of a field of %s: %w",
-				reader.path, reader.source.lineOf(field.Pos()), structName, err)
-		}
 		template := structField{
 			File:   reader.path,
 			Struct: structName,
-			Tag:    tag,
+			Tag:    tagText(field),
 			GoType: types.ExprString(field.Type),
 		}
 		fields = append(fields, reader.namedAs(template, field)...)
 	}
-	return fields, nil
+	return fields
 }
 
 // namedAs makes one record per declared name, or a single embedded record named after the type.
@@ -289,11 +278,17 @@ func (reader fieldReader) namedAs(template structField, field *ast.Field) []stru
 	return records
 }
 
-func tagText(field *ast.Field) (string, error) {
+// tagText is the tag without the quotes of its Go literal. The scanner has already accepted the
+// literal, so Unquote is not expected to fail; if it does, the literal is reported as written.
+func tagText(field *ast.Field) string {
 	if field.Tag == nil {
-		return "", nil
+		return ""
 	}
-	return unquoteTag(field.Tag)
+	text, err := strconv.Unquote(field.Tag.Value)
+	if err != nil {
+		return field.Tag.Value
+	}
+	return text
 }
 
 // typeBaseName is the name Go gives a method's receiver type or an embedded field: the type's

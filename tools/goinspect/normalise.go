@@ -46,19 +46,51 @@ func normalisedFingerprint(path string, source []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dropTagsAddedByArde(parsed.syntax)
+	normaliseTree(parsed.syntax)
 	return fingerprint(parsed.syntax), nil
+}
+
+// normaliseTree is the step both commands run on a parsed file before they hash anything in it.
+func normaliseTree(file *ast.File) {
+	dropTagsAddedByArde(file)
+	markSyntaxHeldInPositions(file)
 }
 
 var positionType = reflect.TypeOf(token.Pos(0))
 
-func omitPositions(_ string, value reflect.Value) bool {
-	return value.Type() != positionType
+// omitPositions drops every token.Pos, so moving code does not change a hash, except the two
+// fields that markSyntaxHeldInPositions has reduced to present or absent.
+func omitPositions(fieldName string, value reflect.Value) bool {
+	return value.Type() != positionType || fieldName == "Assign" || fieldName == "Ellipsis"
 }
 
-// fingerprint hashes a dump of the nodes with every token.Pos left out, so moving code does not
-// change it. Each dump closes its own braces, so joining several cannot make two different
-// lists read the same.
+// markSyntaxHeldInPositions sets the positions of "=" in an alias and "..." in a spread argument,
+// a variadic parameter and a [...] array to a fixed value, or to none when the syntax is absent.
+// The parser records `type A = B` and `f(xs...)` only as a valid position in those fields, so
+// dropping them would make an alias equal a new type and a spread call equal a plain one.
+func markSyntaxHeldInPositions(file *ast.File) {
+	ast.Inspect(file, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.TypeSpec:
+			node.Assign = presence(node.Assign)
+		case *ast.CallExpr:
+			node.Ellipsis = presence(node.Ellipsis)
+		case *ast.Ellipsis:
+			node.Ellipsis = presence(node.Ellipsis)
+		}
+		return true
+	})
+}
+
+func presence(pos token.Pos) token.Pos {
+	if pos.IsValid() {
+		return 1
+	}
+	return token.NoPos
+}
+
+// fingerprint hashes a dump of the nodes. Each dump closes its own braces, so joining several
+// cannot make two different lists read the same.
 func fingerprint(nodes ...any) string {
 	var dump bytes.Buffer
 	for _, node := range nodes {
@@ -82,19 +114,21 @@ func dropTagsAddedByArde(file *ast.File) {
 }
 
 func dropTagsFromField(field *ast.Field) {
-	tag, err := unquoteTag(field.Tag)
+	tag, err := strconv.Unquote(field.Tag.Value)
 	if err != nil {
+		// The scanner has already accepted this literal, so this is not expected. If it happens
+		// the tag stays as written, and any edit to it counts as a change.
 		return
 	}
-	pairs, wellFormed := parseStructTag(tag)
+	pairs, wellFormed := splitStructTag(tag)
 	if !wellFormed {
 		// An unreadable tag stays as written, so any edit to it counts as a change.
 		return
 	}
 	kept := []string{}
 	for _, pair := range pairs {
-		if !pair.isAddedByArde() {
-			kept = append(kept, pair.text())
+		if !isAddedByArde(pair) {
+			kept = append(kept, pair)
 		}
 	}
 	if len(kept) == 0 {
@@ -104,59 +138,35 @@ func dropTagsFromField(field *ast.Field) {
 	field.Tag.Value = strconv.Quote(strings.Join(kept, " "))
 }
 
-func unquoteTag(literal *ast.BasicLit) (string, error) {
-	return strconv.Unquote(literal.Value)
+// isAddedByArde matches whole keys, spelled the way ARDE writes them: any oneOf, and binding
+// "optional" and nothing else, because binding "required" changes what the service accepts. A
+// value spelled another way, such as with an escape, counts as a change.
+func isAddedByArde(pair string) bool {
+	return strings.HasPrefix(pair, `oneOf:"`) || pair == `binding:"optional"`
 }
 
-type tagPair struct {
-	key    string
-	quoted string
-	value  string
-}
-
-func (pair tagPair) text() string {
-	return pair.key + ":" + pair.quoted
-}
-
-// isAddedByArde matches whole keys only: a key that merely ends in oneOf is someone else's.
-// Of the binding values, only optional is ours: required changes what the service accepts.
-func (pair tagPair) isAddedByArde() bool {
-	switch pair.key {
-	case "oneOf":
-		return true
-	case "binding":
-		return pair.value == "optional"
-	default:
-		return false
-	}
-}
-
-// parseStructTag reads `key:"value" key:"value"` the way reflect.StructTag does. It reports
-// false for a tag reflect would stop reading part way, so the caller can leave it alone.
-func parseStructTag(tag string) ([]tagPair, bool) {
-	pairs := []tagPair{}
-	rest := tag
-	for {
-		rest = strings.TrimLeft(rest, " ")
-		if rest == "" {
-			return pairs, true
-		}
+// splitStructTag cuts a tag into its `key:"value"` pairs the way reflect.StructTag reads them. It
+// reports false for a tag reflect would stop reading part way, and for a repeated key: reflect
+// reads only the first of those, so dropping one could change what the tag means.
+func splitStructTag(tag string) ([]string, bool) {
+	pairs := []string{}
+	keys := map[string]bool{}
+	for rest := strings.TrimLeft(tag, " "); rest != ""; rest = strings.TrimLeft(rest, " ") {
 		keyLength := tagKeyLength(rest)
-		if keyLength == 0 || len(rest) < keyLength+2 || rest[keyLength] != ':' || rest[keyLength+1] != '"' {
-			return nil, false
-		}
 		key := rest[:keyLength]
-		quoted, remainder, closed := cutQuotedString(rest[keyLength+1:])
-		if !closed {
+		if keyLength == 0 || !strings.HasPrefix(rest[keyLength:], `:"`) || keys[key] {
 			return nil, false
 		}
-		value, err := strconv.Unquote(quoted)
+		quoted, err := strconv.QuotedPrefix(rest[keyLength+1:])
 		if err != nil {
 			return nil, false
 		}
-		pairs = append(pairs, tagPair{key: key, quoted: quoted, value: value})
-		rest = remainder
+		keys[key] = true
+		pairLength := keyLength + 1 + len(quoted)
+		pairs = append(pairs, rest[:pairLength])
+		rest = rest[pairLength:]
 	}
+	return pairs, true
 }
 
 func tagKeyLength(text string) int {
@@ -165,17 +175,4 @@ func tagKeyLength(text string) int {
 		length++
 	}
 	return length
-}
-
-// cutQuotedString splits the double-quoted string at the start of text from what follows it.
-func cutQuotedString(text string) (quoted, rest string, closed bool) {
-	for index := 1; index < len(text); index++ {
-		switch text[index] {
-		case '\\':
-			index++
-		case '"':
-			return text[:index+1], text[index+1:], true
-		}
-	}
-	return "", "", false
 }
