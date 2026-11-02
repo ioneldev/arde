@@ -2,7 +2,7 @@
 
 This is the short map. The reasoning and the measurements are in the [design](superpowers/specs/2026-11-01-arde-design.md).
 
-**Status:** Phase 0 is built: the domain models, the agent loop, the Anthropic client, the tracer, the cost cap and the model settings. Nothing reads Go or runs a service yet, so read the steps below as intent until later phases land them.
+**Status:** Phase 0 is built: the domain models, the agent loop, the Anthropic client, the tracer, the cost cap and the model settings. Phase 1 has started: the Go helper answers two questions, but nothing in Python calls it and nothing runs a service yet, so read the steps below as intent until later phases land them.
 
 ## The orchestrator is code
 
@@ -63,6 +63,7 @@ What exists today:
 - `src/arde/adapters/llm/anthropic_client.py`: the Anthropic API behind `LLMClient`.
 - `src/arde/adapters/tracer.py`: writes `trace.jsonl` and `debug.log`.
 - `src/arde/adapters/models_file.py`: reads the model settings per role.
+- `tools/goinspect/`: the Go helper. `compare` lists the Go files that changed, ignoring comments, formatting, line endings and the two struct tags ARDE adds. `declarations` hashes every top-level declaration and lists struct fields. `match` and `fingerprints` arrive with Task 7.
 
 Imports go inward. These rules are enforced by `tests/test_architecture.py`:
 

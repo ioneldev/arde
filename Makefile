@@ -6,9 +6,12 @@ check:
 	uv run mypy src
 	uv run pytest -m "not integration and not eval" -q
 
+# gofmt -l prints the files it would change and exits 0, so the target tests its output.
 integration:
-	uv run pytest -m integration -q
+	cd tools/goinspect && unformatted="$$(gofmt -l .)" && test -z "$$unformatted" || { echo "gofmt would change: $$unformatted (run gofmt -w in tools/goinspect)"; exit 1; }
+	cd tools/goinspect && go vet ./...
 	cd tools/goinspect && go test ./...
+	uv run pytest -m integration -q
 
 # --env-file hands .env to pytest alone, so the key never enters the shell's environment.
 # -rP prints what passing tests printed, the spend and the trace folder, through the key guard.
