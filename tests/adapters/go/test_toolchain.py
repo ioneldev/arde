@@ -504,6 +504,83 @@ def test_a_listing_that_fails_gives_a_short_clean_message(
     assert_bounded_and_clean(str(failed.value))
 
 
+def test_a_list_that_fails_on_a_repo_that_does_not_build_is_a_red_result_with_the_real_reason(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    (repo / "main.go").write_text("package main\n", encoding="utf-8")
+    broken = ChildOutcome(exit_code=1, stdout="", stderr="go: errors parsing go.mod\n")
+    use(monkeypatch, StandInGo(build=broken, ignored_files=broken))
+
+    result = run_checks(repo, shop_profile())
+
+    assert (result.build_ok, result.ignored_files) == (False, ())
+    assert "errors parsing go.mod" in result.output
+
+
+@pytest.mark.parametrize(
+    "unusable",
+    [outcome(stdout="", cut=True), outcome(stdout="not json")],
+    ids=["cut", "unreadable"],
+)
+def test_a_list_that_cannot_be_used_on_a_repo_that_does_not_build_is_no_error_either(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, unusable: ChildOutcome
+) -> None:
+    (repo / "main.go").write_text("package main\n", encoding="utf-8")
+    use(monkeypatch, StandInGo(build=outcome(1), ignored_files=unusable))
+
+    assert run_checks(repo, shop_profile()).ignored_files == ()
+
+
+def test_a_list_that_works_on_a_repo_that_does_not_build_still_counts(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    root = a_repo_with_one_folder_of_go(repo)
+    answer = outcome(stdout=listed(root, "tagged_test.go"))
+    use(monkeypatch, StandInGo(build=outcome(1), ignored_files=answer))
+
+    assert run_checks(repo, shop_profile()).ignored_files == ("tagged_test.go",)
+
+
+NOTHING_BUILT = 'go: warning: "./..." matched no packages\n'
+
+
+def test_a_build_that_matched_no_packages_built_nothing_and_is_not_ok(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    empty = ChildOutcome(exit_code=0, stdout="", stderr=NOTHING_BUILT)
+    use(monkeypatch, StandInGo(build=empty))
+
+    result = run_checks(repo, shop_profile())
+
+    assert result.build_ok is False
+    assert "matched no packages" in result.output
+
+
+# A compiler warning quotes source, so a repo can put these words on a line of its own making.
+@pytest.mark.parametrize(
+    "stderr",
+    [
+        '# cgo\nwarning: go: warning: "./..." matched no packages\n',
+        'a.c:1: "./..." matched no packages\n',
+        "go: warning: ignoring something else\n",
+    ],
+)
+def test_other_text_on_a_build_that_worked_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch, repo: Path, stderr: str
+) -> None:
+    use(monkeypatch, StandInGo(build=ChildOutcome(exit_code=0, stdout="", stderr=stderr)))
+
+    assert run_checks(repo, shop_profile()).build_ok is True
+
+
+def test_the_warning_on_stdout_is_not_the_tools_warning(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    use(monkeypatch, StandInGo(build=outcome(stdout=NOTHING_BUILT)))
+
+    assert run_checks(repo, shop_profile()).build_ok is True
+
+
 def test_a_list_of_left_out_files_that_fails_gives_a_short_clean_message(
     monkeypatch: pytest.MonkeyPatch, repo: Path
 ) -> None:

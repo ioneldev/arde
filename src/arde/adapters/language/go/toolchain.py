@@ -41,6 +41,9 @@ from arde.domain.report import ExitCode
 SERVICE_BINARY_NAME = "service"
 # A repo of thousands of folders would overrun the length of one command line.
 FOLDERS_PER_LIST = 1000
+# Go exits 0 on this line, with nothing built. Only the whole line counts, because a compiler
+# warning quotes source and a repo chooses that text.
+_NOTHING_TO_BUILD = 'go: warning: "./..." matched no packages'
 
 # Every name that "go test -list" prints. Its other lines start with ok, ? or FAIL.
 _LISTED_TEST = re.compile(r"(Test|Benchmark|Fuzz|Example)\w*")
@@ -136,6 +139,7 @@ def run_checks(repo: Path, profile: RepoProfile) -> CheckResult:
     build = _go(
         repo, GoStep(("build", "-buildvcs=false", "-o", os.devnull, "./..."), GO_BUILD_TIMEOUT_S)
     )
+    build_ok = _built_something(build)
     vet = _go(repo, GoStep(("vet", "./..."), GO_VET_TIMEOUT_S))
     test = _run_the_tests(repo)
     measured = measured_tests(test.stdout, tests_passed=test.succeeded)
@@ -145,16 +149,20 @@ def run_checks(repo: Path, profile: RepoProfile) -> CheckResult:
     sections = [("build", build), ("vet", vet), ("test", _as_text(test, measured))]
     sections += [(f"extra: {command}", outcome) for command, outcome in extras]
     return CheckResult(
-        build_ok=build.succeeded,
+        build_ok=build_ok,
         vet_ok=vet.succeeded,
         test_ok=test.succeeded and all(outcome.succeeded for _, outcome in extras),
         output="\n".join(_section(title, outcome) for title, outcome in sections),
         tests_run=measured.tests_run,
         tests_skipped=measured.tests_skipped,
         tests_listed=_count_listed_tests(listing, tests_passed=test.succeeded),
-        ignored_files=_ignored_files(repo, folders.packages),
+        ignored_files=_ignored_files(repo, folders.packages, build_passed=build_ok),
         unchecked_modules=tuple(printable_name(folder) for folder in folders.nested_modules),
     )
+
+
+def _built_something(build: ChildOutcome) -> bool:
+    return build.succeeded and _NOTHING_TO_BUILD not in build.stderr.splitlines()
 
 
 # -count=1 because a cached pass can stand for code outside the repo that has since changed.
@@ -215,7 +223,17 @@ def _require_whole(listing: ChildOutcome, what: str) -> None:
         )
 
 
-def _ignored_files(repo: Path, folders: list[str]) -> tuple[str, ...]:
+# A repo that does not load fails this list too, and the build has already said why in the result.
+def _ignored_files(repo: Path, folders: list[str], *, build_passed: bool) -> tuple[str, ...]:
+    try:
+        return _files_left_out_of(repo, folders)
+    except GoCommandError:
+        if build_passed:
+            raise
+        return ()
+
+
+def _files_left_out_of(repo: Path, folders: list[str]) -> tuple[str, ...]:
     root = os.path.realpath(repo)
     found: set[str] = set()
     for start in range(0, len(folders), FOLDERS_PER_LIST):

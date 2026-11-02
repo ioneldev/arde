@@ -270,6 +270,51 @@ def test_the_text_reads_as_go_test_and_holds_no_event(adapter: GoAdapter, tmp_pa
     assert "chatter from a test that passed" not in result.output
 
 
+@pytest.mark.parametrize(
+    ("go_mod", "reason"),
+    [
+        ("module\n\nthis is not a module file\n", "go.mod"),
+        (None, "does not contain main module"),
+    ],
+    ids=["broken go.mod", "no go.mod"],
+)
+def test_a_repo_that_does_not_load_gives_a_red_result_with_the_toolchains_reason(
+    adapter: GoAdapter, tmp_path: Path, go_mod: str | None, reason: str
+) -> None:
+    repo = repo_of(tmp_path, {})
+    if go_mod is None:
+        (repo / "go.mod").unlink()
+    else:
+        (repo / "go.mod").write_text(go_mod, encoding="utf-8")
+
+    result = adapter.run_checks(repo, shop_profile())
+
+    assert (result.build_ok, result.vet_ok, result.test_ok) == (False, False, False)
+    assert (result.tests_run, result.tests_listed, result.ignored_files) == (0, None, ())
+    assert reason in result.output
+
+
+def test_a_module_with_no_package_built_nothing(adapter: GoAdapter, tmp_path: Path) -> None:
+    (tmp_path / "go.mod").write_text(GO_MOD, encoding="utf-8")
+
+    result = adapter.run_checks(tmp_path, shop_profile())
+
+    assert (result.build_ok, result.vet_ok, result.test_ok) == (False, False, False)
+    assert "matched no packages" in result.output
+
+
+def test_a_module_whose_every_file_is_behind_a_tag_built_nothing_and_shows_the_files(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    tagged = "//go:build e2e\n\n" + MAIN
+    repo = repo_of(tmp_path, {"main.go": tagged})
+
+    result = adapter.run_checks(repo, shop_profile())
+
+    assert result.build_ok is False
+    assert result.ignored_files == ("main.go",)
+
+
 CGO_FILE = 'package main\n\n// int two(void) { return 2; }\nimport "C"\n\nvar two = int(C.two())\n'
 
 
