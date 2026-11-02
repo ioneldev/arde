@@ -33,23 +33,28 @@ TOOLCHAIN_VARIABLES = (
     "GOTOOLCHAIN",
 )
 
-# Also read from the user's go env file, which "go env -w" writes and which Go tells people to use
-# for them, when they are not exported. Without them a private repo fails to build, or its module
-# paths go to the public proxy and the public checksum database. The file is read for these three
-# and for nothing else: a GOPROXY, GOSUMDB or GOTOOLCHAIN that only the file holds stays ignored,
-# so that a poisoned file cannot redirect where modules are fetched from or which toolchain runs.
-# They name the paths they apply to and no more, and docs/limitations.md says what that costs.
+# The user's own go env file, which "go env -w" writes, can hold these three, so go env is asked
+# for them once and its answer is used as it stands: Go decides which value wins, and derives
+# GONOPROXY and GONOSUMDB from GOPRIVATE when neither is set. Without them a private repo fails
+# to build, or its module paths go to the public proxy and checksum database. The file's GOPROXY,
+# GOSUMDB and GOTOOLCHAIN are not taken, so a poisoned file cannot redirect downloads.
 USER_SETTINGS = ("GOPRIVATE", "GONOPROXY", "GONOSUMDB")
 
-# HOME is allowed, so the file would be read by every command. That is done once, here, for the
-# three settings above, and the commands themselves are told to read no file.
+# Only the probe gets these, to look where the user's own go command looks. No other child does.
+PROBE_ONLY_VARIABLES = ("XDG_CONFIG_HOME", "GOENV")
+
+# Every command is told to read no file: HOME is allowed, and the file can hold a GOFLAGS.
 FIXED_VARIABLES = {"GOENV": "off"}
 
 
 def go_environment() -> dict[str, str]:
-    exported = {name: os.environ[name] for name in TOOLCHAIN_VARIABLES if name in os.environ}
-    from_the_file = {name: value for name, value in _user_settings().items() if value}
-    return {**child_environment(), **from_the_file, **exported, **FIXED_VARIABLES}
+    exported = {
+        name: os.environ[name]
+        for name in TOOLCHAIN_VARIABLES
+        if name in os.environ and name not in USER_SETTINGS
+    }
+    settings = {name: value for name, value in _user_settings().items() if value}
+    return {**child_environment(), **exported, **settings, **FIXED_VARIABLES}
 
 
 # Once per process. A failure is not remembered, so the next call asks again.
@@ -62,7 +67,7 @@ def _user_settings() -> dict[str, str]:
             cwd=Path(folder),
             timeout_s=GO_ENV_TIMEOUT_S,
             output=GO_ENV_REPLY_LIMIT,
-            env=child_environment(),
+            env=_probe_environment(),
         )
         outcome = run_child(command)
     if not outcome.succeeded:
@@ -70,14 +75,32 @@ def _user_settings() -> dict[str, str]:
             f"Cannot read the Go settings with go env: {outcome.output.strip()}",
             next_action=_RUN_IT_BY_HAND,
         )
+    return _the_three_settings(outcome.stdout)
+
+
+def _probe_environment() -> dict[str, str]:
+    given = (*USER_SETTINGS, *PROBE_ONLY_VARIABLES)
+    return {
+        **child_environment(),
+        **{name: os.environ[name] for name in given if name in os.environ},
+    }
+
+
+def _the_three_settings(reply_text: str) -> dict[str, str]:
     try:
-        reply = TypeAdapter(dict[str, str]).validate_json(outcome.stdout)
+        reply = TypeAdapter(dict[str, str]).validate_json(reply_text)
     except ValidationError as error:
         raise GoCommandError(
             "go env printed something other than the three settings that were asked for.",
             next_action=_RUN_IT_BY_HAND,
         ) from error
-    return {name: reply.get(name, "") for name in USER_SETTINGS}
+    missing = [name for name in USER_SETTINGS if name not in reply]
+    if missing:
+        raise GoCommandError(
+            f"go env left out {', '.join(missing)}, which were asked for.",
+            next_action=_RUN_IT_BY_HAND,
+        )
+    return {name: reply[name] for name in USER_SETTINGS}
 
 
 # ARDE stops here and does not go on without the settings: that would send private module paths to
