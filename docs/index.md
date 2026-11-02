@@ -25,6 +25,12 @@ Each file gives the decision, why, and what it costs.
 - [0010 An agent returns a value or raises](decisions/0010-agent-contract.md)
 - [0011 Every model request streams](decisions/0011-stream-every-request.md)
 
+## Phase walkthroughs
+
+What each phase built, why, and how to test it.
+
+- [Phase 0 walkthrough](decisions/phase-0-walkthrough.md)
+
 ## Phase specs
 
 One per build phase: status, what it delivers, how we know it is done, and how to test it by hand.

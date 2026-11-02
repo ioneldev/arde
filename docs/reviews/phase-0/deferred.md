@@ -1,0 +1,56 @@
+# Phase 0 deferred minor findings
+
+The raw list from the task reviews and the re-review. Some were fixed later: `fix-list.md` says which, and the code review's triage gives the reason for the rest.
+
+- no --strict-markers, so a typo'd eval marker could run a paid test in make check
+- per-layer "exists" assertion to add as layers land
+- label and write helpers duplicated in two test files
+- layer list repeated in AGENTS.md and docs/architecture.md; docs/deviations.md copies the design's list; limits repeated in architecture.md and the phase spec
+- AGENTS.md and architecture.md say each layer is a folder, but cli is a single file
+- markdown parsing gaps (~~~ fences, double backticks, reference links, fragments)
+- docs/superpowers ruff exclusion not recorded in docs/deviations.md
+- go-build pattern can flag prose like "we go.\nBuild it"; fails safe
+- Go-leak scan reads content only, not module names; GoBuild, gobuild and flagged argv forms not matched
+- models holding a dict are unhashable and not deeply immutable (plan-mandated)
+- SingleLine ignores other Unicode line separators; revisit if the renderer uses splitlines()
+- test_every_domain_model_is_frozen_and_closed could pass on an empty enumeration
+- test name, and a type-ignore that does nothing because mypy runs on src only
+- duplicate-id error names no next action
+- errors.py imports ExitCode from report.py; move ExitCode to avoid a cycle
+- ArdeError can't be copied or pickled
+- docs/architecture.md line 5 is stale
+- RoleTotals repeats the Usage token fields
+- debug.log timestamp is untested despite the test name
+- no test that shipped models all have prices; an unpriced model costs one unrecorded paid call
+- tracer crashes on lone surrogates (UnicodeEncodeError) and writes bare NaN; ties to Review Focus 5
+- Pydantic models passed to event() flatten to str; handle BaseModel or dump first
+- event kinds not enforced (plan-mandated str); decide Literal in Task 4
+- comment at models_config.py:56 states what, not why
+- BudgetExceeded next action names the old cap, not the amount spent
+- application/models_config.py touches env and filesystem directly (plan-mandated); record in Deviations
+- docs/architecture.md still stale
+- math.isfinite(10**400) raises a bare OverflowError; check when the CLI parses the cap
+- an accepted submit can carry no value (handler bug only)
+- submit_tool isn't validated against tools; a typo burns the turn limit
+- rejected submit with sibling calls has no test
+- pause test uses a text-only turn; docs show server_tool_use
+- a handler raising ArdeError leaves no tool_call event
+- dead type-ignore and bare Callable in test_anthropic_live.py:110
+- assert_key_never_logged checks only debug lines after success
+- parse sends no cache_control (the SDK's parse has no kwarg); state as a deviation
+- a paid parse that fails is neither charged nor traced, so cost is understated
+- BadRequestError action blames ARDE even for a user-fixable 400
+- weak tests at test_anthropic_client.py:447, 454, 602
+- httpx2 imported by tests but undeclared in pyproject
+- reply dict repeated three times; RecordingTracer duplicated
+- "the rejection is not billed" comment is inference stated as fact
+- comment at anthropic_client.py:302 overclaims; APIStatusError still holds the key at .request.headers, redacted in repr
+- parse with stop_reason max_tokens and no text block says "Run again"
+- a 400 with "credit balance too low" gets "ARDE built a request the API refuses"; may arrive as 400 rather than 402, unverified
+- N3 tracer failure inside handler can re-attach the chain
+- N4 non-submit handler returning Accepted ends the run
+- N5 a call refused by refuse_if_spent leaves no record
+- N6 warnings, subtest titles, xfail reasons, live logs bypass the key guard
+- N7 architecture test misses os.environ.get(CONSTANT), dict(os.environ), getattr forms
+- N8 two labels drifted (agent_loop.py:149, test_agent_loop.py:465)
+- N9 tracer can crash on a model holding a callable

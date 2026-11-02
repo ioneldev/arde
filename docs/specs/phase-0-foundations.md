@@ -1,6 +1,6 @@
 # Phase 0: Foundations
 
-**Status:** in progress
+**Status:** ready for Ionel's review
 
 This spec says what this phase delivers and how we know it's done. The reasoning lives in the [design](../superpowers/specs/2026-11-01-arde-design.md), and the step-by-step tasks live in the [plan](../superpowers/plans/2026-11-01-arde.md).
 
@@ -14,7 +14,7 @@ This spec says what this phase delivers and how we know it's done. The reasoning
 | 4 | LLM port, fake client, agent loop | Done |
 | 5 | Anthropic client | Done |
 | Review | Architecture, code, bug hunters, security | Done |
-| Gate | Ionel reviews, understands and tests | Not started |
+| Gate | Ionel reviews, understands and tests | Waiting for Ionel |
 
 ## Purpose
 
