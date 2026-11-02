@@ -538,6 +538,19 @@ def test_a_main_package_must_name_a_folder_of_this_repo_with_a_leading_dot(value
         DiscoveredProfile(**{**PROFILE_FIELDS, "main_package": value})
 
 
+@pytest.mark.parametrize(
+    "port_env", ["", "APP PORT", "APP-PORT", "1PORT", "APP_PORT\n", "PORT=1", "$(rm -rf /)"]
+)
+def test_a_port_variable_is_checked_when_the_profile_is_built(port_env: str) -> None:
+    with pytest.raises(ValidationError, match="a code identifier"):
+        DiscoveredProfile(**{**PROFILE_FIELDS, "port_env": port_env})
+
+
+def test_a_full_profile_checks_its_port_variable_too() -> None:
+    with pytest.raises(ValidationError, match="a code identifier"):
+        RepoProfile(**{**PROFILE_FIELDS, "port_env": "APP PORT"})
+
+
 # The links gate does not walk .git, so a package there is the one way past it. Go passes over a
 # folder with a leading dot anyway, so no real service lives in one.
 @pytest.mark.parametrize(

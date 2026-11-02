@@ -4,7 +4,7 @@ from typing import Literal, Self
 
 from pydantic import model_validator
 
-from arde.domain.base import Frozen, MainFile, MainPackage
+from arde.domain.base import CodeIdentifier, Frozen, MainFile, MainPackage
 
 # The argument names that code reads for each kind, and it reads no others. A pattern without one
 # could match a call and give nothing from it, every time, and look like a repo without that fact.
@@ -45,7 +45,8 @@ class DiscoveredProfile(Frozen):
     schema_version: Literal[1] = 1
     main_package: MainPackage
     main_file: MainFile
-    port_env: str
+    # A model chooses it, and it names an environment variable, so it is checked where it is set.
+    port_env: CodeIdentifier
     patterns: tuple[ExtractionPattern, ...]
     reported_test_commands: tuple[str, ...] = ()
 
