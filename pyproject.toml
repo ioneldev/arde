@@ -33,7 +33,7 @@ line-length = 100
 # docs/research holds throwaway experiment code that is kept as evidence, not maintained.
 # docs/superpowers holds the design and plan, whose Python blocks are pseudo-code: ruff format
 # also rewrites code blocks inside Markdown, which would silently edit those approved documents.
-extend-exclude = ["docs/research", "docs/superpowers"]
+extend-exclude = ["docs/research", "docs/reviews", "docs/superpowers"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
