@@ -93,8 +93,9 @@ class ChildStartError(ArdeError):
         super().__init__(
             f"Cannot start `{command.argv[0]}`: {reason}.",
             next_action=(
-                f"Install {command.argv[0]} or put it on PATH, then run again. "
-                "If the command came from a profile, fix it there."
+                f"Check that {command.argv[0]} is installed and on PATH, and that the folder "
+                f"{command.cwd} exists, then run again. If the command came from a profile, fix "
+                "it there."
             ),
             exit_code=ExitCode.CHECKS_FAILED,
         )

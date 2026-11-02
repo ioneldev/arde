@@ -404,6 +404,7 @@ def test_a_command_that_cannot_start_names_the_next_action(tmp_path: Path) -> No
 
     assert "no-such-program-anywhere" in str(refused.value)
     assert "PATH" in refused.value.next_action
+    assert str(tmp_path) in refused.value.next_action
 
 
 def test_a_folder_that_does_not_exist_is_named_and_not_blamed_on_the_program(
@@ -415,6 +416,23 @@ def test_a_folder_that_does_not_exist_is_named_and_not_blamed_on_the_program(
         run_child(python_command("pass", cwd=missing))
 
     assert str(missing) in str(refused.value)
+    assert str(missing) in refused.value.next_action
+    assert "Install" not in refused.value.next_action
+
+
+def test_a_helper_that_is_gone_is_not_something_to_install(tmp_path: Path) -> None:
+    command = ChildCommand(
+        argv=(str(tmp_path / "bin" / "helper"),),
+        cwd=tmp_path,
+        timeout_s=5,
+        output=ROOMY,
+        env=child_environment(),
+    )
+
+    with pytest.raises(ChildStartError) as refused:
+        run_child(command)
+
+    assert "Install" not in refused.value.next_action
 
 
 def test_no_temporary_file_is_left_behind(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

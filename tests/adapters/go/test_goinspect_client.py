@@ -336,6 +336,48 @@ def test_a_failed_build_gives_a_short_clean_message(
     assert len(str(failed.value)) < 2 * MESSAGE_TAIL_BYTES
 
 
+@pytest.mark.parametrize(
+    "reason",
+    ["goinspect: cannot parse web/a.go", "goinspect: /repo has no go.mod; pass the directory"],
+)
+def test_a_failure_with_a_reason_sends_the_reader_to_that_reason_and_guesses_nothing(
+    stand_in: StandIn, folder: Path, reason: str
+) -> None:
+    stand_in.replies_with("", stderr=reason, exit_code=1)
+
+    with pytest.raises(GoinspectError) as failed:
+        GoinspectClient(stand_in.binary).declarations(folder)
+
+    assert reason in str(failed.value)
+    assert "what the message names" in failed.value.next_action
+    assert "does not parse" not in failed.value.next_action
+
+
+def test_a_failure_with_no_reason_says_so_and_does_not_point_at_a_message_it_lacks(
+    stand_in: StandIn, folder: Path
+) -> None:
+    stand_in.replies_with("", stderr="   \n", exit_code=1)
+
+    with pytest.raises(GoinspectError) as failed:
+        GoinspectClient(stand_in.binary).declarations(folder)
+
+    assert "gave no reason" in str(failed.value)
+    assert "what the message names" not in failed.value.next_action
+
+
+def test_a_helper_killed_by_a_signal_says_so(tmp_path: Path, folder: Path) -> None:
+    killed = tmp_path / "killed"
+    killed.write_text("#!/bin/sh\nkill -9 $$\n", encoding="utf-8")
+    killed.chmod(killed.stat().st_mode | stat.S_IXUSR)
+
+    with pytest.raises(GoinspectError) as failed:
+        GoinspectClient(killed).declarations(folder)
+
+    assert "exit -9" in str(failed.value)
+    assert "gave no reason" in str(failed.value)
+    assert "memory" in failed.value.next_action
+
+
 def test_a_failing_helper_gives_a_short_clean_message(stand_in: StandIn, folder: Path) -> None:
     stand_in.replies_with("", stderr=NOISY_STDERR, exit_code=1)
 

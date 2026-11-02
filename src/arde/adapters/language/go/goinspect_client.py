@@ -238,15 +238,26 @@ class GoinspectClient:
         )
         outcome = run_child(command)
         if not outcome.succeeded:
-            raise GoinspectError(
-                f"goinspect {question.name} failed with exit {outcome.exit_code}: "
-                f"{bounded_text(outcome.stderr.strip(), MESSAGE_TAIL_BYTES)}",
-                next_action=(
-                    "Fix what the message names, usually a Go file that does not parse, "
-                    "and run again."
-                ),
-            )
+            raise _failure_of(question, outcome)
         return _read_reply(question, outcome)
+
+
+# goinspect writes a reason for every failure of its own, so silence means it was stopped from
+# outside. Reasons vary too much for one guess at the cause to help.
+def _failure_of[T: Frozen](question: "_Question[T]", outcome: ChildOutcome) -> GoinspectError:
+    reason = bounded_text(outcome.stderr.strip(), MESSAGE_TAIL_BYTES)
+    if not reason:
+        return GoinspectError(
+            f"goinspect {question.name} stopped with exit {outcome.exit_code} and gave no reason.",
+            next_action=(
+                "Something stopped it from outside, such as the machine running out of memory. "
+                "Fix that and run again, and report the problem if it stays."
+            ),
+        )
+    return GoinspectError(
+        f"goinspect {question.name} failed with exit {outcome.exit_code}: {reason}",
+        next_action="Fix what the message names, then run again.",
+    )
 
 
 def _as_plain_data(patterns: Sequence[ExtractionPattern]) -> list[dict[str, object]]:
