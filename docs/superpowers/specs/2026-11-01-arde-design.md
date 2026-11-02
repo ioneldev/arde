@@ -265,12 +265,12 @@ def should_classify(snapshot, copy):
     return True
 
 def is_comment_only(file):
-    return is_go(file) and same_ast(file) and no_directive_change(file)
+    return is_go(file) and same_ast(file) and only_ordinary_comments_changed(file)
 ```
 
-`same_ast` compares the whole file, because declaration hashes don't cover imports, and a blank import can change behaviour. It ignores comments and the allowed tag keys `oneOf` and `binding`. `no_directive_change` uses a wide pattern: `//word:word`, `//line`, `//export`, `// +build`, `/*line`, `// #cgo`, `// Output:` and `// Unordered output:`. Any comment edit in a file importing `"C"` counts as a real change. This rule is Go-only.
+`same_ast` compares the whole file, because declaration hashes don't cover imports, and a blank import can change behaviour. It ignores comments and the allowed tags `oneOf` and `binding:"optional"`. `only_ordinary_comments_changed` is an allow-list: remove ordinary comment lines and the allowed tags from both versions, ignore spacing in code, and what's left must match. An ordinary comment is a whole line starting `// `, with no directive form and no block comment marker in it. Any comment edit in a file that could import `"C"`, or in a test file holding an example, counts as a real change. This rule is Go-only.
 
-A false "run" costs a fraction of a cent, so the pattern is deliberately wide.
+An earlier version listed the dangerous forms instead. A list can't be complete: the Phase 1 reviews found 26 wrong answers against it, including one that switched off a failing test. A false "run" costs a fraction of a cent, while a false "comments only" ignores a real change, so everything else counts as real, including block comments, trailing comments and added blank lines.
 
 ### Comparison baseline
 
