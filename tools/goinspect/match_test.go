@@ -244,17 +244,6 @@ func TestMatchListsEachPatternWithNoMatchUnderItsKind(t *testing.T) {
 	}
 }
 
-func TestMatchTellsApartTwoKindsOfOnePattern(t *testing.T) {
-	root := writeTree(t, map[string]string{"main.go": "package p\n\nfunc f() { used(\"a\") }\n"})
-	patterns := `[{"kind":"env","call":"^used$","args":{}},{"kind":"param","call":"^used$","args":{}}]`
-
-	got := unmatchedPatternsOf(t, root, patterns)
-
-	if want := `"unmatched_patterns":[]}` + "\n"; got != want {
-		t.Fatalf("got %s, want %s", got, want)
-	}
-}
-
 func TestMatchPrintsAnEmptyListWhenEveryPatternMatched(t *testing.T) {
 	root := writeTree(t, map[string]string{"main.go": "package p\n"})
 

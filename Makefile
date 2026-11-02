@@ -7,9 +7,9 @@ check:
 	uv run pytest -m "not integration and not eval" -q
 
 # gofmt -l prints the files it would change and exits 0, so the target tests its output. It covers
-# the fixture service too, which the Go adapter tests read as a real repo.
+# the fixture services too, which the Go adapter tests read as real repos.
 integration:
-	unformatted="$$(gofmt -l tools/goinspect tests/fixtures/shop)" && test -z "$$unformatted" || { echo "gofmt would change: $$unformatted (run gofmt -w on them)"; exit 1; }
+	unformatted="$$(gofmt -l tools/goinspect tests/fixtures)" && test -z "$$unformatted" || { echo "gofmt would change: $$unformatted (run gofmt -w on them)"; exit 1; }
 	cd tools/goinspect && go vet ./...
 	cd tools/goinspect && go test ./...
 	uv run pytest -m integration -q

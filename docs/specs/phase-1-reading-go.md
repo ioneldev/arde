@@ -28,7 +28,7 @@ Give ARDE reliable eyes on a Go repo before any agent uses them. At the end, cod
   - `routes` lists the service's route registrations through the type checker, so it needs a repo that compiles. [Deviations](../deviations.md) records why it was added.
   - `fingerprints` hashes everything each route's handler can reach.
 - **`GoAdapter`:** the Python side, behind the `LanguageAdapter` interface. It holds every Go idiom, including the directive check and the build, vet and test commands.
-- **`tests/fixtures/shop`:** a small `net/http` service that tests can build and run.
+- **`tests/fixtures/`:** small `net/http` services that tests can build and run: `shop`, `parcels` with two `main` packages, and `library` with mounted muxes.
 - **Service runner:** starts a binary on a free port, waits for the port, and always stops it, even on Ctrl-C or an error.
 
 ## Rules for this phase
@@ -44,7 +44,7 @@ Give ARDE reliable eyes on a Go repo before any agent uses them. At the end, cod
 
 1. `make check` passes.
 2. `make integration` passes, including `gofmt`, `go vet` and `go test` on `goinspect`.
-3. On `catalog-poc`, `goinspect match` finds the 3 routes, 3 params and all the error calls the spike found. The same code works on `tests/fixtures/shop`, which shares no names or layout with it, using only a different profile.
+3. On `catalog-poc`, `goinspect routes` finds the 3 routes, and `goinspect match` the 3 params and all the error calls the spike found. The same code works on `tests/fixtures/shop`, which shares no names or layout with it, using only a different profile.
 4. A comment-only edit changes no hash, and a one-token edit changes the right one.
 5. Editing one function changes the fingerprint of the routes that reach it and no others.
 6. A service that ignores SIGTERM is still stopped, and nothing is left running after Ctrl-C.
@@ -58,9 +58,13 @@ make check
 make integration
 cd tools/goinspect
 go run . match --patterns ../../docs/research/spike/data/stdlib.json ../../../catalog-poc
+go run . routes --patterns ../../docs/research/spike/data/stdlib.json --main ./cmd/server ../../../catalog-poc
 go run . declarations ../../../catalog-poc
-go run . fingerprints --roots index,product,healthz ../../../catalog-poc
+echo '["(*catalog/internal/httpapi.handlers).index"]' > /tmp/roots.json
+go run . fingerprints --roots /tmp/roots.json --main ./cmd/server ../../../catalog-poc
 ```
+
+`fingerprints` takes the ids that `routes` prints as `handler_id`, in a JSON file, because an id can hold a comma.
 
 The walkthrough will add a worked example: edit a copy of `catalog-poc`, then watch which hashes change.
 
@@ -71,7 +75,7 @@ Agents, the workspace and anything that writes to a repo. Those start in Phase 2
 ## Known limits
 
 - The call graph is static, so it misses calls through interfaces and function values. Declaration hashes and stored requests cover that gap.
-- Only `net/http` is tested. A `gin` pattern can match and keeps its method, but paths stay in `gin`'s `:id` form and router group prefixes aren't resolved.
+- Only `net/http` is tested. A `gin` pattern can match and keeps its method, but paths stay in `gin`'s `:id` form and router group prefixes aren't resolved. `http.StripPrefix` stops the run.
 - Embedded struct fields aren't listed as response fields.
 
 ## Open items

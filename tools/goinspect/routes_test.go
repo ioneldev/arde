@@ -40,6 +40,7 @@ type routesOutput struct {
 	BuildFiles       []string            `json:"build_files"`
 	Sites            []siteOutput        `json:"sites"`
 	StrippedPrefixes []placeOutput       `json:"stripped_prefixes"`
+	WrapperPrefixes  []placeOutput       `json:"wrapper_prefixes"`
 	WrapperCalls     []wrapperCallOutput `json:"wrapper_calls"`
 }
 
@@ -652,6 +653,92 @@ func TestRoutesKeepsTheSiteInsideAWrapperWhenNoPatternMatchesIt(t *testing.T) {
 	}
 }
 
+func TestRoutesListsAWrapperThatAddsToThePathItIsGiven(t *testing.T) {
+	cases := map[string]string{
+		"a slash in front":          `"/v1"+path`,
+		"a method and a slash":      `"POST /v1"+path`,
+		"a const holding the slash": `versionRoot+path`,
+		"a slash behind":            `path+"/"`,
+		"a call that joins":         `strings.Join([]string{"/v1", path}, "")`,
+	}
+
+	for name, argument := range cases {
+		source := `package main
+
+import (
+	"net/http"
+	"strings"
+)
+
+const versionRoot = "/v1"
+
+var _ = strings.Join
+
+type gate struct{ mux *http.ServeMux }
+
+func (g gate) post(path string, h http.HandlerFunc) {
+	g.mux.HandleFunc(` + argument + `, h)
+}
+
+func main() {
+	gate{mux: http.NewServeMux()}.post("/items", parcels)
+}
+` + handlerFuncs
+		root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
+		patterns := `[{"kind":"route","call":"\\.post$","args":{"path":0,"handler":1}}]`
+
+		got := routesOf(t, root, ".", patterns).WrapperPrefixes
+
+		if want := []placeOutput{{File: "main.go", Line: 15}}; !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %+v, want %+v", name, got, want)
+		}
+	}
+}
+
+func TestRoutesDoesNotCallAMethodOrAPlainPathAPrefix(t *testing.T) {
+	for _, argument := range []string{`path`, `"POST "+path`, `"GET "+path`} {
+		source := `package main
+
+import "net/http"
+
+type gate struct{ mux *http.ServeMux }
+
+func (g gate) post(path string, h http.HandlerFunc) {
+	g.mux.HandleFunc(` + argument + `, h)
+}
+
+func main() {
+	gate{mux: http.NewServeMux()}.post("/items", parcels)
+}
+` + handlerFuncs
+		root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
+		patterns := `[{"kind":"route","call":"\\.post$","args":{"path":0,"handler":1}}]`
+
+		if got := routesOf(t, root, ".", patterns).WrapperPrefixes; len(got) != 0 {
+			t.Errorf("%s: got %+v", argument, got)
+		}
+	}
+}
+
+func TestRoutesDoesNotCallAPathOutsideAWrapperAPrefix(t *testing.T) {
+	source := `package main
+
+import "net/http"
+
+func main() {
+	suffix := "x"
+	http.HandleFunc("/v1/"+suffix, parcels)
+}
+` + handlerFuncs
+	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
+
+	output := routesOf(t, root, ".", noPatterns)
+
+	if len(output.WrapperPrefixes) != 0 || len(output.Sites) != 1 {
+		t.Fatalf("this site stops as a path the compiler does not know, got %+v", output)
+	}
+}
+
 func TestRoutesFindsAWrapperWhateverItsReceiverIsCalledAtItsCalls(t *testing.T) {
 	source := `package main
 
@@ -856,7 +943,7 @@ func TestRoutesSortsSitesAndPrintsEmptyListsAsLists(t *testing.T) {
 	if exitCode != 0 || stderr != "" {
 		t.Fatalf("exit %d, stderr %q", exitCode, stderr)
 	}
-	want := `{"package_folders":["."],"build_files":["main.go"],"sites":[],"stripped_prefixes":[],"wrapper_calls":[]}` + "\n"
+	want := `{"package_folders":["."],"build_files":["main.go"],"sites":[],"stripped_prefixes":[],"wrapper_prefixes":[],"wrapper_calls":[]}` + "\n"
 	if stdout != want {
 		t.Fatalf("got %s, want %s", stdout, want)
 	}

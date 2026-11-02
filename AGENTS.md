@@ -5,7 +5,7 @@ ARDE (Agentic Repo Docs Engine) documents a Go `net/http` service: it adds swag 
 ## Commands
 
 - `make check`: ruff, ruff format check, strict mypy and the fast tests. Run it before every commit.
-- `make integration`: tests that need the Go toolchain, and `gofmt` on `goinspect` and the `shop` fixture.
+- `make integration`: tests that need the Go toolchain, and `gofmt` on `goinspect` and the fixture services.
 - `make eval`: tests that call the Anthropic API and cost money. It reads the key from `.env`.
 - `uv run pytest tests/test_architecture.py -q`: run one test file.
 

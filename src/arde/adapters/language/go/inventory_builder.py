@@ -15,7 +15,6 @@ from arde.adapters.language.go.goinspect_client import (
     FieldReply,
     RouteSite,
     RoutesReply,
-    SourcePlace,
     UnmatchedPattern,
 )
 from arde.domain.base import Frozen, describe_problems, one_line, printable_name
@@ -121,7 +120,7 @@ class NoRoutesError(ArdeError):
 
 
 def build_inventory(reading: SourceReading) -> Inventory:
-    _stop_at_a_stripped_prefix(reading.service.stripped_prefixes)
+    _stop_where_a_path_changes(reading.service)
     routes = _one_row_per_route(_route_from(site) for site in reading.service.sites)
     if not routes:
         raise NoRoutesError
@@ -162,11 +161,17 @@ def build_inventory(reading: SourceReading) -> Inventory:
     )
 
 
-def _stop_at_a_stripped_prefix(places: tuple[SourcePlace, ...]) -> None:
-    if places:
+def _stop_where_a_path_changes(service: RoutesReply) -> None:
+    if service.stripped_prefixes:
         raise RouteNotUnderstoodError(
-            places[0],
+            service.stripped_prefixes[0],
             "http.StripPrefix changes the paths under it, so they cannot be read",
+            next_action=PREFIXES_ARE_NOT_RESOLVED,
+        )
+    if service.wrapper_prefixes:
+        raise RouteNotUnderstoodError(
+            service.wrapper_prefixes[0],
+            "the function around this call adds to the path, so its callers' paths cannot be read",
             next_action=PREFIXES_ARE_NOT_RESOLVED,
         )
 

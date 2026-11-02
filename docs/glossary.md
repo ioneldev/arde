@@ -8,7 +8,7 @@ Terms as ARDE uses them.
 
 **Finding**: The result of a failed check. It names the check, who owns the repair (explore, docs or code), the subject, a message and the next action.
 
-**Inline handler**: A route whose handler is not a plain name, such as a function written in place or a call that wraps another handler. The inventory stores it as `(inline)`. It has no fingerprint, so the stale rule counts it as changed on every run.
+**Inline handler**: A route whose handler is a function written in place, or another expression with no plain name to show. The inventory stores it as `(inline)`. A function written in place has no fingerprint, so the stale rule counts it as changed on every run.
 
 **Inventory**: The routes, params, error codes, response fields, env vars and make targets that code extracts from the source using the profile's patterns. It is computed on every run and never stored, so an agent cannot invent an item that is not in it. A call that matched a pattern but gave nothing, because an argument was not a string literal, is listed in its `dropped` lines, so a missing item can be told from a call that was never found.
 

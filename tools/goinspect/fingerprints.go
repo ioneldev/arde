@@ -179,14 +179,15 @@ func loadProblems(loaded []*packages.Package) []string {
 	return slices.Compact(problems)
 }
 
-// declaredFunctionsByID leaves out what SSA generates, such as the package initialiser. Several
-// init functions share an id, which costs nothing, because a handler cannot be one.
+// declaredFunctionsByID leaves out what SSA generates, such as the package initialiser, which has
+// no object. Several init functions share an id, which costs nothing, because a handler cannot be
+// one.
 func (module moduleProgram) declaredFunctionsByID() map[string]*ssa.Function {
 	byID := map[string]*ssa.Function{}
 	for _, ssaPackage := range module.sourcePackages {
 		for _, member := range ssaPackage.Members {
 			for _, function := range module.functionsDeclaredBy(member) {
-				if declared, isDeclared := function.Object().(*types.Func); isDeclared && function.Synthetic == "" {
+				if declared, isDeclared := function.Object().(*types.Func); isDeclared {
 					byID[functionID(declared)] = function
 				}
 			}

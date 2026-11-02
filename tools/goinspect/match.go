@@ -91,11 +91,13 @@ func findMatches(root, patternsPath string) (matchReport, error) {
 	return report, nil
 }
 
+// patternsWithNoMatch reads the callee alone: a pattern matches every call its regex fits, so any
+// match on a fitting callee, of any kind, means this pattern matched too.
 func patternsWithNoMatch(patterns []callPattern, matches []callMatch) []patternName {
 	unmatched := []patternName{}
 	for _, pattern := range patterns {
 		matched := slices.ContainsFunc(matches, func(match callMatch) bool {
-			return match.Kind == pattern.kind && pattern.call.MatchString(match.Call)
+			return pattern.call.MatchString(match.Call)
 		})
 		if !matched {
 			unmatched = append(unmatched, patternName{Kind: pattern.kind, Call: pattern.call.String()})

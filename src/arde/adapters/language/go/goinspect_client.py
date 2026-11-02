@@ -115,7 +115,9 @@ class RoutesReply(Frozen):
     # The files of those packages that this machine's build compiles.
     build_files: tuple[str, ...]
     sites: tuple[RouteSite, ...]
+    # Calls to http.StripPrefix, and sites inside a wrapper that add to the path they are given.
     stripped_prefixes: tuple[SourcePlace, ...]
+    wrapper_prefixes: tuple[SourcePlace, ...]
     wrapper_calls: tuple[WrapperCall, ...]
 
 

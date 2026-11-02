@@ -462,6 +462,7 @@ ROUTES_REPLY = {
         }
     ],
     "stripped_prefixes": [{"file": "web/files.go", "line": 4}],
+    "wrapper_prefixes": [{"file": "web/router.go", "line": 6}],
     "wrapper_calls": [{"kind": "env", "file": "main.go", "line": 7}],
 }
 
@@ -484,6 +485,7 @@ def test_routes_hand_over_the_patterns_and_the_main_package_and_read_the_reply(
     assert site.handler_id == "(*example.com/depot.desk).list"
     assert (site.handler_file, site.handler_line) == ("web/desk.go", 30)
     assert reply.stripped_prefixes == (SourcePlace(file="web/files.go", line=4),)
+    assert reply.wrapper_prefixes == (SourcePlace(file="web/router.go", line=6),)
     assert reply.wrapper_calls == (WrapperCall(kind="env", file="main.go", line=7),)
 
 

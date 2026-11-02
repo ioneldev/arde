@@ -7,6 +7,7 @@ import (
 	"go/types"
 	"maps"
 	"slices"
+	"strings"
 	"unicode/utf8"
 
 	"golang.org/x/tools/go/types/typeutil"
@@ -54,6 +55,7 @@ type routeReport struct {
 	BuildFiles       []string      `json:"build_files"`
 	Sites            []routeSite   `json:"sites"`
 	StrippedPrefixes []sourcePlace `json:"stripped_prefixes"`
+	WrapperPrefixes  []sourcePlace `json:"wrapper_prefixes"`
 	WrapperCalls     []wrapperCall `json:"wrapper_calls"`
 }
 
@@ -113,6 +115,7 @@ func (reader routeReader) report(calls []serviceCall) (routeReport, error) {
 		BuildFiles:       reader.service.buildFiles(),
 		Sites:            []routeSite{},
 		StrippedPrefixes: []sourcePlace{},
+		WrapperPrefixes:  []sourcePlace{},
 		WrapperCalls:     []wrapperCall{},
 	}
 	for _, call := range calls {
@@ -125,6 +128,9 @@ func (reader routeReader) report(calls []serviceCall) (routeReport, error) {
 		if call.isCallTo(stripPrefixFunction) {
 			report.StrippedPrefixes = append(report.StrippedPrefixes, call.place)
 		}
+		if reader.addsToAWrappedPath(call) {
+			report.WrapperPrefixes = append(report.WrapperPrefixes, call.place)
+		}
 	}
 	report.sort()
 	return report, nil
@@ -135,6 +141,7 @@ func (report *routeReport) sort() {
 		return cmp.Or(cmp.Compare(a.File, b.File), cmp.Compare(a.Line, b.Line))
 	})
 	slices.SortFunc(report.StrippedPrefixes, comparePlaces)
+	slices.SortFunc(report.WrapperPrefixes, comparePlaces)
 	slices.SortFunc(report.WrapperCalls, func(a, b wrapperCall) int {
 		return cmp.Or(comparePlaces(a.sourcePlace, b.sourcePlace), cmp.Compare(a.Kind, b.Kind))
 	})
@@ -214,6 +221,37 @@ func (reader routeReader) siteAt(call serviceCall, positions map[string]int) (ro
 	}
 	err := reader.nameTheRoot(&site, handlers.rootOf(handler))
 	return site, true, err
+}
+
+// addsToAWrappedPath is true for a site inside a wrapper whose path holds a constant with a slash.
+// The pattern reads the path at the wrapper's calls, and that text would be missing what the wrapper
+// adds. A method such as "GET "+path has no slash, and the wrapper's name gives the method.
+func (reader routeReader) addsToAWrappedPath(call serviceCall) bool {
+	if _, isInsideAWrapper := reader.wrappers[routeKind][call.enclosing]; !isInsideAWrapper {
+		return false
+	}
+	for _, positions := range reader.routePositionsOf(call) {
+		path := argumentAt(call.syntax, positions, "path")
+		if _, isKnown := knownString(call.info, path); !isKnown && holdsAConstantWithASlash(call.info, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func holdsAConstantWithASlash(info *types.Info, expression ast.Expr) bool {
+	found := false
+	if expression == nil {
+		return false
+	}
+	ast.Inspect(expression, func(node ast.Node) bool {
+		if part, isExpression := node.(ast.Expr); isExpression {
+			text, isKnown := knownString(info, part)
+			found = found || (isKnown && strings.Contains(text, "/"))
+		}
+		return !found
+	})
+	return found
 }
 
 func (reader routeReader) matchAt(call serviceCall, positions map[string]int) callMatch {

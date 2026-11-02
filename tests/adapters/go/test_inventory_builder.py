@@ -109,6 +109,7 @@ def inventory_of(
     make_targets: tuple[str, ...] = (),
     declarations: tuple[DeclarationReply, ...] = (),
     stripped_prefixes: tuple[SourcePlace, ...] = (),
+    wrapper_prefixes: tuple[SourcePlace, ...] = (),
     folders: tuple[str, ...] | None = None,
     build_files: tuple[str, ...] | None = None,
     wrapper_calls: tuple[WrapperCall, ...] = (),
@@ -122,6 +123,7 @@ def inventory_of(
         build_files=tuple(files) if build_files is None else build_files,
         sites=sites,
         stripped_prefixes=stripped_prefixes,
+        wrapper_prefixes=wrapper_prefixes,
         wrapper_calls=wrapper_calls,
     )
     reading = SourceReading(
@@ -480,6 +482,19 @@ def test_the_file_named_by_a_prefix_stop_is_printed_safely() -> None:
     error = stopped_by_a_prefix(place=SourcePlace(file="e\x1bvil.go", line=2))
 
     assert "\x1b" not in str(error)
+
+
+def test_a_wrapper_that_adds_to_the_path_stops_the_run_and_names_the_place() -> None:
+    with pytest.raises(RouteNotUnderstoodError) as stopped:
+        inventory_of(
+            registering(Lit("GET /items")),
+            wrapper_prefixes=(SourcePlace(file="web/router.go", line=8),),
+        )
+
+    assert "web/router.go:8" in str(stopped.value)
+    assert "adds to the path" in str(stopped.value)
+    assert stopped.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
+    assert "report that" in stopped.value.next_action
 
 
 def test_no_route_at_all_stops_the_run_and_asks_for_a_pattern() -> None:
