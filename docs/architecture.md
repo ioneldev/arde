@@ -62,7 +62,7 @@ What exists today:
 - `src/arde/application/budget.py`: the cost cap and the totals per role.
 - `src/arde/adapters/llm/anthropic_client.py`: the Anthropic API behind `LLMClient`.
 - `src/arde/adapters/language/go/`: the Go language adapter, which holds every Go idiom. `adapter.py` is `GoAdapter`. `goinspect_client.py` builds the helper and reads its JSON replies into typed models. `inventory_builder.py` turns the helper's matches into the inventory. `directives.py` and `makefile.py` hold the comment-only rule and the make targets. `toolchain.py` runs build, vet and test, and builds the service.
-- `src/arde/adapters/child_env.py` and `src/arde/adapters/child_process.py`: every child process gets an allow-listed environment, never a copy of ours, and a timeout that also stops what the child started.
+- `src/arde/adapters/child_env.py` and `src/arde/adapters/child_process.py`: every child process gets an allow-listed environment, never a copy of ours, and a timeout that also stops what the child started. Its output goes to temporary files and is read back with a limit, so a chatty command costs disk and never memory.
 - `src/arde/adapters/tracer.py`: writes `trace.jsonl` and `debug.log`.
 - `src/arde/adapters/models_file.py`: reads the model settings per role.
 - `tests/fixtures/shop/`: a small `net/http` service that the adapter tests treat as a real repo. It shares no names or layout with any repo ARDE was built against.

@@ -42,13 +42,13 @@ def test_a_child_gets_the_allowed_variables_that_are_set(
     clean_environment.setenv("PATH", "/usr/bin")
     clean_environment.setenv("GOPATH", "/work/go")
 
-    assert child_environment() == {"PATH": "/usr/bin", "GOPATH": "/work/go"}
+    assert child_environment() == {"PATH": "/usr/bin", "GOPATH": "/work/go", "GOENV": "off"}
 
 
 def test_a_variable_that_is_not_set_is_not_invented(
     clean_environment: pytest.MonkeyPatch,
 ) -> None:
-    assert child_environment() == {}
+    assert child_environment() == {"GOENV": "off"}
 
 
 @pytest.mark.parametrize("name", SECRETS_AND_RISKS)
@@ -68,3 +68,17 @@ def test_goflags_stays_out_because_it_can_name_a_program_to_run(
 
     assert "GOFLAGS" not in ALLOWED_VARIABLES
     assert "GOFLAGS" not in child_environment()
+
+
+def test_the_go_env_file_is_switched_off_because_it_can_carry_goflags(
+    clean_environment: pytest.MonkeyPatch,
+) -> None:
+    assert child_environment()["GOENV"] == "off"
+
+
+def test_the_parents_choice_of_env_file_does_not_reach_a_child(
+    clean_environment: pytest.MonkeyPatch,
+) -> None:
+    clean_environment.setenv("GOENV", "/somewhere/with/flags")
+
+    assert child_environment()["GOENV"] == "off"

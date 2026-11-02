@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 from arde.adapters.child_process import ChildCommand, ChildOutcome, run_child
+from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
 from arde.adapters.language.go.timeouts import (
     EXTRA_TEST_COMMAND_TIMEOUT_S,
     GO_BUILD_TIMEOUT_S,
@@ -115,10 +116,17 @@ def _run_extra(repo: Path, command: str) -> ChildOutcome:
         raise BadTestCommandError(command) from error
     if not words:
         raise BadTestCommandError(command)
-    return run_child(
-        ChildCommand(argv=tuple(words), cwd=repo, timeout_s=EXTRA_TEST_COMMAND_TIMEOUT_S)
+    extra = ChildCommand(
+        argv=tuple(words),
+        cwd=repo,
+        timeout_s=EXTRA_TEST_COMMAND_TIMEOUT_S,
+        output=CHECK_OUTPUT_LIMIT,
     )
+    return run_child(extra)
 
 
 def _go(repo: Path, arguments: tuple[str, ...], timeout_s: float) -> ChildOutcome:
-    return run_child(ChildCommand(argv=("go", *arguments), cwd=repo, timeout_s=timeout_s))
+    command = ChildCommand(
+        argv=("go", *arguments), cwd=repo, timeout_s=timeout_s, output=CHECK_OUTPUT_LIMIT
+    )
+    return run_child(command)

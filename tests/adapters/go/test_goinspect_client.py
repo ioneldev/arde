@@ -7,9 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from arde.adapters.child_process import ChildCommand, ChildOutcome, ChildTimeoutError
+from arde.adapters.child_process import (
+    ChildCommand,
+    ChildOutcome,
+    ChildOutputTooLongError,
+    ChildTimeoutError,
+    OutputLimit,
+)
 from arde.adapters.language.go import goinspect_client
 from arde.adapters.language.go.goinspect_client import (
+    GOINSPECT_REPLY_LIMIT,
     CallMatch,
     GoinspectClient,
     GoinspectError,
@@ -250,3 +257,64 @@ def test_a_failed_build_names_the_next_action(
         build_goinspect(tmp_path / "bin")
 
     assert failed.value.next_action
+
+
+def test_the_whole_reply_is_kept_up_to_64_megabytes_and_a_longer_one_is_refused() -> None:
+    assert OutputLimit(max_bytes=64 * 1024 * 1024, when_longer="fail") == GOINSPECT_REPLY_LIMIT
+
+
+def test_a_reply_past_the_cap_stops_the_run_and_is_not_cut_into_bad_json(
+    monkeypatch: pytest.MonkeyPatch, stand_in: StandIn, folder: Path
+) -> None:
+    stand_in.replies_with(
+        '{"changed": [' + '"a.go", ' * 100 + '"b.go"], "added": [], "removed": []}'
+    )
+    monkeypatch.setattr(
+        goinspect_client, "GOINSPECT_REPLY_LIMIT", OutputLimit(max_bytes=100, when_longer="fail")
+    )
+
+    with pytest.raises(ChildOutputTooLongError) as refused:
+        GoinspectClient(stand_in.binary).compare(folder, folder)
+
+    assert isinstance(refused.value, ArdeError)
+    assert refused.value.next_action
+
+
+def test_a_relative_helper_path_is_fixed_where_the_client_is_made(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    arde_folder, target_repo = tmp_path / "arde", tmp_path / "repo"
+    (arde_folder / "bin").mkdir(parents=True)
+    (target_repo / "bin").mkdir(parents=True)
+    stand_in = StandIn(arde_folder / "bin")
+    stand_in.replies_with('{"declarations": [], "fields": []}')
+    planted = target_repo / "bin" / "goinspect"
+    planted.write_text(f"#!/bin/sh\ntouch {tmp_path}/planted-helper-ran\n", encoding="utf-8")
+    planted.chmod(planted.stat().st_mode | stat.S_IXUSR)
+    monkeypatch.chdir(arde_folder)
+
+    reply = GoinspectClient(Path("bin/goinspect")).declarations(target_repo)
+
+    assert reply.declarations == ()
+    assert not (tmp_path / "planted-helper-ran").exists()
+
+
+def test_a_relative_folder_for_the_helper_is_built_where_the_caller_stands(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    built_at: list[str] = []
+
+    def recording_build(command: ChildCommand) -> ChildOutcome:
+        target = Path(command.argv[command.argv.index("-o") + 1])
+        built_at.append(str(target))
+        target.write_text("binary", encoding="utf-8")
+        return ChildOutcome(exit_code=0, stdout="", stderr="")
+
+    monkeypatch.setattr(goinspect_client, "run_child", recording_build)
+    monkeypatch.setattr(goinspect_client, "_built", set())
+    monkeypatch.chdir(tmp_path)
+
+    binary = build_goinspect(Path("relative-bin"))
+
+    assert binary == (tmp_path / "relative-bin" / "goinspect").resolve()
+    assert built_at == [str(binary)]

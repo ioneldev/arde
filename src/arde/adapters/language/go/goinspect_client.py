@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from arde.adapters.child_process import ChildCommand, ChildOutcome, run_child
+from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT, GOINSPECT_REPLY_LIMIT
 from arde.adapters.language.go.timeouts import GO_BUILD_TIMEOUT_S, GOINSPECT_TIMEOUT_S
 from arde.domain.base import Frozen, describe_problems
 from arde.domain.errors import ArdeError
@@ -77,7 +78,8 @@ _built: set[Path] = set()
 
 
 def build_goinspect(bin_dir: Path) -> Path:
-    binary = bin_dir / HELPER_NAME
+    # Resolved here: the build runs in another folder, where a relative path would land.
+    binary = bin_dir.resolve() / HELPER_NAME
     if binary in _built and binary.is_file():
         return binary
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -85,6 +87,7 @@ def build_goinspect(bin_dir: Path) -> Path:
         argv=("go", "build", "-buildvcs=false", "-o", str(binary), "."),
         cwd=GOINSPECT_SOURCE,
         timeout_s=GO_BUILD_TIMEOUT_S,
+        output=CHECK_OUTPUT_LIMIT,
     )
     outcome = run_child(command)
     if not outcome.succeeded:
@@ -100,8 +103,10 @@ def build_goinspect(bin_dir: Path) -> Path:
 
 
 class GoinspectClient:
+    # Resolved here: every call runs in the folder being inspected, where a relative path could
+    # find a helper that the repo planted.
     def __init__(self, binary: Path) -> None:
-        self._binary = binary
+        self._binary = binary.resolve()
 
     def compare(self, old_dir: Path, new_dir: Path) -> CompareReply:
         old, new = old_dir.resolve(), new_dir.resolve()
@@ -131,7 +136,10 @@ class GoinspectClient:
 
     def _ask[T: Frozen](self, arguments: tuple[str, ...], reply_type: type[T], *, cwd: Path) -> T:
         command = ChildCommand(
-            argv=(str(self._binary), *arguments), cwd=cwd, timeout_s=GOINSPECT_TIMEOUT_S
+            argv=(str(self._binary), *arguments),
+            cwd=cwd,
+            timeout_s=GOINSPECT_TIMEOUT_S,
+            output=GOINSPECT_REPLY_LIMIT,
         )
         outcome = run_child(command)
         name = arguments[0]

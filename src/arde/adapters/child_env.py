@@ -18,6 +18,11 @@ ALLOWED_VARIABLES = (
     "GOPROXY",
 )
 
+# HOME is allowed, and the toolchain keeps its own settings in a file under it, written by "go env
+# -w". That file can hold the GOFLAGS that the list above leaves out, so children do not read it.
+FIXED_VARIABLES = {"GOENV": "off"}
+
 
 def child_environment() -> dict[str, str]:
-    return {name: os.environ[name] for name in ALLOWED_VARIABLES if name in os.environ}
+    allowed = {name: os.environ[name] for name in ALLOWED_VARIABLES if name in os.environ}
+    return {**allowed, **FIXED_VARIABLES}

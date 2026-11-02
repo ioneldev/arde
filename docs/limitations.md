@@ -7,6 +7,9 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 - **Repos must be trusted.** The repo's code runs in the same container as ARDE and the API key. Removing `ANTHROPIC_*` from child processes limits accidents, but it is not a security boundary: code running as the same user could still read the parent's environment. This is reasoned, not tested.
 - **A writable repo mount is an open risk.** The container mounts the local repo so it can write results back. Repo code running in the container could use that mount to tamper with the host repo, for example by planting a git hook that later runs on the host. This must be resolved before the container ships (Task 28 of the plan).
 - **The `/data` volume is shared across repos.** The container keeps `ARDE_HOME`, `GOCACHE` and `GOPATH` in one volume, owned by the same user as repo code. Repo A's tests could write repo B's `profile.override.yaml`, the file `extra_test_commands` trusts. This is reasoned, not tested, and must be resolved before the container ships (Task 28 of the plan).
+- **Children do not read the user's `go env` file.** ARDE sets `GOENV=off`, because that file lives under `HOME` and can hold a `GOFLAGS` with `-toolexec`. A setting made with `go env -w`, such as `GOPRIVATE`, does not apply to ARDE's builds. `GOPROXY` is passed on from the environment.
+- **A timeout cannot reach a grandchild that started its own session.** The child and its process group are killed, and ARDE stops waiting. A daemon that a test or an extra command started on its own keeps running.
+- **A child's output is kept on disk while it runs.** ARDE keeps the last 1 MB of a check's output and refuses a `goinspect` reply over 64 MB, but a command that writes gigabytes still uses that much disk until it ends.
 - **No sandbox for untrusted merge-request code.** A separate sandbox is a non-goal for now.
 
 ## Prompt injection and data

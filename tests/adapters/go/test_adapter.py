@@ -1,8 +1,10 @@
 """The Go adapter against real Go: goinspect, the toolchain and the shop fixture service."""
 
+import json
 import re
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -11,6 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
 from doubtful_edits import EVERY_DOUBTFUL_EDIT, ORDINARY_EDITS, DoubtfulEdit
 from pydantic import ValidationError
 from shop_support import ROUTE_PATTERNS, SHOP, shop_profile
@@ -246,6 +249,75 @@ def test_a_vet_finding_fails_vet_alone(adapter: GoAdapter, shop: Path) -> None:
     result = adapter.run_checks(shop, shop_profile())
 
     assert (result.build_ok, result.vet_ok, result.test_ok) == (True, False, True)
+
+
+NOISY_TEST = """package noisy
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
+
+func TestNoisy(t *testing.T) {
+	chunk := strings.Repeat("x", 1<<20)
+	for i := 0; i < 400; i++ {
+		fmt.Println(chunk)
+	}
+	t.Fatal("done")
+}
+"""
+
+# Run in its own process, because the peak of a process never goes down: this one has run
+# thousands of other tests.
+PEAK_MEMORY_OF_RUN_CHECKS = """
+import json, resource, sys
+from pathlib import Path
+from arde.adapters.language.go.adapter import GoAdapter
+from arde.domain.profile import RepoProfile
+
+profile = RepoProfile(main_package=".", main_file="main.go", port_env="PORT", patterns=())
+result = GoAdapter(Path("unused")).run_checks(Path(sys.argv[1]), profile)
+peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+in_megabytes = peak / 2**20 if sys.platform == "darwin" else peak / 1024
+print(json.dumps({"peak_mb": in_megabytes, "output_chars": len(result.output),
+                  "test_ok": result.test_ok, "build_ok": result.build_ok}))
+"""
+
+
+def test_a_test_that_prints_400_megabytes_costs_the_run_no_memory_and_leaves_a_tail(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "go.mod").write_text("module example.com/noisy\n\ngo 1.22\n", encoding="utf-8")
+    (tmp_path / "noisy_test.go").write_text(NOISY_TEST, encoding="utf-8")
+
+    ran = subprocess.run(
+        [sys.executable, "-c", PEAK_MEMORY_OF_RUN_CHECKS, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=300,
+    )
+    report = json.loads(ran.stdout)
+
+    assert (report["build_ok"], report["test_ok"]) == (True, False)
+    assert report["output_chars"] < 2 * CHECK_OUTPUT_LIMIT.max_bytes
+    assert report["peak_mb"] < 300, f"the run peaked at {report['peak_mb']:.0f} MB"
+
+
+def test_output_that_was_cut_says_so_in_the_result(adapter: GoAdapter, shop: Path) -> None:
+    (shop / "pricing" / "noise_test.go").write_text(
+        'package pricing\n\nimport "testing"\n\nfunc TestNoise(t *testing.T) {\n'
+        '\tfor i := 0; i < 30000; i++ {\n\t\tt.Log("noise noise noise noise noise noise noise")\n'
+        '\t}\n\tt.Fatal("done")\n}\n',
+        encoding="utf-8",
+    )
+
+    result = adapter.run_checks(shop, shop_profile())
+
+    assert not result.test_ok
+    assert "[ARDE kept only the last" in result.output
+    assert "done" in result.output
 
 
 def test_run_checks_builds_without_a_version_control_stamp(adapter: GoAdapter, shop: Path) -> None:
