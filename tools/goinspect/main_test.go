@@ -118,3 +118,17 @@ func TestParseFailureMessageNamesTheFile(t *testing.T) {
 		t.Fatalf("stderr must name the file, got %q", stderr)
 	}
 }
+
+func TestWriteJSONReturnsAnErrorAndWritesNothingForAValueItCannotEncode(t *testing.T) {
+	var out bytes.Buffer
+	unencodable := map[string]any{"fine": "text", "broken": make(chan int)}
+
+	err := writeJSON(&out, unencodable)
+
+	if err == nil {
+		t.Fatal("want an error for a channel, which JSON cannot hold")
+	}
+	if out.Len() != 0 {
+		t.Fatalf("the writer must stay empty, got %q", out.String())
+	}
+}

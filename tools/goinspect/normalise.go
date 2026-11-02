@@ -58,8 +58,9 @@ func normaliseTree(file *ast.File) {
 
 var positionType = reflect.TypeOf(token.Pos(0))
 
-// omitPositions drops every token.Pos, so moving code does not change a hash, except the two
-// fields that markSyntaxHeldInPositions has reduced to present or absent.
+// omitPositions drops every token.Pos, so moving code does not change a hash, except the three
+// fields (under two names, Assign and Ellipsis) that markSyntaxHeldInPositions has reduced to
+// present or absent.
 func omitPositions(fieldName string, value reflect.Value) bool {
 	return value.Type() != positionType || fieldName == "Assign" || fieldName == "Ellipsis"
 }
