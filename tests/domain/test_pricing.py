@@ -21,10 +21,6 @@ def usage_of(
     )
 
 
-def test_opus_cost() -> None:
-    assert cost_usd("claude-opus-5-5", usage_of(input_tokens=ONE_MILLION)) == 4.0
-
-
 @pytest.mark.parametrize(
     ("model", "input_price", "output_price", "cache_read_price"),
     [
@@ -36,9 +32,11 @@ def test_opus_cost() -> None:
 def test_each_kind_of_token_is_priced_per_million(
     model: str, input_price: float, output_price: float, cache_read_price: float
 ) -> None:
-    assert cost_usd(model, usage_of(input_tokens=ONE_MILLION)) == pytest.approx(input_price)
+    tenth_of_a_price = cost_usd(model, usage_of(input_tokens=100_000))
+
+    assert tenth_of_a_price == pytest.approx(input_price / 10)
     assert cost_usd(model, usage_of(output_tokens=ONE_MILLION)) == pytest.approx(output_price)
-    assert cost_usd(model, usage_of(cache_read=ONE_MILLION)) == pytest.approx(cache_read_price)
+    assert cost_usd(model, usage_of(cache_read=100_000)) == pytest.approx(cache_read_price / 10)
 
 
 @pytest.mark.parametrize(
@@ -48,7 +46,47 @@ def test_each_kind_of_token_is_priced_per_million(
 def test_a_cache_write_costs_one_and_a_quarter_times_the_input_price(
     model: str, input_price: float
 ) -> None:
-    assert cost_usd(model, usage_of(cache_write=ONE_MILLION)) == pytest.approx(input_price * 1.25)
+    cost = cost_usd(model, usage_of(cache_write=100_000))
+
+    assert cost == pytest.approx(input_price * 1.25 / 10)
+
+
+HAIKU = "claude-haiku-5-5"
+HAIKU_LONG_PROMPT_TOKENS = 100_000
+
+
+def test_haiku_at_exactly_the_long_prompt_limit_keeps_the_low_rate() -> None:
+    usage = usage_of(input_tokens=HAIKU_LONG_PROMPT_TOKENS, output_tokens=ONE_MILLION)
+
+    assert cost_usd(HAIKU, usage) == pytest.approx(0.01 + 0.50)
+
+
+def test_haiku_above_the_long_prompt_limit_pays_five_times_for_everything() -> None:
+    usage = usage_of(input_tokens=HAIKU_LONG_PROMPT_TOKENS + 1, output_tokens=ONE_MILLION)
+
+    assert cost_usd(HAIKU, usage) == pytest.approx((100_001 * 0.50 / ONE_MILLION) + 2.50)
+
+
+@pytest.mark.parametrize("cached", ["cache_read", "cache_write"])
+def test_cached_tokens_count_toward_the_long_prompt_limit(cached: str) -> None:
+    short_uncached_part = usage_of(input_tokens=1, **{cached: HAIKU_LONG_PROMPT_TOKENS})
+
+    expected_input = 1 * 0.50 / ONE_MILLION
+    price = 0.05 if cached == "cache_read" else 0.625
+    expected_cached = HAIKU_LONG_PROMPT_TOKENS * price / ONE_MILLION
+    assert cost_usd(HAIKU, short_uncached_part) == pytest.approx(expected_input + expected_cached)
+
+
+def test_output_tokens_do_not_count_toward_the_long_prompt_limit() -> None:
+    usage = usage_of(input_tokens=1, output_tokens=ONE_MILLION)
+
+    assert cost_usd(HAIKU, usage) == pytest.approx(1 * 0.10 / ONE_MILLION + 0.50)
+
+
+def test_opus_has_one_rate_at_any_length() -> None:
+    usage = usage_of(input_tokens=500_000)
+
+    assert cost_usd("claude-opus-5-5", usage) == pytest.approx(2.0)
 
 
 def test_the_cost_of_a_mixed_call_is_the_sum_of_its_parts() -> None:

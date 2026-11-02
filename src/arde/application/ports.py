@@ -17,7 +17,7 @@ class Tracer(Protocol):
 
     Event kinds: run_start, step_start, step_end, model_call, model_error, tool_call, correction,
     agent_end, check_result, repair, warning and run_end. The tracer stamps each event, so callers
-    pass no time.
+    pass no time. A field named summary may be any length: the tracer cuts it, after redaction.
     """
 
     def event(self, kind: str, **fields: object) -> None: ...

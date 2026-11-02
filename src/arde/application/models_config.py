@@ -1,75 +1,28 @@
-"""Which model each role uses, read from the shipped models.yaml or a file the user points to."""
+"""What a role's model setting is. Reading one from a file is an adapter's job."""
 
-import os
-from importlib.resources import files
-from importlib.resources.abc import Traversable
-from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-import yaml
-from pydantic import PositiveInt, ValidationError
+from pydantic import Field, field_validator
 
-from arde.domain.base import Frozen, describe_problems
-from arde.domain.errors import ArdeError
-from arde.domain.report import ExitCode
-
-MODELS_FILE_VARIABLE = "ARDE_MODELS_FILE"
+from arde.domain.base import Frozen
+from arde.domain.pricing import PRICES
 
 Role = Literal["discovery", "explore", "docs", "classifier", "judge"]
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+# Strict, because YAML reads "yes" as true, and true would otherwise pass as the number 1.
+Limit = Annotated[int, Field(strict=True, gt=0)]
 
 
 class RoleConfig(Frozen):
     model: str
-    effort: str
-    max_turns: PositiveInt
-    max_tokens: PositiveInt
+    effort: Effort
+    max_turns: Limit
+    max_tokens: Limit
 
-
-# Spelling out the roles lets the file be checked in one pass: a missing role, a misspelt role
-# and a misspelt setting are all refused before any model is called.
-class _ModelsFile(Frozen):
-    discovery: RoleConfig
-    explore: RoleConfig
-    docs: RoleConfig
-    classifier: RoleConfig
-    judge: RoleConfig
-
-
-class ModelsFileError(ArdeError):
-    def __init__(self, source: str, problem: str) -> None:
-        super().__init__(
-            f"Cannot use the models file {source}: {problem}",
-            next_action=(
-                f"Fix {source}, or leave {MODELS_FILE_VARIABLE} unset to use the built-in models"
-            ),
-            exit_code=ExitCode.BAD_USAGE,
-        )
-
-
-def load_models(path: Path | None = None) -> dict[str, RoleConfig]:
-    source = _choose_source(path)
-    raw = _read_yaml(source)
-    try:
-        models_file = _ModelsFile.model_validate(raw)
-    except ValidationError as error:
-        raise ModelsFileError(str(source), describe_problems(error, whole="the file")) from error
-    return {role: getattr(models_file, role) for role in _ModelsFile.model_fields}
-
-
-# An explicit path beats the environment, which beats the file that ships with the package.
-def _choose_source(path: Path | None) -> Traversable:
-    if path is not None:
-        return path
-    from_environment = os.environ.get(MODELS_FILE_VARIABLE)
-    if from_environment:
-        return Path(from_environment)
-    return files("arde") / "config" / "models.yaml"
-
-
-def _read_yaml(source: Traversable) -> object:
-    try:
-        return yaml.safe_load(source.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError) as error:
-        raise ModelsFileError(str(source), f"it cannot be read ({error})") from error
-    except yaml.YAMLError as error:
-        raise ModelsFileError(str(source), f"it is not valid YAML ({error})") from error
+    # Checked here rather than at the first charge, which would come after the call is paid for.
+    @field_validator("model")
+    @classmethod
+    def _model_has_a_price(cls, model: str) -> str:
+        if model not in PRICES:
+            raise ValueError(f"no price is known for {model!r}: use one of {', '.join(PRICES)}")
+        return model

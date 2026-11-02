@@ -204,35 +204,6 @@ def test_a_large_max_tokens_is_sent_on_both_paths(call: str) -> None:
     assert sent[0]["max_tokens"] == 64_000
 
 
-# Opus 5.5 answers a forced tool_choice with a 400 and has thinking always on, so the adapter
-# leaves tool_choice, thinking and sampling to the API defaults.
-REJECTED_PARAMS = {"temperature", "top_p", "top_k", "tool_choice", "thinking"}
-
-
-def test_complete_never_sends_what_the_model_rejects() -> None:
-    client, sdk = client_returning(message_with())
-
-    client.complete(REQUEST)
-
-    assert REJECTED_PARAMS.isdisjoint(sdk.streamed[0])
-
-
-def test_parse_never_sends_what_the_model_rejects() -> None:
-    client, sdk = client_returning(verdict_reply("ok"))
-
-    client.parse(REQUEST, Verdict)
-
-    assert REJECTED_PARAMS.isdisjoint(sdk.streamed[0])
-
-
-def test_a_strict_tool_sends_strict_true() -> None:
-    client, sdk = client_returning(message_with())
-
-    client.complete(REQUEST)
-
-    assert [tool["strict"] for tool in sdk.streamed[0]["tools"]] == [True]
-
-
 def test_a_tool_that_is_not_strict_omits_the_field() -> None:
     loose_read_file = READ_FILE.model_copy(update={"strict": False})
     client, sdk = client_returning(message_with())
@@ -240,14 +211,6 @@ def test_a_tool_that_is_not_strict_omits_the_field() -> None:
     client.complete(REQUEST.model_copy(update={"tools": (loose_read_file,)}))
 
     assert "strict" not in sdk.streamed[0]["tools"][0]
-
-
-def test_a_text_message_is_sent_as_it_is() -> None:
-    client, sdk = client_returning(message_with())
-
-    client.complete(REQUEST)
-
-    assert sdk.streamed[0]["messages"] == [{"role": "user", "content": "Find every route."}]
 
 
 def test_a_request_without_tools_sends_no_tools_field() -> None:

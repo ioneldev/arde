@@ -77,16 +77,47 @@ def test_budget_exceeded_tells_the_user_what_to_do() -> None:
     error = caught.value
     assert isinstance(error, BudgetExceeded)
     assert error.exit_code is ExitCode.BUDGET_EXCEEDED
-    assert "max_usd" in error.next_action
     assert "4.0000" in str(error)
     assert "1.0000" in str(error)
+
+
+def test_budget_exceeded_names_the_flag_and_what_a_rerun_will_spend() -> None:
+    budget = Budget(max_usd=1.0)
+
+    with pytest.raises(BudgetExceeded) as caught:
+        budget.charge(call_by("docs", input_tokens=ONE_MILLION))
+
+    assert "--max-usd" in caught.value.next_action
+    assert "4.0000" in caught.value.next_action
+    assert "1.0000" not in caught.value.next_action
+
+
+def test_a_new_call_is_allowed_while_money_is_left() -> None:
+    budget = Budget(max_usd=5.0)
+    budget.charge(call_by("docs", input_tokens=ONE_MILLION))
+
+    budget.refuse_if_spent()
+
+
+def test_a_new_call_is_allowed_before_anything_is_spent() -> None:
+    Budget(max_usd=0.000001).refuse_if_spent()
+
+
+def test_a_new_call_is_refused_once_spending_reaches_the_cap_exactly() -> None:
+    budget = Budget(max_usd=4.0)
+    budget.charge(call_by("docs", input_tokens=ONE_MILLION))
+
+    with pytest.raises(BudgetExceeded) as caught:
+        budget.refuse_if_spent()
+
+    assert "4.0000" in str(caught.value)
 
 
 def test_budget_totals_per_role() -> None:
     budget = Budget(max_usd=100.0)
     budget.charge(call_by("explore", input_tokens=1_000, output_tokens=200, latency_s=2.0))
     budget.charge(call_by("explore", input_tokens=3_000, output_tokens=400, latency_s=3.5))
-    budget.charge(call_by("classifier", model=HAIKU, input_tokens=ONE_MILLION, latency_s=0.5))
+    budget.charge(call_by("classifier", model=HAIKU, input_tokens=100_000, latency_s=0.5))
 
     totals = budget.totals()
 
@@ -97,17 +128,19 @@ def test_budget_totals_per_role() -> None:
     assert totals["explore"].latency_s == 5.5
     assert totals["explore"].cost_usd == pytest.approx((4_000 * 4.0 + 600 * 20.0) / ONE_MILLION)
     assert totals["classifier"].calls == 1
-    assert totals["classifier"].cost_usd == pytest.approx(0.10)
+    assert totals["classifier"].cost_usd == pytest.approx(0.01)
 
 
-def test_totals_count_cache_tokens() -> None:
+def test_totals_add_up_cache_tokens_across_calls() -> None:
     budget = Budget(max_usd=100.0)
     usage = Usage(input_tokens=0, output_tokens=0, cache_read=700, cache_write=300)
+    call = ModelCall(role="docs", model=OPUS, usage=usage, latency_s=1.0)
 
-    budget.charge(ModelCall(role="docs", model=OPUS, usage=usage, latency_s=1.0))
+    budget.charge(call)
+    budget.charge(call)
 
-    assert budget.totals()["docs"].cache_read == 700
-    assert budget.totals()["docs"].cache_write == 300
+    assert budget.totals()["docs"].cache_read == 1_400
+    assert budget.totals()["docs"].cache_write == 600
 
 
 def test_a_budget_with_no_calls_has_no_totals() -> None:
@@ -141,7 +174,7 @@ def test_a_cap_that_is_not_a_positive_number_of_dollars_is_refused(max_usd: floa
 
     assert isinstance(caught.value, ArdeError)
     assert caught.value.exit_code is ExitCode.BAD_USAGE
-    assert "max_usd" in caught.value.next_action
+    assert "--max-usd" in caught.value.next_action
 
 
 def test_a_tiny_positive_cap_is_accepted() -> None:
@@ -149,8 +182,3 @@ def test_a_tiny_positive_cap_is_accepted() -> None:
 
     with pytest.raises(BudgetExceeded):
         budget.charge(call_by("docs", input_tokens=ONE_MILLION))
-
-
-def test_a_ten_million_token_call_cannot_pass_through_a_nan_cap() -> None:
-    with pytest.raises(InvalidBudgetCap):
-        Budget(max_usd=float("nan")).charge(call_by("docs", input_tokens=10_000_000))

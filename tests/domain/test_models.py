@@ -11,7 +11,6 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 import arde.domain
-from arde.domain.change import ChangeReport
 from arde.domain.facts import (
     CodeQuote,
     EndpointFact,
@@ -394,21 +393,6 @@ def test_run_report_round_trips_through_json() -> None:
 
     assert RunReport.model_validate_json(saved) == report
     assert json.loads(saved)["exit_code"] == 1
-
-
-def test_change_report_holds_what_changed_between_two_trees() -> None:
-    report = ChangeReport(
-        changed_files=("handlers.go",),
-        changed_declarations=("handlers.go:Price",),
-        added_inventory=("route GET /rates",),
-        removed_inventory=(),
-        changed_routes=("GET /products/{id}",),
-        changed_probes=("GET /products/1",),
-        responses_changed=True,
-        diff="--- a\n+++ b\n",
-    )
-
-    assert report.responses_changed is True
 
 
 def test_repo_profile_defaults_to_no_test_commands() -> None:

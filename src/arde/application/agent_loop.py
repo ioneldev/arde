@@ -1,6 +1,5 @@
 """The one loop every agent runs: ask the model, run its tools, stop on a submit or a limit."""
 
-import textwrap
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,7 +31,6 @@ Message = dict[str, object]
 ToolInput = dict[str, object]
 
 _MAX_IDLE_TURNS = 3
-_MAX_SUMMARY_CHARS = 200
 _NO_ERROR_MESSAGE = "The tool reported an error but gave no message."
 _SEND_LESS = (
     "Your last reply was cut off at the token limit and was thrown away. "
@@ -140,6 +138,7 @@ def run_agent[T](spec: AgentSpec[T], deps: AgentDeps) -> T:
     last_rejection: str | None = None
 
     for turn in range(1, spec.config.max_turns + 1):
+        deps.budget.refuse_if_spent()
         response = _ask_model(messages, spec=spec, deps=deps)
 
         # Checked before any tool runs, because a refused turn may hold a partial tool call.
@@ -315,28 +314,15 @@ def _record_tool_call[T](
     call: ToolCall, outcome: ToolOutcome, *, spec: AgentSpec[T], tracer: Tracer
 ) -> None:
     ok = not outcome.is_error
-    summary = _summary(outcome.content)
-    tracer.event("tool_call", role=spec.role, name=call.name, ok=ok, summary=summary)
+    tracer.event("tool_call", role=spec.role, name=call.name, ok=ok, summary=outcome.content)
     if _is_submit(call, spec) and not ok:
-        tracer.event("correction", role=spec.role, name=call.name, summary=summary)
+        tracer.event("correction", role=spec.role, name=call.name, summary=outcome.content)
 
 
 def _record_tool_failure[T](
     call: ToolCall, error: ArdeError, *, spec: AgentSpec[T], tracer: Tracer
 ) -> None:
-    summary = _summary(str(error))
-    tracer.event("tool_call", role=spec.role, name=call.name, ok=False, summary=summary)
-
-
-# Whole words only: the tracer redacts a secret by exact match, so half of one would get through.
-def _summary(content: str) -> str:
-    return textwrap.shorten(
-        content,
-        width=_MAX_SUMMARY_CHARS,
-        placeholder=" ...",
-        break_long_words=False,
-        break_on_hyphens=False,
-    )
+    tracer.event("tool_call", role=spec.role, name=call.name, ok=False, summary=str(error))
 
 
 # The API answers an error result with no content with HTTP 400, which would end the run over a

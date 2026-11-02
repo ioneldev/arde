@@ -9,7 +9,7 @@ import anthropic
 from anthropic.types import CacheControlEphemeralParam, Message
 from pydantic import BaseModel, SecretStr, ValidationError
 
-from arde.application.models_config import MODELS_FILE_VARIABLE
+from arde.adapters.models_file import MODELS_FILE_VARIABLE
 from arde.application.ports import (
     LLMClient,
     LLMRequest,

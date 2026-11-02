@@ -578,6 +578,17 @@ def test_each_stop_gives_different_advice() -> None:
     assert len({stopped.next_action for stopped in stops if stopped is not None}) == 4
 
 
+def test_no_call_is_sent_once_spending_reaches_the_cap_exactly() -> None:
+    llm = FakeLLM([calling(call(READ), usage=EXPENSIVE), calling(submit())])
+    budget = Budget(max_usd=cost_usd(MODEL, EXPENSIVE))
+    spec = spec_with((tool_named(READ, ToolSpy()),), submit_tool())
+
+    with pytest.raises(BudgetExceeded):
+        run_agent(spec, AgentDeps(client=llm, tracer=RecordingTracer(), budget=budget))
+
+    assert len(llm.requests) == 1
+
+
 def test_budget_exceeded_propagates() -> None:
     spy = ToolSpy()
 
@@ -864,21 +875,9 @@ def test_reprompts_reach_the_debug_log(script: list[LLMResponse], expected: str)
     assert any(str(reprompt) in line for line in run.tracer.debug_lines)
 
 
-def test_a_long_tool_result_is_cut_short_in_the_trace() -> None:
-    summary = summary_of("word " * 10_000)
-
-    assert summary.startswith("word word")
-    assert len(summary) <= 200
-
-
-# The tracer redacts a secret by exact match, so half of one would reach the trace unredacted.
-def test_the_summary_drops_a_word_it_cannot_fit_whole() -> None:
-    secret = "sk-ant-" + "k" * 100
-
-    summary = summary_of("word " * 30 + secret)
-
-    assert "sk-ant" not in summary
-    assert "kkk" not in summary
+# Passed whole, because only the tracer redacts, and a secret cut in half would not match.
+def test_a_long_tool_result_reaches_the_tracer_whole() -> None:
+    assert summary_of("word " * 10_000) == "word " * 10_000
 
 
 FAKE_SECRET = "sk-ant-fake-secret-for-this-test-only"
@@ -898,21 +897,22 @@ def test_a_run_through_the_real_tracer_leaves_both_files_with_no_secret(tmp_path
         ]
     )
     read_secret = ToolSpy(content=f"token = {FAKE_SECRET}")
+    run_dir = tmp_path / "run"
     deps = AgentDeps(
         client=llm,
-        tracer=JsonlTracer(tmp_path, secrets=(SecretStr(FAKE_SECRET),)),
+        tracer=JsonlTracer(run_dir, secrets=(SecretStr(FAKE_SECRET),)),
         budget=Budget(max_usd=10.0),
     )
 
     run_agent(spec_with((tool_named(READ, read_secret),), submit_tool()), deps)
 
-    trace = (tmp_path / "trace.jsonl").read_text(encoding="utf-8")
-    debug_log = (tmp_path / "debug.log").read_text(encoding="utf-8")
+    trace = (run_dir / "trace.jsonl").read_text(encoding="utf-8")
+    debug_log = (run_dir / "debug.log").read_text(encoding="utf-8")
     assert FAKE_SECRET not in trace + debug_log
     assert "token = [REDACTED]" in debug_log
     assert "I will read the file." in debug_log
     assert "config.go" in debug_log
-    assert trace_kinds(tmp_path) == [
+    assert trace_kinds(run_dir) == [
         "model_call",
         "model_call",
         "tool_call",
@@ -924,7 +924,7 @@ def test_a_run_through_the_real_tracer_leaves_both_files_with_no_secret(tmp_path
 
 def real_tracer_run(handler: Callable[[ToolInput], ToolOutcome], run_dir: Path) -> FakeLLM:
     llm = FakeLLM([calling(call(READ, call_id="toolu_x")), calling(submit())])
-    tracer = JsonlTracer(run_dir, secrets=(SecretStr("sk-ant-unused-here"),))
+    tracer = JsonlTracer(run_dir / "run", secrets=(SecretStr("sk-ant-unused-here"),))
     deps = AgentDeps(client=llm, tracer=tracer, budget=Budget(max_usd=10.0))
     run_agent(spec_with((tool_named(READ, handler),), submit_tool()), deps)
     return llm
