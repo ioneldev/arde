@@ -165,25 +165,44 @@ def _wait_until_listening(started: _Started) -> None:
     while True:
         if started.process.poll() is not None:
             raise _exited_before_listening(started, exit_code=started.process.returncode)
-        if _accepts_connection(started.port):
+        if _is_listening(started):
             return
         if time.monotonic() >= deadline:
             raise _never_listened(started)
         time.sleep(POLL_INTERVAL_S)
 
 
-# A connection is the whole test, because a service need not have a health route.
+# A connection is the whole test, because a service need not have a health route. Only a refusal
+# or a timeout says nothing listens. Any other error, such as a full file table, means the port
+# was never tested, and reading that as closed would pass the stop check on no evidence.
 def _accepts_connection(port: int) -> bool:
     try:
         socket.create_connection((LOOPBACK, port), timeout=CONNECT_TIMEOUT_S).close()
-    except OSError:
+    except (ConnectionRefusedError, TimeoutError):
         return False
     return True
 
 
+def _is_listening(started: _Started) -> bool:
+    try:
+        return _accepts_connection(started.port)
+    except OSError as error:
+        raise ServiceStartError(
+            f"Cannot test whether port {started.port} is open: {describe_os_error(error)}.",
+            next_action="Fix what the message names on this machine, then run again.",
+        ) from error
+
+
+# This runs while an error is being built, and must never replace it with a worse one.
+def _seems_to_accept_connections(port: int) -> bool:
+    with contextlib.suppress(OSError):
+        return _accepts_connection(port)
+    return False
+
+
 def _exited_before_listening(started: _Started, *, exit_code: int) -> ServiceStartError:
     config, port = started.config, started.port
-    if _accepts_connection(port):
+    if _seems_to_accept_connections(port):
         return ServiceStartError(
             f"The service exited with code {exit_code}, but port {port} still accepts "
             "connections. Something it started outside its process group is running, so ARDE "
@@ -302,8 +321,17 @@ def _stop(started: _Started) -> None:
 
 def _port_is_released(port: int) -> bool:
     deadline = time.monotonic() + PORT_RELEASE_WAIT_S
-    while _accepts_connection(port):
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(POLL_INTERVAL_S)
+    try:
+        while _accepts_connection(port):
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(POLL_INTERVAL_S)
+    except OSError as error:
+        raise ServiceStopError(
+            f"Cannot test whether port {port} was released: {describe_os_error(error)}.",
+            next_action=(
+                f"Fix what the message names on this machine, check `lsof -i :{port}` for "
+                "anything left running, then run again."
+            ),
+        ) from error
     return True

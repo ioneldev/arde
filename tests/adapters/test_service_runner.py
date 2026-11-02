@@ -6,6 +6,7 @@ the way a real one behaves, and its two tests are the ones marked integration.
 """
 
 import contextlib
+import errno
 import json
 import os
 import shutil
@@ -779,6 +780,108 @@ def test_a_service_that_exits_leaving_a_daemon_on_its_port_does_not_claim_the_po
     assert "still accepts connections" in str(failed.value)
     assert "before it opened" not in str(failed.value)
     assert any("lsof" in note for note in failed.value.__notes__)
+
+
+# Only a refusal or a timeout means nothing listens. Any other failure means no test took place.
+
+
+def file_table_is_full(*args: object, **kwargs: object) -> socket.socket:
+    raise OSError(errno.EMFILE, "Too many open files")
+
+
+def test_a_port_that_cannot_be_tested_while_waiting_stops_with_the_reason_and_a_next_action(
+    monkeypatch: pytest.MonkeyPatch, runner: ServiceRunner, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(socket, "create_connection", file_table_is_full)
+    config = config_for(stand_in(tmp_path, SERVES), tmp_path, timeout_s=1)
+
+    with pytest.raises(ServiceStartError) as stopped, runner.running(config):
+        pytest.fail("the body must not run on a port that was never tested")
+
+    assert "Too many open files" in str(stopped.value)
+    assert "did not accept" not in str(stopped.value)
+    assert stopped.value.next_action
+
+
+def test_a_service_that_exited_keeps_its_own_message_when_its_port_cannot_be_tested(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: ServiceRunner,
+    started: list[subprocess.Popen[bytes]],
+    tmp_path: Path,
+) -> None:
+    def fails_once_it_has_gone(*args: object, **kwargs: object) -> socket.socket:
+        if started and started[0].poll() is not None:
+            raise OSError(errno.EMFILE, "Too many open files")
+        raise ConnectionRefusedError
+
+    monkeypatch.setattr(socket, "create_connection", fails_once_it_has_gone)
+    config = config_for(stand_in(tmp_path, "sys.exit(3)"), tmp_path)
+
+    with pytest.raises(ServiceStartError) as stopped, runner.running(config):
+        pytest.fail("the body must not run for a service that is gone")
+
+    assert "exited with code 3" in str(stopped.value)
+
+
+def test_a_port_that_cannot_be_tested_after_the_stop_does_not_pass_as_released(
+    monkeypatch: pytest.MonkeyPatch, runner: ServiceRunner, tmp_path: Path
+) -> None:
+    config = config_for(stand_in(tmp_path, SERVES), tmp_path)
+
+    with pytest.raises(ServiceStopError) as stopped, runner.running(config):
+        monkeypatch.setattr(socket, "create_connection", file_table_is_full)
+
+    assert "Too many open files" in str(stopped.value)
+    assert stopped.value.next_action
+
+
+def test_a_connection_reset_says_nothing_about_the_port_either(
+    monkeypatch: pytest.MonkeyPatch, runner: ServiceRunner, tmp_path: Path
+) -> None:
+    def reset(*args: object, **kwargs: object) -> socket.socket:
+        raise ConnectionResetError
+
+    monkeypatch.setattr(socket, "create_connection", reset)
+    config = config_for(stand_in(tmp_path, SERVES), tmp_path, timeout_s=1)
+
+    with pytest.raises(ServiceStartError) as stopped, runner.running(config):
+        pytest.fail("the body must not run on a port that was never tested")
+
+    assert "did not accept" not in str(stopped.value)
+
+
+def test_a_port_that_times_out_reads_as_not_listening_and_the_wait_goes_on(
+    monkeypatch: pytest.MonkeyPatch, runner: ServiceRunner, tmp_path: Path
+) -> None:
+    real_connect = socket.create_connection
+    probes: list[int] = []
+
+    def times_out_at_first(*args: object, **kwargs: object) -> socket.socket:
+        if not probes:
+            probes.append(1)
+            raise TimeoutError
+        return real_connect(*args, **kwargs)  # type: ignore[call-overload, no-any-return]
+
+    monkeypatch.setattr(socket, "create_connection", times_out_at_first)
+
+    with runner.running(config_for(stand_in(tmp_path, SERVES), tmp_path)) as service:
+        assert accepts_connection(service.port)
+
+
+@pytest.mark.parametrize("refusal", [ConnectionRefusedError, TimeoutError])
+def test_a_port_that_refuses_or_times_out_after_the_stop_is_released(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: ServiceRunner,
+    tmp_path: Path,
+    refusal: type[OSError],
+) -> None:
+    def refuses(*args: object, **kwargs: object) -> socket.socket:
+        raise refusal
+
+    config = config_for(stand_in(tmp_path, SERVES), tmp_path)
+
+    with runner.running(config):
+        monkeypatch.setattr(socket, "create_connection", refuses)
 
 
 # The process group is killed twice, because one kill can miss a fork in flight
