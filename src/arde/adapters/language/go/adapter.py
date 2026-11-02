@@ -56,14 +56,18 @@ class GoAdapter(LanguageAdapter):
 
     def _declaration_hashes(self, repo: Path) -> dict[str, str]:
         declarations = self._goinspect.declarations(repo).declarations
-        return {f"{d.file}::{d.kind} {d.name}": d.hash for d in declarations}
+        return {declaration.id: declaration.hash for declaration in declarations}
 
     def extract_inventory(self, repo: Path, profile: RepoProfile) -> Inventory:
         require_no_link_leaves(repo)
         patterns = (DEFAULT_ENV_PATTERN, *profile.patterns)
+        declared = self._goinspect.declarations(repo)
         reading = SourceReading(
+            main_package=profile.main_package,
+            service=self._goinspect.routes(repo, patterns, main_package=profile.main_package),
             matches=self._goinspect.matches(repo, patterns).matches,
-            fields=self._goinspect.declarations(repo).fields,
+            declarations=declared.declarations,
+            fields=declared.fields,
             make_targets=make_targets_of(repo),
         )
         return build_inventory(reading)
@@ -103,10 +107,6 @@ def _root_of(route: Route) -> str:
     return route.handler.rsplit(".", 1)[-1]
 
 
-def _route_key(route: Route) -> str:
-    return f"{route.method} {route.path}"
-
-
 # Two routes can share a key: "GET /{$}" and "GET /" both read as "GET /", and one path can sit on
 # two muxes. A hash of one handler would then stand for both, and an edit to the other would not
 # move it. A key with more than one handler, an inline one included, is left out like any route
@@ -114,7 +114,7 @@ def _route_key(route: Route) -> str:
 def _one_root_per_key(routes: Sequence[Route]) -> dict[str, str]:
     roots_by_key: dict[str, set[str]] = {}
     for route in routes:
-        roots_by_key.setdefault(_route_key(route), set()).add(_root_of(route))
+        roots_by_key.setdefault(route.key, set()).add(_root_of(route))
     return {
         key: next(iter(roots))
         for key, roots in roots_by_key.items()

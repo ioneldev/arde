@@ -47,6 +47,10 @@ def edit(path: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
+def a_route(method: str, path: str, handler: str, *, file: str = "web/server.go") -> Route:
+    return Route(method=method, path=path, handler=handler, file=file, line=1)
+
+
 def field(
     struct: str,
     name: str,
@@ -97,8 +101,26 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
     inventory = adapter.extract_inventory(SHOP, shop_profile())
 
     assert inventory.routes == (
-        Route(method="GET", path="/", handler="s.listing"),
-        Route(method="GET", path="/items/{sku}", handler="s.quote"),
+        Route(
+            method="GET",
+            path="/",
+            handler="s.listing",
+            file="web/server.go",
+            line=22,
+            handler_id="(*example.com/shop/web.server).listing",
+            handler_file="web/handlers.go",
+            handler_line=12,
+        ),
+        Route(
+            method="GET",
+            path="/items/{sku}",
+            handler="s.quote",
+            file="web/server.go",
+            line=23,
+            handler_id="(*example.com/shop/web.server).quote",
+            handler_file="web/handlers.go",
+            handler_line=20,
+        ),
     )
     assert inventory.params == (Param(name="pieces"),)
     assert inventory.error_codes == (
@@ -138,13 +160,30 @@ def test_a_profile_that_repeats_the_default_pattern_lists_nothing_twice(adapter:
     assert adapter.extract_inventory(SHOP, profile).env_vars == ("SHOP_PORT", "SHOP_VERBOSE")
 
 
-def test_zero_routes_raises_no_routes_error(adapter: GoAdapter) -> None:
-    profile = shop_profile(patterns=())
+def test_zero_routes_raises_no_routes_error(adapter: GoAdapter, tmp_path: Path) -> None:
+    (tmp_path / "go.mod").write_text("module example.com/bare\n\ngo 1.22\n", encoding="utf-8")
+    (tmp_path / "main.go").write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
 
     with pytest.raises(NoRoutesError) as stopped:
-        adapter.extract_inventory(SHOP, profile)
+        adapter.extract_inventory(tmp_path, shop_profile(patterns=()))
 
     assert stopped.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
+
+
+def test_a_profile_with_no_route_pattern_cannot_lose_the_routes_of_a_wrapper(
+    adapter: GoAdapter,
+) -> None:
+    with pytest.raises(RouteNotUnderstoodError, match=r"web/router\.go:\d+") as stopped:
+        adapter.extract_inventory(SHOP, shop_profile(patterns=()))
+
+    assert stopped.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
+
+
+def test_a_narrower_route_pattern_cannot_lose_a_route(adapter: GoAdapter) -> None:
+    narrower = {"kind": "route", "call": r"^app\.get$", "args": {"path": 0, "handler": 1}}
+
+    with pytest.raises(RouteNotUnderstoodError):
+        adapter.extract_inventory(SHOP, shop_profile(patterns=(narrower,)))
 
 
 def test_a_repo_with_no_makefile_has_no_make_targets(adapter: GoAdapter, shop: Path) -> None:
@@ -204,17 +243,18 @@ def test_the_inventory_holds_nothing_from_code_the_go_tool_never_builds(
     assert after.response_fields == before.response_fields
 
 
-def test_a_route_in_a_file_for_another_platform_is_listed_because_some_build_includes_it(
+def test_a_route_in_a_file_for_another_platform_is_reported_and_is_no_route_here(
     adapter: GoAdapter, shop: Path
 ) -> None:
-    (shop / "web" / "extra_windows.go").write_text(
-        'package web\n\nfunc more(app router) {\n\tapp.get("/only-on-windows", h)\n}\n',
+    (shop / "web" / "extra_plan9.go").write_text(
+        'package web\n\nfunc more(app router) {\n\tapp.get("/only-on-plan9", h)\n}\n',
         encoding="utf-8",
     )
 
-    paths = {route.path for route in adapter.extract_inventory(shop, shop_profile()).routes}
+    inventory = adapter.extract_inventory(shop, shop_profile())
 
-    assert "/only-on-windows" in paths
+    assert "/only-on-plan9" not in {route.path for route in inventory.routes}
+    assert "web/extra_plan9.go:4: route in a file this build leaves out" in inventory.dropped
 
 
 def test_a_route_literal_with_a_line_break_stops_the_run_and_quotes_none_of_it(
@@ -311,7 +351,8 @@ def test_a_link_to_a_source_file_inside_the_repo_is_read_like_the_file_it_builds
     fingerprints = adapter.route_fingerprints(shop, routes)
     checks = adapter.run_checks(shop, shop_profile())
 
-    assert Route(method="GET", path="/linked-in", handler="behindTheLink") in routes
+    [linked] = [route for route in routes if route.path == "/linked-in"]
+    assert (linked.file, linked.handler_file) == ("web/extra.go", "web/extra.go")
     assert "GET /linked-in" in fingerprints
     assert checks.build_ok
 
@@ -867,6 +908,63 @@ def test_a_profile_cannot_name_a_package_or_file_that_leaves_the_repo_or_is_a_fl
         shop_profile(main_package=main_package, main_file=main_file)
 
 
+# scope and shapes the type checker reads
+
+
+def write_go(repo: Path, files: dict[str, str]) -> None:
+    (repo / "go.mod").write_text("module example.com/depot\n\ngo 1.22\n", encoding="utf-8")
+    for name, source in files.items():
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding="utf-8")
+
+
+def service_at(main_package: str) -> RepoProfile:
+    return shop_profile(main_package=main_package, patterns=())
+
+
+def test_a_path_held_in_a_const_is_read(adapter: GoAdapter, tmp_path: Path) -> None:
+    write_go(
+        tmp_path,
+        {
+            "main.go": 'package main\n\nimport "net/http"\n\nconst base = "/stock"\n\n'
+            'func main() {\n\thttp.HandleFunc("GET "+base+"/{id}", show)\n}\n\n'
+            "func show(w http.ResponseWriter, r *http.Request) {}\n"
+        },
+    )
+
+    [route] = adapter.extract_inventory(tmp_path, service_at(".")).routes
+
+    assert (route.method, route.path, route.handler) == ("GET", "/stock/{id}", "show")
+    assert route.handler_id == "example.com/depot.show"
+
+
+def test_a_call_to_strip_prefix_stops_the_run(adapter: GoAdapter, tmp_path: Path) -> None:
+    write_go(
+        tmp_path,
+        {
+            "main.go": 'package main\n\nimport "net/http"\n\nfunc main() {\n'
+            '\thttp.Handle("/files/", http.StripPrefix("/files", http.NotFoundHandler()))\n}\n'
+        },
+    )
+
+    with pytest.raises(RouteNotUnderstoodError, match=r"main\.go:6") as stopped:
+        adapter.extract_inventory(tmp_path, service_at("."))
+
+    assert stopped.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
+
+
+@pytest.mark.parametrize(
+    ("main_package", "says"),
+    [("./nowhere", "main_package"), ("./...", "main_package"), ("./main.go", "main_package")],
+)
+def test_a_main_package_that_names_no_one_package_stops_with_a_reason(
+    adapter: GoAdapter, shop: Path, main_package: str, says: str
+) -> None:
+    with pytest.raises(GoinspectError, match=says):
+        adapter.extract_inventory(shop, shop_profile(main_package=main_package))
+
+
 # route_fingerprints
 
 
@@ -886,9 +984,9 @@ def test_two_routes_that_share_a_key_and_not_a_handler_are_left_out_and_not_merg
     adapter: GoAdapter,
 ) -> None:
     routes = [
-        Route(method="GET", path="/", handler="s.listing"),
-        Route(method="GET", path="/", handler="s.quote"),
-        Route(method="GET", path="/items/{sku}", handler="s.quote"),
+        a_route("GET", "/", "s.listing"),
+        a_route("GET", "/", "s.quote"),
+        a_route("GET", "/items/{sku}", "s.quote"),
     ]
 
     assert sorted(adapter.route_fingerprints(SHOP, routes)) == ["GET /items/{sku}"]
@@ -898,8 +996,8 @@ def test_two_routes_that_share_a_key_and_a_handler_keep_their_fingerprint(
     adapter: GoAdapter,
 ) -> None:
     routes = [
-        Route(method="GET", path="/", handler="s.listing"),
-        Route(method="GET", path="/", handler="other.listing"),
+        a_route("GET", "/", "s.listing"),
+        a_route("GET", "/", "other.listing"),
     ]
 
     assert sorted(adapter.route_fingerprints(SHOP, routes)) == ["GET /"]
@@ -907,8 +1005,8 @@ def test_two_routes_that_share_a_key_and_a_handler_keep_their_fingerprint(
 
 def test_two_routes_that_share_a_handler_share_a_fingerprint(adapter: GoAdapter) -> None:
     routes = [
-        Route(method="GET", path="/a", handler="s.quote"),
-        Route(method="POST", path="/b", handler="other.quote"),
+        a_route("GET", "/a", "s.quote"),
+        a_route("POST", "/b", "other.quote"),
     ]
 
     fingerprints = adapter.route_fingerprints(SHOP, routes)
@@ -918,8 +1016,8 @@ def test_two_routes_that_share_a_handler_share_a_fingerprint(adapter: GoAdapter)
 
 def test_an_inline_handler_has_no_fingerprint_and_no_error(adapter: GoAdapter) -> None:
     routes = [
-        Route(method="GET", path="/", handler="s.listing"),
-        Route(method="GET", path="/inline", handler=INLINE_HANDLER),
+        a_route("GET", "/", "s.listing"),
+        a_route("GET", "/inline", INLINE_HANDLER),
     ]
 
     assert sorted(adapter.route_fingerprints(SHOP, routes)) == ["GET /"]
@@ -927,9 +1025,9 @@ def test_an_inline_handler_has_no_fingerprint_and_no_error(adapter: GoAdapter) -
 
 def test_a_handler_goinspect_cannot_find_is_left_out_without_error(adapter: GoAdapter) -> None:
     routes = [
-        Route(method="GET", path="/", handler="s.listing"),
-        Route(method="GET", path="/ghost", handler="s.nobodyWroteThis"),
-        Route(method="GET", path="/std", handler="http.NotFound"),
+        a_route("GET", "/", "s.listing"),
+        a_route("GET", "/ghost", "s.nobodyWroteThis"),
+        a_route("GET", "/std", "http.NotFound"),
     ]
 
     assert sorted(adapter.route_fingerprints(SHOP, routes)) == ["GET /"]
@@ -942,13 +1040,13 @@ def test_no_routes_means_no_fingerprints_and_no_run(adapter: GoAdapter, tmp_path
 def test_only_inline_handlers_means_no_fingerprints_and_no_run(
     adapter: GoAdapter, tmp_path: Path
 ) -> None:
-    routes = [Route(method="GET", path="/", handler=INLINE_HANDLER)]
+    routes = [a_route("GET", "/", INLINE_HANDLER)]
 
     assert adapter.route_fingerprints(tmp_path, routes) == {}
 
 
 def test_a_repo_goinspect_cannot_load_is_an_error(adapter: GoAdapter, tmp_path: Path) -> None:
-    routes = [Route(method="GET", path="/", handler="s.listing")]
+    routes = [a_route("GET", "/", "s.listing")]
 
     with pytest.raises(GoinspectError, match=r"go\.mod"):
         adapter.route_fingerprints(tmp_path, routes)

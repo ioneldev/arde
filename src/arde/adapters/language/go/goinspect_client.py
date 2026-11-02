@@ -1,8 +1,9 @@
-"""The Go helper behind a typed client: build it once, call its four commands, read its replies."""
+"""The Go helper behind a typed client: build it once, call its commands, read its replies."""
 
 import json
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,6 +49,10 @@ class DeclarationReply(Frozen):
     hash: str
     line: int
 
+    @property
+    def id(self) -> str:
+        return f"{self.file}::{self.kind} {self.name}"
+
 
 class FieldReply(Frozen):
     file: str
@@ -77,6 +82,34 @@ class CallMatch(Frozen):
 
 class MatchReply(Frozen):
     matches: tuple[CallMatch, ...]
+
+
+class RouteSite(CallMatch):
+    """A call that registers a route. In literals, the path is any value the compiler knows."""
+
+    # The exact function behind the handler and where it is declared, or None when it has none.
+    handler_id: str | None
+    handler_file: str | None
+    handler_line: int | None
+
+
+class SourcePlace(Frozen):
+    file: str
+    line: int
+
+
+class WrapperCall(SourcePlace):
+    kind: str
+
+
+class RoutesReply(Frozen):
+    # Folders of the packages that make up the service, from the repo root. The root reads ".".
+    package_folders: tuple[str, ...]
+    # The files of those packages that this machine's build compiles.
+    build_files: tuple[str, ...]
+    sites: tuple[RouteSite, ...]
+    stripped_prefixes: tuple[SourcePlace, ...]
+    wrapper_calls: tuple[WrapperCall, ...]
 
 
 class FingerprintsReply(Frozen):
@@ -146,13 +179,24 @@ class GoinspectClient:
 
     def matches(self, root: Path, patterns: Sequence[ExtractionPattern]) -> MatchReply:
         resolved = root.resolve()
-        with tempfile.TemporaryDirectory(prefix="arde-patterns-") as folder:
-            patterns_file = Path(folder) / "patterns.json"
-            patterns_file.write_text(
-                json.dumps([pattern.model_dump() for pattern in patterns]), encoding="utf-8"
-            )
+        with _patterns_file(patterns) as patterns_file:
             arguments = ("match", "--patterns", str(patterns_file), str(resolved))
             return self._ask(_Question(arguments, MatchReply, cwd=resolved))
+
+    def routes(
+        self, root: Path, patterns: Sequence[ExtractionPattern], *, main_package: str
+    ) -> RoutesReply:
+        resolved = root.resolve()
+        with _patterns_file(patterns) as patterns_file:
+            arguments = (
+                "routes",
+                "--patterns",
+                str(patterns_file),
+                "--main",
+                main_package,
+                str(resolved),
+            )
+            return self._ask(_Question(arguments, RoutesReply, cwd=resolved))
 
     def fingerprints(self, root: Path, roots: Sequence[str]) -> FingerprintsReply:
         if not roots:
@@ -180,6 +224,14 @@ class GoinspectClient:
                 ),
             )
         return _read_reply(question, outcome)
+
+
+@contextmanager
+def _patterns_file(patterns: Sequence[ExtractionPattern]) -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(prefix="arde-patterns-") as folder:
+        path = Path(folder) / "patterns.json"
+        path.write_text(json.dumps([p.model_dump() for p in patterns]), encoding="utf-8")
+        yield path
 
 
 # What was asked of goinspect, and the model its answer must fit.

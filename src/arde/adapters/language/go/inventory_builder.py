@@ -2,17 +2,28 @@
 
 import re
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any, NamedTuple, Protocol
 
 from pydantic import TypeAdapter, ValidationError
 
-from arde.adapters.language.go.goinspect_client import TOO_LONG_TO_PRINT, CallMatch, FieldReply
+from arde.adapters.language.go.goinspect_client import (
+    TOO_LONG_TO_PRINT,
+    CallMatch,
+    DeclarationReply,
+    FieldReply,
+    RouteSite,
+    RoutesReply,
+    SourcePlace,
+)
 from arde.domain.base import Frozen, describe_problems, one_line, printable_name
 from arde.domain.errors import ArdeError
 from arde.domain.inventory import (
     INLINE_HANDLER,
     PATH_LIMIT,
     STATUS_LIMIT,
+    DeclarationText,
     ErrorCode,
     Inventory,
     NameText,
@@ -33,24 +44,36 @@ _SHOWN_LENGTH = 80
 _DROPPED_TEXT_LENGTH = 40
 # How much of the reason a dropped line keeps. Several fields of one model can fail together.
 _DROPPED_REASON_LENGTH = 250
+_ROUTE_NOT_IN_THIS_BUILD = "route in a file this build leaves out"
 _NAME_TEXT: TypeAdapter[str] = TypeAdapter(NameText)
+_DECLARATION_TEXT: TypeAdapter[str] = TypeAdapter(DeclarationText)
 
 
 class SourceReading(Frozen):
+    main_package: str
+    service: RoutesReply
     matches: tuple[CallMatch, ...]
+    declarations: tuple[DeclarationReply, ...]
     fields: tuple[FieldReply, ...]
     make_targets: tuple[str, ...]
 
 
-# Two causes need two pieces of advice: an argument that is not a literal, and a literal that is
-# not a pattern ARDE reads.
-USE_A_LITERAL = (
-    "Change the route pattern in the profile so its path argument points at a string literal, "
-    "or register the route with one, then run again."
+# None of these may send anyone to a narrower pattern: a route left out is worse than a stopped run,
+# and the model reading this text is working to make the check pass.
+DO_NOT_NARROW = "Do not narrow or remove a pattern to get past this."
+READ_A_CONSTANT_PATH = (
+    "ARDE reads a path the compiler knows. If this call is inside a function that registers routes "
+    "for its callers, add a route pattern for the calls to that function. "
+    f"{DO_NOT_NARROW} If the path is computed or comes from a table, this repo cannot be "
+    "documented yet: report that."
 )
 USE_A_PATH_PATTERN = (
     "ARDE reads route patterns of the form [METHOD ]/path, with no host. Register the route "
-    "that way, or change the route pattern in the profile to match one that does, then run again."
+    f"that way, then run again. {DO_NOT_NARROW}"
+)
+PREFIXES_ARE_NOT_RESOLVED = (
+    f"ARDE does not resolve path prefixes, so this repo cannot be documented yet: report that. "
+    f"{DO_NOT_NARROW}"
 )
 USE_A_READABLE_ROUTE = (
     f"ARDE reads a route as one line of plain text, with a path of at most {PATH_LIMIT} "
@@ -58,10 +81,18 @@ USE_A_READABLE_ROUTE = (
 )
 
 
+class _Located(Protocol):
+    @property
+    def file(self) -> str: ...
+
+    @property
+    def line(self) -> int: ...
+
+
 class RouteNotUnderstoodError(ArdeError):
-    def __init__(self, call: CallMatch, problem: str, *, next_action: str) -> None:
+    def __init__(self, place: _Located, problem: str, *, next_action: str) -> None:
         super().__init__(
-            f"Cannot read the route registered at {printable_name(call.file)}:{call.line}: "
+            f"Cannot read the route registered at {printable_name(place.file)}:{place.line}: "
             f"{problem}.",
             next_action=next_action,
             exit_code=ExitCode.DISCOVERY_NEEDS_INPUT,
@@ -81,17 +112,20 @@ class NoRoutesError(ArdeError):
 
 
 def build_inventory(reading: SourceReading) -> Inventory:
-    routes = _sorted_unique(
-        (_route_from(match) for match in _of_kind(reading.matches, "route")),
-        key=lambda route: (route.path, route.method, route.handler),
-    )
+    _stop_at_a_stripped_prefix(reading.service.stripped_prefixes)
+    routes = _one_row_per_route(_route_from(site) for site in reading.service.sites)
     if not routes:
         raise NoRoutesError
-    params, params_dropped = _read_all(_of_kind(reading.matches, "param"), read=_param)
-    error_codes, errors_dropped = _read_all(_of_kind(reading.matches, "error"), read=_error_code)
-    env_vars, env_dropped = _read_all(_of_kind(reading.matches, "env"), read=_env_var)
-    fields, fields_dropped = _read_all(_listed_fields(reading.fields), read=_response_field)
+    scope = _Scope.of(reading)
+    matches, matches_outside = scope.matches_of_the_service(reading.matches)
+    response_fields, fields_outside = scope.split(_listed_fields(reading.fields), "response field")
+    declarations, _ = scope.split(reading.declarations, "declaration")
+    params, params_dropped = _read_all(_of_kind(matches, "param"), read=_param)
+    error_codes, errors_dropped = _read_all(_of_kind(matches, "error"), read=_error_code)
+    env_vars, env_dropped = _read_all(_of_kind(matches, "env"), read=_env_var)
+    fields, fields_dropped = _read_all(response_fields, read=_response_field)
     targets, targets_dropped = _read_all(map(_MakeTarget, reading.make_targets), read=_target_name)
+    declaration_ids, ids_dropped = _read_all(declarations, read=_declaration_id)
     return Inventory(
         routes=routes,
         params=_sorted_unique(params, key=lambda param: param.name),
@@ -99,10 +133,81 @@ def build_inventory(reading: SourceReading) -> Inventory:
         response_fields=_sorted_unique(fields, key=_whole_model),
         env_vars=_sorted_unique(env_vars, key=str),
         make_targets=_sorted_unique(targets, key=str),
+        declarations=_sorted_unique(declaration_ids, key=str),
         dropped=_dropped_lines(
-            [*params_dropped, *errors_dropped, *env_dropped, *fields_dropped, *targets_dropped]
+            [
+                *matches_outside,
+                *fields_outside,
+                *params_dropped,
+                *errors_dropped,
+                *env_dropped,
+                *fields_dropped,
+                *targets_dropped,
+                *ids_dropped,
+            ]
         ),
     )
+
+
+def _stop_at_a_stripped_prefix(places: tuple[SourcePlace, ...]) -> None:
+    if places:
+        raise RouteNotUnderstoodError(
+            places[0],
+            "http.StripPrefix changes the paths under it, so they cannot be read",
+            next_action=PREFIXES_ARE_NOT_RESOLVED,
+        )
+
+
+@dataclass(frozen=True)
+class _Scope:
+    """What belongs to the service, by folder. main_package's imports decide, not its path."""
+
+    main_package: str
+    folders: frozenset[str]
+    build_files: frozenset[str]
+
+    @classmethod
+    def of(cls, reading: SourceReading) -> "_Scope":
+        return cls(
+            main_package=reading.main_package,
+            folders=frozenset(reading.service.package_folders),
+            build_files=frozenset(reading.service.build_files),
+        )
+
+    def holds(self, source: _Located) -> bool:
+        return PurePosixPath(source.file).parent.as_posix() in self.folders
+
+    def outside(self, what: str, source: _Located) -> "_Dropped":
+        why = f"{what} outside main_package {self.main_package}"
+        return _Dropped(source.file, source.line, why)
+
+    def split[S: _Located](
+        self, sources: Iterable[S], what: str
+    ) -> tuple[list[S], list["_Dropped"]]:
+        inside: list[S] = []
+        dropped: list[_Dropped] = []
+        for source in sources:
+            if self.holds(source):
+                inside.append(source)
+            else:
+                dropped.append(self.outside(what, source))
+        return inside, dropped
+
+    # A route of the service comes from the sites, which say more about it than a match can. A
+    # route match adds only what the sites cannot show, because the type checker never read it.
+    def matches_of_the_service(
+        self, matches: Iterable[CallMatch]
+    ) -> tuple[list[CallMatch], list["_Dropped"]]:
+        kept: list[CallMatch] = []
+        dropped: list[_Dropped] = []
+        for match in matches:
+            if not self.holds(match):
+                dropped.append(self.outside(match.kind, match))
+            elif match.kind != "route":
+                kept.append(match)
+            elif match.file not in self.build_files:
+                dropped.append(_Dropped(match.file, match.line, _ROUTE_NOT_IN_THIS_BUILD))
+        return kept, dropped
 
 
 # Every field takes part, so nothing that differs merges and ties never fall back on set order.
@@ -118,34 +223,63 @@ def _of_kind(matches: Iterable[CallMatch], kind: str) -> list[CallMatch]:
     return [match for match in matches if match.kind == kind]
 
 
-def _route_from(match: CallMatch) -> Route:
-    pattern = match.literals.get("path")
+# One function registered twice under one key is one route, at its first place. Two functions under
+# one key stay two rows, so a mounted router's routes do not merge away.
+def _one_row_per_route(routes: Iterable[Route]) -> tuple[Route, ...]:
+    rows: dict[tuple[str, str, str], Route] = {}
+    for route in sorted(routes, key=_route_order):
+        rows.setdefault((route.method, route.path, route.handler_id or route.handler), route)
+    return tuple(rows.values())
+
+
+def _route_order(route: Route) -> tuple[str, str, str, str, str, int]:
+    return (
+        route.path,
+        route.method,
+        route.handler,
+        route.handler_id or "",
+        route.file,
+        route.line,
+    )
+
+
+def _route_from(site: RouteSite) -> Route:
+    pattern = site.literals.get("path")
     if pattern is None:
-        raise RouteNotUnderstoodError(match, _no_literal(match), next_action=USE_A_LITERAL)
-    method, path = _split_pattern(pattern, callee=match.call)
+        raise RouteNotUnderstoodError(site, _unknown_path(site), next_action=READ_A_CONSTANT_PATH)
+    method, path = _split_pattern(pattern, callee=site.call)
     if not path.startswith("/"):
         raise RouteNotUnderstoodError(
-            match,
+            site,
             f"the path `{one_line(path, _SHOWN_LENGTH)}` must start with /, after any method",
             next_action=USE_A_PATH_PATTERN,
         )
-    return _route(match, method=method, path=path.removesuffix("{$}"))
+    return _route(site, method=method, path=path.removesuffix("{$}"))
 
 
-def _no_literal(match: CallMatch) -> str:
-    shown = match.args.get("path")
+def _unknown_path(site: RouteSite) -> str:
+    shown = site.args.get("path")
     if shown is None:
         return "its path argument is missing"
-    return f"its path argument `{one_line(shown, _SHOWN_LENGTH)}` is not a string literal"
+    return f"its path argument `{one_line(shown, _SHOWN_LENGTH)}` is not a constant"
 
 
 # "from None", because the validation error holds the refused text, which may be megabytes.
-def _route(match: CallMatch, *, method: str, path: str) -> Route:
+def _route(site: RouteSite, *, method: str, path: str) -> Route:
     try:
-        return Route(method=method, path=path, handler=_handler_name(match))
+        return Route(
+            method=method,
+            path=path,
+            handler=_handler_name(site),
+            file=site.file,
+            line=site.line,
+            handler_id=site.handler_id,
+            handler_file=site.handler_file,
+            handler_line=site.handler_line,
+        )
     except ValidationError as error:
         problem = describe_problems(error, whole="the route")
-        raise RouteNotUnderstoodError(match, problem, next_action=USE_A_READABLE_ROUTE) from None
+        raise RouteNotUnderstoodError(site, problem, next_action=USE_A_READABLE_ROUTE) from None
 
 
 # The method is the start of the pattern, as in "GET /items", or else the last part of the call,
@@ -162,21 +296,13 @@ def _verb_ending(callee: str) -> str:
     return last_part if last_part in _HTTP_VERBS else "ANY"
 
 
-def _handler_name(match: CallMatch) -> str:
-    handler = match.args.get("handler", "")
+def _handler_name(site: RouteSite) -> str:
+    handler = site.args.get("handler", "")
     return handler if _PLAIN_NAME.fullmatch(handler) else INLINE_HANDLER
 
 
 class _Unreadable(Exception):
     """Something that was found and gives nothing. The message says which part failed."""
-
-
-class _Located(Protocol):
-    @property
-    def file(self) -> str: ...
-
-    @property
-    def line(self) -> int: ...
 
 
 # The Makefile's rules are read by a regex that keeps no line.
@@ -228,6 +354,10 @@ def _env_var(match: CallMatch) -> str:
 
 def _target_name(target: _MakeTarget) -> str:
     return _NAME_TEXT.validate_python(target.name)
+
+
+def _declaration_id(declaration: DeclarationReply) -> str:
+    return _DECLARATION_TEXT.validate_python(declaration.id)
 
 
 # The status is kept as written, on one line: a constant, a number or a call all say something to

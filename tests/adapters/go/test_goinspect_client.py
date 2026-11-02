@@ -20,8 +20,11 @@ from arde.adapters.language.go.goinspect_client import (
     GOINSPECT_REPLY_LIMIT,
     GOINSPECT_SOURCE,
     CallMatch,
+    DeclarationReply,
     GoinspectClient,
     GoinspectError,
+    SourcePlace,
+    WrapperCall,
     build_goinspect,
 )
 from arde.domain.errors import ArdeError
@@ -31,7 +34,7 @@ from arde.domain.report import ExitCode
 # Prints a canned reply and the exit code it was given, and records how it was called.
 STAND_IN = """#!/bin/sh
 printf '%s\\n' "$@" > "$0.args"
-[ "$1" = match ] && cp "$3" "$0.patterns"
+case "$1" in match|routes) cp "$3" "$0.patterns" ;; esac
 cat "$0.out"
 cat "$0.err" >&2
 exit "$(cat "$0.code")"
@@ -429,3 +432,72 @@ def test_the_build_of_goinspect_runs_with_the_go_environment(
 
     [command] = recording.commands
     assert command.env == {**GO_ENVIRONMENT, "FOR": str(GOINSPECT_SOURCE)}
+
+
+ROUTES_REPLY = {
+    "package_folders": [".", "web"],
+    "build_files": ["main.go", "web/router.go"],
+    "sites": [
+        {
+            "kind": "route",
+            "call": "mux.Handle",
+            "file": "web/router.go",
+            "line": 9,
+            "args": {"path": 'prefix + "/x"', "handler": "h.list"},
+            "literals": {"path": "/api/x"},
+            "handler_id": "(*example.com/depot.desk).list",
+            "handler_file": "web/desk.go",
+            "handler_line": 30,
+        }
+    ],
+    "stripped_prefixes": [{"file": "web/files.go", "line": 4}],
+    "wrapper_calls": [{"kind": "env", "file": "main.go", "line": 7}],
+}
+
+
+def test_routes_hand_over_the_patterns_and_the_main_package_and_read_the_reply(
+    stand_in: StandIn, folder: Path
+) -> None:
+    stand_in.replies_with(json.dumps(ROUTES_REPLY))
+    pattern = ExtractionPattern(kind="route", call=r"^app\.get$", args={"path": 0, "handler": 1})
+
+    reply = GoinspectClient(stand_in.binary).routes(folder, [pattern], main_package="./cmd/api")
+
+    assert stand_in.arguments[:2] == ["routes", "--patterns"]
+    assert stand_in.arguments[3:] == ["--main", "./cmd/api", str(folder)]
+    assert stand_in.patterns_it_was_given == [pattern.model_dump()]
+    assert reply.package_folders == (".", "web")
+    assert reply.build_files == ("main.go", "web/router.go")
+    [site] = reply.sites
+    assert (site.file, site.line, site.literals) == ("web/router.go", 9, {"path": "/api/x"})
+    assert site.handler_id == "(*example.com/depot.desk).list"
+    assert (site.handler_file, site.handler_line) == ("web/desk.go", 30)
+    assert reply.stripped_prefixes == (SourcePlace(file="web/files.go", line=4),)
+    assert reply.wrapper_calls == (WrapperCall(kind="env", file="main.go", line=7),)
+
+
+def test_a_site_with_no_root_reads_as_none(stand_in: StandIn, folder: Path) -> None:
+    unresolved = {
+        **ROUTES_REPLY["sites"][0],  # type: ignore[index]
+        "handler_id": None,
+        "handler_file": None,
+        "handler_line": None,
+    }
+    stand_in.replies_with(json.dumps({**ROUTES_REPLY, "sites": [unresolved]}))
+
+    reply = GoinspectClient(stand_in.binary).routes(folder, [], main_package=".")
+
+    assert (reply.sites[0].handler_id, reply.sites[0].handler_line) == (None, None)
+
+
+def test_a_routes_reply_with_no_package_folders_is_refused(stand_in: StandIn, folder: Path) -> None:
+    stand_in.replies_with(json.dumps({**ROUTES_REPLY, "package_folders": None}))
+
+    with pytest.raises(GoinspectError, match="package_folders"):
+        GoinspectClient(stand_in.binary).routes(folder, [], main_package=".")
+
+
+def test_a_declaration_reads_as_the_id_changed_declarations_uses() -> None:
+    reply = DeclarationReply(file="web/a.go", kind="func", name="server.quote", hash="h", line=3)
+
+    assert reply.id == "web/a.go::func server.quote"

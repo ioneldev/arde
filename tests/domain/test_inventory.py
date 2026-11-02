@@ -4,8 +4,10 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from arde.domain.inventory import (
+    DECLARATION_LIMIT,
     DROPPED_LIMIT,
     FILE_LIMIT,
+    FUNCTION_LIMIT,
     NAME_LIMIT,
     PATH_LIMIT,
     STATUS_LIMIT,
@@ -78,6 +80,51 @@ def test_an_inventory_has_nothing_dropped_unless_it_says_so() -> None:
     assert inventory.dropped == ()
 
 
+def test_an_inventory_lists_no_declaration_unless_it_says_so() -> None:
+    assert Inventory.model_validate(EMPTY_INVENTORY).declarations == ()
+
+
+def a_route(**changes: object) -> Route:
+    return Route.model_validate({**GOOD_MODELS[Route], **changes})
+
+
+def test_a_routes_key_is_its_method_and_path() -> None:
+    assert a_route(method="POST", path="/orders/{id}").key == "POST /orders/{id}"
+
+
+def test_a_route_with_no_function_behind_it_has_no_id_and_no_place_for_a_comment() -> None:
+    route = a_route(handler="(inline)")
+
+    assert (route.handler_id, route.handler_file, route.handler_line) == (None, None, None)
+
+
+def test_a_route_keeps_where_it_is_registered_and_where_its_handler_is_declared() -> None:
+    route = a_route(
+        file="web/router.go",
+        line=12,
+        handler_id="(*example.com/depot.desk).list",
+        handler_file="web/desk.go",
+        handler_line=30,
+    )
+
+    assert (route.file, route.line) == ("web/router.go", 12)
+    assert route.handler_id == "(*example.com/depot.desk).list"
+    assert (route.handler_file, route.handler_line) == ("web/desk.go", 30)
+
+
+@pytest.mark.parametrize("missing", ["file", "line"])
+def test_a_route_without_a_place_is_refused(missing: str) -> None:
+    fields = dict(GOOD_MODELS[Route])
+    del fields[missing]
+
+    with pytest.raises(ValidationError, match=missing):
+        Route.model_validate(fields)
+
+
+def test_a_generic_handler_id_keeps_its_comma_and_space() -> None:
+    assert a_route(handler_id="(*example.com/x.pair[K, V]).serve").handler_id
+
+
 HOSTILE_TEXT = [
     "line\nbreak",
     "carriage\rreturn",
@@ -94,6 +141,9 @@ FIELD_LIMITS: list[tuple[type[BaseModel], str, int]] = [
     (Route, "method", NAME_LIMIT),
     (Route, "path", PATH_LIMIT),
     (Route, "handler", NAME_LIMIT),
+    (Route, "file", FILE_LIMIT),
+    (Route, "handler_id", FUNCTION_LIMIT),
+    (Route, "handler_file", FILE_LIMIT),
     (Param, "name", NAME_LIMIT),
     (ErrorCode, "status", STATUS_LIMIT),
     (ResponseField, "struct", NAME_LIMIT),
@@ -104,7 +154,7 @@ FIELD_LIMITS: list[tuple[type[BaseModel], str, int]] = [
 ]
 
 GOOD_MODELS: dict[type[BaseModel], dict[str, object]] = {
-    Route: {"method": "GET", "path": "/x", "handler": "s.show"},
+    Route: {"method": "GET", "path": "/x", "handler": "s.show", "file": "main.go", "line": 7},
     Param: {"name": "qty"},
     ErrorCode: {"code": "bad_qty", "status": "400"},
     ResponseField: a_field().model_dump(),
@@ -142,7 +192,7 @@ def test_an_error_code_is_a_name_no_fact_would_refuse(code: str) -> None:
         ErrorCode(code=code, status="500")
 
 
-@pytest.mark.parametrize("field", ["env_vars", "make_targets", "dropped"])
+@pytest.mark.parametrize("field", ["env_vars", "make_targets", "dropped", "declarations"])
 @pytest.mark.parametrize("text", HOSTILE_TEXT)
 def test_the_inventorys_own_lists_refuse_a_control_character(field: str, text: str) -> None:
     with pytest.raises(ValidationError):
@@ -151,7 +201,12 @@ def test_the_inventorys_own_lists_refuse_a_control_character(field: str, text: s
 
 @pytest.mark.parametrize(
     ("field", "limit"),
-    [("env_vars", NAME_LIMIT), ("make_targets", NAME_LIMIT), ("dropped", DROPPED_LIMIT)],
+    [
+        ("env_vars", NAME_LIMIT),
+        ("make_targets", NAME_LIMIT),
+        ("dropped", DROPPED_LIMIT),
+        ("declarations", DECLARATION_LIMIT),
+    ],
 )
 def test_the_inventorys_own_lists_are_capped_too(field: str, limit: int) -> None:
     Inventory.model_validate({**EMPTY_INVENTORY, field: ("x" * limit,)})

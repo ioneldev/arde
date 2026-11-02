@@ -1,10 +1,20 @@
 """What goinspect reports becomes the inventory. Nothing here runs Go: replies are written out."""
 
 import itertools
+from collections.abc import Iterable
+from pathlib import PurePosixPath
 
 import pytest
 
-from arde.adapters.language.go.goinspect_client import TOO_LONG_TO_PRINT, CallMatch, FieldReply
+from arde.adapters.language.go.goinspect_client import (
+    TOO_LONG_TO_PRINT,
+    CallMatch,
+    DeclarationReply,
+    FieldReply,
+    RouteSite,
+    RoutesReply,
+    SourcePlace,
+)
 from arde.adapters.language.go.inventory_builder import (
     NoRoutesError,
     RouteNotUnderstoodError,
@@ -13,6 +23,9 @@ from arde.adapters.language.go.inventory_builder import (
 )
 from arde.domain.errors import ArdeError
 from arde.domain.inventory import (
+    DECLARATION_LIMIT,
+    FILE_LIMIT,
+    FUNCTION_LIMIT,
     INLINE_HANDLER,
     NAME_LIMIT,
     PATH_LIMIT,
@@ -40,10 +53,22 @@ def call(kind: str, callee: str, *, line: int = 1, **args: str) -> CallMatch:
     )
 
 
+def a_site(
+    *, callee: str = "app.handle", line: int = 1, file: str = "main.go", **args: str
+) -> RouteSite:
+    match = call("route", callee, line=line, **args)
+    return RouteSite(
+        **{**match.model_dump(), "file": file},
+        handler_id=None,
+        handler_file=None,
+        handler_line=None,
+    )
+
+
 def registering(
-    path: str | Lit, handler: str = "s.show", *, callee: str = "app.handle"
-) -> CallMatch:
-    return call("route", callee, path=path, handler=handler)
+    path: str | Lit, handler: str = "s.show", *, callee: str = "app.handle", line: int = 1
+) -> RouteSite:
+    return a_site(callee=callee, line=line, path=path, handler=handler)
 
 
 def field(
@@ -66,15 +91,47 @@ def field(
     )
 
 
+def declaration(name: str, *, file: str = "main.go", kind: str = "func") -> DeclarationReply:
+    return DeclarationReply(file=file, kind=kind, name=name, hash="h", line=3)
+
+
+def folders_of(files: Iterable[str]) -> tuple[str, ...]:
+    return tuple({PurePosixPath(file).parent.as_posix() for file in files})
+
+
+# Unless a test says otherwise, every file it names belongs to the service and to this build.
 def inventory_of(
-    *matches: CallMatch, fields: tuple[FieldReply, ...] = (), make_targets: tuple[str, ...] = ()
+    *found: CallMatch,
+    fields: tuple[FieldReply, ...] = (),
+    make_targets: tuple[str, ...] = (),
+    declarations: tuple[DeclarationReply, ...] = (),
+    stripped_prefixes: tuple[SourcePlace, ...] = (),
+    folders: tuple[str, ...] | None = None,
+    build_files: tuple[str, ...] | None = None,
 ) -> Inventory:
-    reading = SourceReading(matches=matches, fields=fields, make_targets=make_targets)
+    sites = tuple(item for item in found if isinstance(item, RouteSite))
+    matches = tuple(item for item in found if not isinstance(item, RouteSite))
+    files = [item.file for item in (*matches, *fields, *declarations)]
+    service = RoutesReply(
+        package_folders=folders_of(files) if folders is None else folders,
+        build_files=tuple(files) if build_files is None else build_files,
+        sites=sites,
+        stripped_prefixes=stripped_prefixes,
+        wrapper_calls=(),
+    )
+    reading = SourceReading(
+        main_package="./cmd/api",
+        service=service,
+        matches=matches,
+        declarations=declarations,
+        fields=fields,
+        make_targets=make_targets,
+    )
     return build_inventory(reading)
 
 
-def routes_of(*matches: CallMatch) -> tuple[Route, ...]:
-    return inventory_of(*matches).routes
+def routes_of(*found: CallMatch) -> tuple[Route, ...]:
+    return inventory_of(*found).routes
 
 
 def with_one_route(*matches: CallMatch) -> Inventory:
@@ -82,8 +139,8 @@ def with_one_route(*matches: CallMatch) -> Inventory:
 
 
 def test_the_method_and_path_are_parsed_from_a_stdlib_pattern() -> None:
-    assert routes_of(registering(Lit("GET /{$}"))) == (
-        Route(method="GET", path="/", handler="s.show"),
+    assert routes_of(registering(Lit("GET /{$}"), line=9)) == (
+        Route(method="GET", path="/", handler="s.show", file="main.go", line=9),
     )
 
 
@@ -143,20 +200,36 @@ def test_the_method_in_the_path_wins_over_the_verb_in_the_call() -> None:
         '"a" "b"',
     ],
 )
-def test_a_path_that_is_not_a_string_literal_stops_the_run(path: str) -> None:
+def test_a_path_the_compiler_does_not_know_stops_the_run(path: str) -> None:
     with pytest.raises(RouteNotUnderstoodError) as stopped:
-        routes_of(call("route", "app.handle", line=42, path=path, handler="s.show"))
+        routes_of(registering(path, line=42))
 
     assert isinstance(stopped.value, ArdeError)
     assert "main.go:42" in str(stopped.value)
-    assert "string literal" in str(stopped.value)
+    assert "not a constant" in str(stopped.value)
     assert stopped.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
-    assert "route pattern" in stopped.value.next_action
+
+
+def test_the_advice_for_a_path_that_cannot_be_read_never_says_to_narrow_a_pattern() -> None:
+    with pytest.raises(RouteNotUnderstoodError) as stopped:
+        routes_of(registering("computed()"))
+
+    advice = stopped.value.next_action
+    assert "Do not narrow" in advice
+    assert "report that" in advice
+    assert "Change the route pattern" not in advice
+
+
+def test_the_advice_for_a_path_that_cannot_be_read_names_the_way_past_a_wrapper() -> None:
+    with pytest.raises(RouteNotUnderstoodError) as stopped:
+        routes_of(registering("computed()"))
+
+    assert "add a route pattern for the calls to that function" in stopped.value.next_action
 
 
 def test_a_route_call_with_no_path_argument_stops_the_run() -> None:
     with pytest.raises(RouteNotUnderstoodError, match="path"):
-        routes_of(call("route", "app.handle", handler="s.show"))
+        routes_of(a_site(handler="s.show"))
 
 
 @pytest.mark.parametrize(
@@ -178,9 +251,10 @@ def test_the_advice_for_a_literal_that_cannot_be_read_does_not_ask_for_a_literal
         routes_of(registering(path))
 
     advice = stopped.value.next_action
-    assert "string literal" not in advice
+    assert "not a constant" not in advice
     assert "[METHOD ]/path" in advice
     assert "host" in advice
+    assert "change the route pattern" not in advice
 
 
 @pytest.mark.parametrize("handler", ["s.show", "show", "handlers.Show", "pkg.Type.Method", "_x1"])
@@ -210,9 +284,96 @@ def test_a_handler_that_is_not_a_plain_name_is_inline(handler: str) -> None:
 
 
 def test_a_route_call_with_no_handler_argument_is_inline() -> None:
-    [route] = routes_of(call("route", "app.handle", path=Lit("GET /x")))
+    [route] = routes_of(a_site(path=Lit("GET /x")))
 
     assert route.handler == INLINE_HANDLER
+
+
+def test_a_route_keeps_where_it_is_registered_and_what_resolved_its_handler() -> None:
+    site = RouteSite(
+        kind="route",
+        call="mux.HandleFunc",
+        file="web/router.go",
+        line=12,
+        args={"path": '"GET /x"', "handler": "h.list"},
+        literals={"path": "GET /x"},
+        handler_id="(*example.com/depot.desk).list",
+        handler_file="web/desk.go",
+        handler_line=30,
+    )
+
+    assert routes_of(site) == (
+        Route(
+            method="GET",
+            path="/x",
+            handler="h.list",
+            file="web/router.go",
+            line=12,
+            handler_id="(*example.com/depot.desk).list",
+            handler_file="web/desk.go",
+            handler_line=30,
+        ),
+    )
+
+
+def resolved_site(path: str, handler_id: str, *, line: int = 1) -> RouteSite:
+    return a_site(line=line, path=Lit(path), handler="rs.List").model_copy(
+        update={"handler_id": handler_id, "handler_file": "h.go", "handler_line": 3}
+    )
+
+
+def test_one_function_registered_twice_at_one_key_is_one_route_at_its_first_place() -> None:
+    [route] = routes_of(
+        resolved_site("GET /x", "a.List", line=30), resolved_site("GET /x", "a.List", line=9)
+    )
+
+    assert route.line == 9
+
+
+def test_two_functions_at_one_key_stay_two_routes_even_when_their_text_is_the_same() -> None:
+    found = routes_of(resolved_site("GET /x", "a.List"), resolved_site("GET /x", "b.List"))
+
+    assert [route.handler_id for route in found] == ["a.List", "b.List"]
+
+
+def test_the_order_of_routes_does_not_depend_on_the_order_of_the_sites() -> None:
+    sites = [
+        resolved_site("GET /x", "a.List", line=2),
+        resolved_site("GET /x", "b.List", line=1),
+        registering(Lit("GET /x"), "other", line=3),
+    ]
+
+    orders = {routes_of(*arrangement) for arrangement in itertools.permutations(sites)}
+
+    assert len(orders) == 1
+
+
+@pytest.mark.parametrize(
+    ("change", "value"),
+    [
+        ("handler_id", "(*x).list\x1b[2J"),
+        ("handler_id", "x" * (FUNCTION_LIMIT + 1)),
+        ("handler_file", "e\x1bvil.go"),
+        ("handler_file", "x" * (FILE_LIMIT + 1)),
+    ],
+)
+def test_a_route_with_an_unreadable_root_stops_the_run_and_quotes_none_of_it(
+    change: str, value: str
+) -> None:
+    site = registering(Lit("GET /x")).model_copy(update={change: value})
+
+    with pytest.raises(RouteNotUnderstoodError) as stopped:
+        routes_of(site)
+
+    assert "\x1b" not in str(stopped.value)
+    assert "xxxxx" not in str(stopped.value)
+
+
+def test_a_route_registered_in_a_file_with_a_hostile_name_stops_the_run() -> None:
+    with pytest.raises(RouteNotUnderstoodError) as stopped:
+        routes_of(a_site(file="e\x1b[31mvil.go", path=Lit("GET /x"), handler="s.show"))
+
+    assert "\x1b" not in str(stopped.value)
 
 
 def test_the_same_route_registered_twice_is_listed_once_and_routes_are_sorted() -> None:
@@ -264,7 +425,7 @@ def test_a_plain_handler_name_past_its_limit_stops_the_run() -> None:
 
 def test_a_path_that_is_no_literal_is_shown_on_one_clean_line() -> None:
     with pytest.raises(RouteNotUnderstoodError) as stopped:
-        routes_of(call("route", "app.handle", path="pathFor(\n\t\x1b[2J r)", handler="s.show"))
+        routes_of(registering("pathFor(\n\t\x1b[2J r)"))
 
     assert "\x1b" not in str(stopped.value)
     assert "\n" not in str(stopped.value)
@@ -278,20 +439,39 @@ def test_a_path_that_does_not_start_with_a_slash_is_shown_on_one_clean_line() ->
 
 
 def test_the_file_of_an_unreadable_route_is_printed_safely() -> None:
-    hostile = CallMatch(
-        kind="route",
-        call="app.handle",
-        file="e\x1b[31mvil.go",
-        line=9,
-        args={"path": "prefix", "handler": "s.show"},
-        literals={},
-    )
-
     with pytest.raises(RouteNotUnderstoodError) as stopped:
-        routes_of(hostile)
+        routes_of(a_site(file="e\x1b[31mvil.go", line=9, path="prefix", handler="s.show"))
 
     assert "\x1b" not in str(stopped.value)
     assert "e\\u001b[31mvil.go:9" in str(stopped.value)
+
+
+def stopped_by_a_prefix(*found: CallMatch, place: SourcePlace) -> RouteNotUnderstoodError:
+    with pytest.raises(RouteNotUnderstoodError) as stopped:
+        inventory_of(*found, stripped_prefixes=(place,))
+    return stopped.value
+
+
+def test_a_call_to_strip_prefix_stops_the_run_and_names_the_place() -> None:
+    error = stopped_by_a_prefix(place=SourcePlace(file="web/files.go", line=17))
+
+    assert "web/files.go:17" in str(error)
+    assert "http.StripPrefix" in str(error)
+    assert error.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
+    assert "report that" in error.next_action
+    assert "Do not narrow" in error.next_action
+
+
+def test_a_prefix_stops_the_run_even_when_every_route_can_be_read() -> None:
+    place = SourcePlace(file="web/files.go", line=17)
+
+    assert stopped_by_a_prefix(registering(Lit("GET /x")), place=place)
+
+
+def test_the_file_named_by_a_prefix_stop_is_printed_safely() -> None:
+    error = stopped_by_a_prefix(place=SourcePlace(file="e\x1bvil.go", line=2))
+
+    assert "\x1b" not in str(error)
 
 
 def test_no_route_at_all_stops_the_run_and_asks_for_a_pattern() -> None:
@@ -305,7 +485,160 @@ def test_no_route_at_all_stops_the_run_and_asks_for_a_pattern() -> None:
 
 def test_a_reading_with_nothing_in_it_has_no_routes() -> None:
     with pytest.raises(NoRoutesError):
-        build_inventory(SourceReading(matches=(), fields=(), make_targets=()))
+        inventory_of()
+
+
+def test_a_route_match_outside_the_service_goes_to_dropped_and_is_no_route() -> None:
+    inventory = inventory_of(
+        registering(Lit("GET /items")),
+        call("route", "mux.HandleFunc", line=13, path=Lit("POST /wipe"), handler="wipe").model_copy(
+            update={"file": "cmd/admin/main.go"}
+        ),
+        folders=("cmd/api",),
+    )
+
+    assert [route.path for route in inventory.routes] == ["/items"]
+    assert inventory.dropped == ("cmd/admin/main.go:13: route outside main_package ./cmd/api",)
+
+
+@pytest.mark.parametrize(
+    ("kind", "args"),
+    [
+        ("param", {"name": Lit("force")}),
+        ("env", {"name": Lit("ADMIN_TOKEN")}),
+        ("error", {"code": Lit("admin_only"), "status": "403"}),
+    ],
+)
+def test_a_match_outside_the_service_is_left_out_and_reported(
+    kind: str, args: dict[str, str]
+) -> None:
+    found = call(kind, "x", line=8, **args).model_copy(update={"file": "cmd/admin/main.go"})
+
+    inventory = inventory_of(registering(Lit("GET /x")), found, folders=("cmd/api",))
+
+    assert (inventory.params, inventory.env_vars, inventory.error_codes) == ((), (), ())
+    assert inventory.dropped == (f"cmd/admin/main.go:8: {kind} outside main_package ./cmd/api",)
+
+
+def test_a_match_inside_the_service_is_kept() -> None:
+    found = call("env", "os.Getenv", name=Lit("PORT")).model_copy(
+        update={"file": "cmd/api/main.go"}
+    )
+
+    inventory = inventory_of(registering(Lit("GET /x")), found, folders=("cmd/api",))
+
+    assert inventory.env_vars == ("PORT",)
+    assert inventory.dropped == ()
+
+
+def test_a_folder_is_matched_whole_and_not_by_its_start() -> None:
+    found = call("env", "os.Getenv", line=4, name=Lit("X")).model_copy(
+        update={"file": "cmd/api2/main.go"}
+    )
+
+    inventory = inventory_of(registering(Lit("GET /x")), found, folders=("cmd/api",))
+
+    assert inventory.env_vars == ()
+
+
+def test_a_file_at_the_root_belongs_to_the_folder_named_by_a_dot() -> None:
+    inventory = inventory_of(
+        registering(Lit("GET /x")), call("env", "os.Getenv", name=Lit("X")), folders=(".",)
+    )
+
+    assert inventory.env_vars == ("X",)
+
+
+def test_a_response_field_outside_the_service_is_left_out_and_reported() -> None:
+    inventory = inventory_of(
+        registering(Lit("GET /x")),
+        fields=(field("WipeReply", "Done", 'json:"done"', file="cmd/admin/main.go"),),
+        folders=("cmd/api",),
+    )
+
+    assert inventory.response_fields == ()
+    assert inventory.dropped == (
+        "cmd/admin/main.go:1: response field outside main_package ./cmd/api",
+    )
+
+
+def test_a_field_that_is_no_response_field_says_nothing_from_outside_the_service() -> None:
+    inventory = inventory_of(
+        registering(Lit("GET /x")),
+        fields=(field("Config", "Port", 'yaml:"port"', file="cmd/admin/main.go"),),
+        folders=("cmd/api",),
+    )
+
+    assert inventory.dropped == ()
+
+
+def test_a_route_match_in_a_file_this_build_leaves_out_goes_to_dropped() -> None:
+    match = call("route", "app.get", line=4, path=Lit("/elsewhere"), handler="h").model_copy(
+        update={"file": "web/extra_windows.go"}
+    )
+
+    inventory = inventory_of(
+        registering(Lit("GET /x")),
+        match,
+        folders=("web", "."),
+        build_files=("main.go", "web/server.go"),
+    )
+
+    assert [route.path for route in inventory.routes] == ["/x"]
+    assert inventory.dropped == ("web/extra_windows.go:4: route in a file this build leaves out",)
+
+
+def test_a_route_match_the_type_checker_also_found_is_no_second_route() -> None:
+    match = call("route", "app.get", path=Lit("/x"), handler="s.show")
+
+    inventory = inventory_of(
+        registering(Lit("GET /x")), match, folders=(".",), build_files=("main.go",)
+    )
+
+    assert len(inventory.routes) == 1
+    assert inventory.dropped == ()
+
+
+def test_declarations_are_listed_by_id_from_the_service_alone() -> None:
+    inventory = inventory_of(
+        registering(Lit("GET /x")),
+        declarations=(
+            declaration("Charge", file="cmd/api/charge.go"),
+            declaration("Stack.Push", file="cmd/api/stack.go"),
+            declaration("Reply", file="cmd/api/types.go", kind="type"),
+            declaration("wipe", file="cmd/admin/main.go"),
+        ),
+        folders=("cmd/api",),
+    )
+
+    assert inventory.declarations == (
+        "cmd/api/charge.go::func Charge",
+        "cmd/api/stack.go::func Stack.Push",
+        "cmd/api/types.go::type Reply",
+    )
+    assert inventory.dropped == ()
+
+
+def test_a_declaration_with_an_unreadable_id_goes_to_dropped() -> None:
+    inventory = inventory_of(
+        registering(Lit("GET /x")),
+        declarations=(declaration("fine"), declaration("bad", file="e\x1bvil.go")),
+        folders=(".",),
+    )
+
+    assert inventory.declarations == ("main.go::func fine",)
+    [line] = inventory.dropped
+    assert line.startswith("e\\u001bvil.go:3: ")
+
+
+def test_a_declaration_past_its_limit_goes_to_dropped() -> None:
+    inventory = inventory_of(
+        registering(Lit("GET /x")),
+        declarations=(declaration("x" * DECLARATION_LIMIT),),
+    )
+
+    assert inventory.declarations == ()
+    assert len(inventory.dropped) == 1
 
 
 def test_params_are_the_literal_names_without_duplicates_in_order() -> None:
@@ -520,7 +853,7 @@ def test_dropped_lines_are_sorted_by_file_and_line_and_listed_once() -> None:
 
 def test_a_route_never_goes_to_dropped_because_an_unreadable_one_stops_the_run() -> None:
     with pytest.raises(RouteNotUnderstoodError):
-        routes_of(call("route", "app.handle", path="prefix", handler="s.show"))
+        routes_of(registering("prefix"))
 
 
 def test_env_vars_are_the_literal_names_sorted_and_listed_once() -> None:
