@@ -17,12 +17,30 @@ _SPACED_DIRECTIVE = re.compile(
 )
 # A field that had no tag is left with empty backticks, and gofmt realigns its neighbours' columns.
 _ALLOWED_TAG = re.compile(r'oneOf:"[^"]*"|binding:"optional"')
-_PADDED_BACKTICKS = re.compile(r"`\s*(.*?)\s*`")
+_BACKTICKS = re.compile(r"`([^`]*)`")
+_BYTE_ORDER_MARK = b"\xef\xbb\xbf"
 
 
 def read_source(path: Path) -> str:
+    # Bytes, because read_text would end a line at a lone carriage return, which Go does not.
     # utf-8-sig: a byte order mark is not part of line one, and go/build ignores it too.
-    return path.read_text(encoding="utf-8-sig", errors="replace")
+    return path.read_bytes().decode("utf-8-sig", errors="replace")
+
+
+def files_differ_only_in_ordinary_comments(old_file: Path, new_file: Path) -> bool:
+    # A byte order mark on one side only moves a //line directive off column 1.
+    if _starts_with_byte_order_mark(old_file) != _starts_with_byte_order_mark(new_file):
+        return False
+    return only_ordinary_comments_differ(
+        read_source(old_file),
+        read_source(new_file),
+        is_test_file=old_file.name.endswith("_test.go") or new_file.name.endswith("_test.go"),
+    )
+
+
+def _starts_with_byte_order_mark(path: Path) -> bool:
+    with path.open("rb") as file:
+        return file.read(len(_BYTE_ORDER_MARK)) == _BYTE_ORDER_MARK
 
 
 def is_ordinary_comment(line: str) -> bool:
@@ -31,6 +49,10 @@ def is_ordinary_comment(line: str) -> bool:
         and _SPACED_DIRECTIVE.match(line) is None
         and "/*" not in line
         and "*/" not in line
+        # vet's buildtag check reads any comment above the package clause that holds +build, and
+        # go test's vet step skips a generated file when it checks the standard library version.
+        and "+build" not in line.lower()
+        and "Code generated" not in line
     )
 
 
@@ -49,9 +71,13 @@ def _without_ordinary_comments(source: str) -> list[str]:
 
 
 def _kept(line: str) -> str:
-    if line.lstrip().startswith(("//", "/*")):
+    # A /*line*/ directive on a code line is read to the letter, spaces in its file name included.
+    if line.lstrip().startswith(("//", "/*")) or "/*line" in line:
         return line
-    without_tags = _PADDED_BACKTICKS.sub(
-        lambda tag: f"`{tag[1]}`" if tag[1] else "", _ALLOWED_TAG.sub("", line)
-    )
+    without_tags = _BACKTICKS.sub(_trimmed, _ALLOWED_TAG.sub("", line))
     return " ".join(without_tags.split())
+
+
+def _trimmed(backticks: re.Match[str]) -> str:
+    inside = backticks[1].strip()
+    return f"`{inside}`" if inside else ""

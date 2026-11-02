@@ -91,6 +91,7 @@ func TestCompareFlagsTagsThatOnlyLookAllowed(t *testing.T) {
 		"key that starts with oneOf":        "`json:\"rating\" oneOfx:\"a\"`",
 		"key that ends in binding":          "`json:\"rating\" Xbinding:\"optional\"`",
 		"allowed key hidden in other value": "`json:\"rating,oneOf:\\\"a\\\"\"`",
+		"no space before the next pair":     "`oneOf:\"a\"json:\"rating\"`",
 	}
 
 	for name, newTag := range cases {

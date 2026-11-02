@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from arde.adapters.language.go import toolchain
-from arde.adapters.language.go.directives import only_ordinary_comments_differ, read_source
+from arde.adapters.language.go.directives import files_differ_only_in_ordinary_comments
 from arde.adapters.language.go.goinspect_client import GoinspectClient, build_goinspect
 from arde.adapters.language.go.inventory_builder import SourceReading, build_inventory
 from arde.adapters.language.go.makefile import make_targets_of
@@ -28,18 +28,14 @@ class GoAdapter(LanguageAdapter):
     # The text rule comes first and the syntax trees second. The rule cannot see that a line which
     # looks like a comment is inside a raw string, and the trees cannot see a comment at all.
     def is_comment_only(self, old_file: Path, new_file: Path) -> bool:
-        if not (_is_go_source(old_file) and _is_go_source(new_file)):
-            return False
         try:
-            same_but_for_ordinary_comments = only_ordinary_comments_differ(
-                read_source(old_file),
-                read_source(new_file),
-                is_test_file=old_file.name.endswith("_test.go")
-                or new_file.name.endswith("_test.go"),
-            )
-            return same_but_for_ordinary_comments and not self._code_differs(old_file, new_file)
+            if not (_is_go_source(old_file) and _is_go_source(new_file)):
+                return False
+            return files_differ_only_in_ordinary_comments(
+                old_file, new_file
+            ) and not self._code_differs(old_file, new_file)
         except OSError:
-            # A file that cannot be read cannot be shown to differ only in comments.
+            # A file that cannot be reached or read cannot be shown to differ only in comments.
             return False
 
     def _code_differs(self, old_file: Path, new_file: Path) -> bool:

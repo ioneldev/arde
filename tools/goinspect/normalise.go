@@ -148,8 +148,9 @@ func isAddedByArde(pair string) bool {
 }
 
 // splitStructTag cuts a tag into its `key:"value"` pairs the way reflect.StructTag reads them. It
-// reports false for a tag reflect would stop reading part way, and for a repeated key: reflect
-// reads only the first of those, so dropping one could change what the tag means.
+// reports false for a tag reflect would stop reading part way, for a pair that no space follows,
+// and for a repeated key: reflect reads only the first of those, so dropping one could change what
+// the tag means.
 func splitStructTag(tag string) ([]string, bool) {
 	pairs := []string{}
 	keys := map[string]bool{}
@@ -167,6 +168,11 @@ func splitStructTag(tag string) ([]string, bool) {
 		pairLength := keyLength + 1 + len(quoted)
 		pairs = append(pairs, rest[:pairLength])
 		rest = rest[pairLength:]
+		// go vet refuses pairs that are not separated by a space, so a tag without one is not
+		// one ARDE wrote and its pairs are not told apart.
+		if rest != "" && rest[0] != ' ' {
+			return nil, false
+		}
 	}
 	return pairs, true
 }

@@ -157,20 +157,19 @@ func requiresTheIgnoreTag(expression constraint.Expr) bool {
 // comment or code, and only if a blank line follows it. The //go:build line wins if both exist.
 func leadingBuildConstraints(content []byte) []constraint.Expr {
 	content = bytes.TrimPrefix(content, []byte("\ufeff"))
-	var goBuild constraint.Expr
-	var confirmed, pending []constraint.Expr
-	headerEnded, inBlockComment := false, false
+	header := &constraintHeader{}
+	inBlockComment := false
 	for _, raw := range strings.Split(string(content), "\n") {
 		line := strings.TrimSpace(raw)
-		if line == "" && !headerEnded {
-			confirmed, pending = append(confirmed, pending...), nil
+		if line == "" && !header.ended {
+			header.confirmPending()
 			continue
 		}
 		if !strings.HasPrefix(line, "//") {
-			headerEnded = true
+			header.ended = true
 		}
 		if !inBlockComment {
-			goBuild, pending = readConstraintLine(line, goBuild, pending, headerEnded)
+			header.read(line)
 		}
 		var reachedCode bool
 		inBlockComment, reachedCode = afterComments(line, inBlockComment)
@@ -178,24 +177,40 @@ func leadingBuildConstraints(content []byte) []constraint.Expr {
 			break
 		}
 	}
-	if goBuild != nil {
-		return []constraint.Expr{goBuild}
-	}
-	return confirmed
+	return header.constraints()
 }
 
-func readConstraintLine(
-	line string, goBuild constraint.Expr, pending []constraint.Expr, headerEnded bool,
-) (constraint.Expr, []constraint.Expr) {
-	if constraint.IsGoBuild(line) && goBuild == nil {
-		return parseConstraint(line), pending
+// constraintHeader collects what the top of a file says about where it builds. A // +build line
+// waits in pending until a blank line follows it, and is dropped if the header ends first.
+type constraintHeader struct {
+	goBuild   constraint.Expr
+	confirmed []constraint.Expr
+	pending   []constraint.Expr
+	ended     bool
+}
+
+func (header *constraintHeader) read(line string) {
+	if constraint.IsGoBuild(line) && header.goBuild == nil {
+		header.goBuild = parseConstraint(line)
+		return
 	}
-	if !headerEnded && constraint.IsPlusBuild(line) {
+	if !header.ended && constraint.IsPlusBuild(line) {
 		if expression := parseConstraint(line); expression != nil {
-			pending = append(pending, expression)
+			header.pending = append(header.pending, expression)
 		}
 	}
-	return goBuild, pending
+}
+
+func (header *constraintHeader) confirmPending() {
+	header.confirmed = append(header.confirmed, header.pending...)
+	header.pending = nil
+}
+
+func (header *constraintHeader) constraints() []constraint.Expr {
+	if header.goBuild != nil {
+		return []constraint.Expr{header.goBuild}
+	}
+	return header.confirmed
 }
 
 // afterComments skips the comments at the start of the line, and says whether a block comment is
