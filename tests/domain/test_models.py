@@ -11,6 +11,7 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 import arde.domain
+from arde.domain.base import printable_name
 from arde.domain.facts import (
     CodeQuote,
     EndpointFact,
@@ -669,3 +670,19 @@ def domain_models() -> list[type[BaseModel]]:
         and issubclass(member, BaseModel)
         and member.__module__ == module.__name__
     ]
+
+
+def test_a_plain_file_name_prints_as_it_is() -> None:
+    assert printable_name("web/server_test.go") == "web/server_test.go"
+
+
+@pytest.mark.parametrize("name", ["e\x1b[31mvil.go", "a\nb.go", "a\u2028b.go", "\x9bx.go"])
+def test_a_file_name_prints_without_a_raw_control_character(name: str) -> None:
+    printed = printable_name(name)
+
+    assert printed.isascii()
+    assert printed.isprintable()
+
+
+def test_a_very_long_file_name_is_cut() -> None:
+    assert len(printable_name("x" * 100_000)) == 200

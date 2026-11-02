@@ -10,6 +10,7 @@ from arde.adapters.language.go.directives import files_differ_only_in_ordinary_c
 from arde.adapters.language.go.goinspect_client import GoinspectClient, build_goinspect
 from arde.adapters.language.go.inventory_builder import SourceReading, build_inventory
 from arde.adapters.language.go.makefile import make_targets_of
+from arde.adapters.repo_links import require_no_link_leaves
 from arde.application.ports import CheckResult, LanguageAdapter
 from arde.domain.inventory import INLINE_HANDLER, Inventory, Route
 from arde.domain.profile import ExtractionPattern, RepoProfile
@@ -23,6 +24,7 @@ class GoAdapter(LanguageAdapter):
         self._goinspect = GoinspectClient(goinspect)
 
     def detects(self, repo: Path) -> bool:
+        require_no_link_leaves(repo)
         return (repo / "go.mod").is_file()
 
     # The text rule comes first and the syntax trees second. The rule cannot see that a line which
@@ -47,6 +49,8 @@ class GoAdapter(LanguageAdapter):
             return bool(self._goinspect.compare(old_dir, new_dir).changed)
 
     def changed_declarations(self, old_repo: Path, new_repo: Path) -> list[str]:
+        require_no_link_leaves(old_repo)
+        require_no_link_leaves(new_repo)
         old, new = self._declaration_hashes(old_repo), self._declaration_hashes(new_repo)
         return sorted(name for name in old.keys() | new.keys() if old.get(name) != new.get(name))
 
@@ -55,6 +59,7 @@ class GoAdapter(LanguageAdapter):
         return {f"{d.file}::{d.kind} {d.name}": d.hash for d in declarations}
 
     def extract_inventory(self, repo: Path, profile: RepoProfile) -> Inventory:
+        require_no_link_leaves(repo)
         patterns = (DEFAULT_ENV_PATTERN, *profile.patterns)
         reading = SourceReading(
             matches=self._goinspect.matches(repo, patterns).matches,
@@ -64,6 +69,7 @@ class GoAdapter(LanguageAdapter):
         return build_inventory(reading)
 
     def route_fingerprints(self, repo: Path, routes: Sequence[Route]) -> dict[str, str]:
+        require_no_link_leaves(repo)
         roots = _one_root_per_key(routes)
         reply = self._goinspect.fingerprints(repo, sorted(set(roots.values())))
         return {
@@ -73,9 +79,11 @@ class GoAdapter(LanguageAdapter):
         }
 
     def run_checks(self, repo: Path, profile: RepoProfile) -> CheckResult:
+        require_no_link_leaves(repo)
         return toolchain.run_checks(repo, profile)
 
     def build_service(self, repo: Path, profile: RepoProfile) -> Path:
+        require_no_link_leaves(repo)
         return toolchain.build_service(repo, profile)
 
 

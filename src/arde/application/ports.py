@@ -152,6 +152,9 @@ class LanguageAdapter(Protocol):
 
     Methods for rendering annotations, generating the spec and checking agent edits arrive with
     the tasks that implement them, so every method here has an implementation.
+
+    Every method that takes a repo raises an ArdeError, before it reads anything, when a link in
+    that repo leads out of it.
     """
 
     def detects(self, repo: Path) -> bool: ...

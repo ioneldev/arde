@@ -1,5 +1,6 @@
 """The base every domain model builds on, and the helpers that keep model text safe."""
 
+import json
 import re
 from pathlib import PurePosixPath
 from typing import Annotated
@@ -19,6 +20,16 @@ def describe_problems(error: ValidationError, *, whole: str) -> str:
         f"{'.'.join(str(part) for part in problem['loc']) or whole}: {problem['msg']}"
         for problem in error.errors(include_input=False, include_url=False)
     )
+
+
+# How much of a name from a repo a message shows.
+_SHOWN_NAME_LENGTH = 200
+
+
+# A file name can hold anything but a slash and NUL. json.dumps escapes every control character
+# and every letter outside ASCII, and the quotes it adds are cut, so a plain name reads as it is.
+def printable_name(name: str) -> str:
+    return json.dumps(name[:_SHOWN_NAME_LENGTH])[1:-1]
 
 
 # Go refuses NUL and a byte order mark inside a source file, so either one stops the build after
