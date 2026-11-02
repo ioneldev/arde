@@ -8,7 +8,7 @@ This spec says what this phase delivers and how we know it's done. The reasoning
 
 | Task | What | Status |
 |---|---|---|
-| 6 | `goinspect`: compare and declarations | Done |
+| 6 | `goinspect`: compare and declarations | In review |
 | 7 | `goinspect`: patterns and call graph | Not started |
 | 8 | `GoAdapter` and the `shop` fixture | Not started |
 | 9 | Service runner | Not started |
@@ -35,6 +35,7 @@ Give ARDE reliable eyes on a Go repo before any agent uses them. At the end, cod
 - Only `adapters/language/go/` and `tools/goinspect/` know about Go. The architecture tests enforce this.
 - Child processes get an allow-listed environment, so the API key can't reach them.
 - `catalog-poc` is read, never changed.
+- ARDE knows nothing about any target repo. Repo-specific facts come only from Discovery's profile, from code reading the repo, or from the wiki. An architecture test fails if product code or a prompt names `catalog-poc` or one of its identifiers.
 - A silent skip is a defect. If a file can't be read or a route can't be understood, the tool says so or stops. Only `compare` may over-report, and it never misses a change.
 - `LanguageAdapter` holds only methods that have an implementation. Four more arrive with Tasks 14, 15 and 18.
 
@@ -42,7 +43,7 @@ Give ARDE reliable eyes on a Go repo before any agent uses them. At the end, cod
 
 1. `make check` passes.
 2. `make integration` passes, including `gofmt`, `go vet` and `go test` on `goinspect`.
-3. On `catalog-poc`, `goinspect match` finds the 3 routes, 3 params and all the error calls the spike found.
+3. On `catalog-poc`, `goinspect match` finds the 3 routes, 3 params and all the error calls the spike found. The same code works on `tests/fixtures/shop`, which shares no names or layout with it, using only a different profile.
 4. A comment-only edit changes no hash, and a one-token edit changes the right one.
 5. Editing one function changes the fingerprint of the routes that reach it and no others.
 6. A service that ignores SIGTERM is still stopped, and nothing is left running after Ctrl-C.
@@ -69,7 +70,7 @@ Agents, the workspace and anything that writes to a repo. Those start in Phase 2
 ## Known limits
 
 - The call graph is static, so it misses calls through interfaces and function values. Declaration hashes and stored requests cover that gap.
-- Only `net/http` routes are understood. A `gin` pattern can match, but its method comes through as `ANY`.
+- Only `net/http` is tested. A `gin` pattern can match and keeps its method, but paths stay in `gin`'s `:id` form and router group prefixes aren't resolved.
 - Embedded struct fields aren't listed as response fields.
 
 ## Open items

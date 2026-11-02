@@ -324,7 +324,7 @@ Reference tables for API params, response fields and error codes are rendered fr
 
 The existing README stays as written, except for a link to `docs/` that code adds, because that's where a new engineer starts *(builder's call)*.
 
-The docs must state these behaviours. All but the last were measured:
+On `catalog-poc`, the docs must state the behaviours below. This list checks that one run and is never prompt text. The Explore prompt asks about classes of behaviour that apply to any HTTP service, so a miss is fixed in those classes, not by adding the fact. All but the last were measured:
 
 - Only handler errors are JSON. Unknown routes and wrong methods return `text/plain`, and a 405 has `Allow: GET, HEAD`.
 - Totals are computed in bani before conversion: `/products/1?currency=EUR&qty=10` totals 7041.98, not 10 × 704.20.
