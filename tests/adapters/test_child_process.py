@@ -7,7 +7,12 @@ import time
 from pathlib import Path
 
 import pytest
-from process_support import kill_leftover, wait_until_gone
+from process_support import (
+    kill_leftover,
+    live_group_members,
+    wait_until_gone,
+    wait_until_group_is_empty,
+)
 
 from arde.adapters import child_process
 from arde.adapters.child_env import child_environment
@@ -232,6 +237,41 @@ def test_a_child_that_exits_leaving_a_grandchild_on_its_output_does_not_hold_the
 
     assert outcome.stdout.strip() == "child is done"
     assert waited < 10, "the grandchild lives for 25 s, and the caller must not wait for it"
+
+
+# Without a pause the child is inside fork most of the time, and its children end on their own if a
+# kill misses them. Ignoring SIGCHLD collects each at once, so none piles up.
+FORKS_WITHOUT_A_PAUSE = """
+import os, pathlib, signal, time
+signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+pathlib.Path("leader.pid").write_text(str(os.getpid()))
+for _ in range(3000):
+    if os.fork() == 0:
+        time.sleep(5)
+        os._exit(0)
+time.sleep(60)
+"""
+TIMEOUTS_AGAINST_A_FORKING_CHILD = 20
+MOST_THAT_MAY_BE_TOO_EARLY = 10
+
+
+def test_a_timeout_that_lands_while_the_child_is_forking_leaves_nothing(tmp_path: Path) -> None:
+    pid_file = tmp_path / "leader.pid"
+    too_early = 0
+
+    for attempt in range(TIMEOUTS_AGAINST_A_FORKING_CHILD):
+        pid_file.unlink(missing_ok=True)
+        with pytest.raises(ChildTimeoutError):
+            run_child(python_command(FORKS_WITHOUT_A_PAUSE, cwd=tmp_path, timeout_s=0.3))
+        if not pid_file.exists():
+            too_early += 1  # a loaded machine had not started the interpreter yet
+            continue
+        leader = int(pid_file.read_text())
+        assert wait_until_group_is_empty(leader), (
+            f"timeout {attempt} left {live_group_members(leader)} running"
+        )
+
+    assert too_early <= MOST_THAT_MAY_BE_TOO_EARLY, "the machine is too slow for this test"
 
 
 def test_a_group_that_cannot_be_signalled_does_not_end_the_stop_in_an_error(

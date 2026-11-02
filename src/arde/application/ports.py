@@ -222,8 +222,12 @@ class ServiceStartError(ServiceError):
     """The service did not open its port: it exited, it never listened, or it could not be run."""
 
 
+class ServiceDiedError(ServiceError):
+    """The service opened its port and then exited by itself, while the run was still using it."""
+
+
 class ServiceStopError(ServiceError):
-    """The service is still running after it was killed, and still holds its port."""
+    """Something of the service is still running after the stop, or still holds its port."""
 
 
 class ServiceRunner(Protocol):
@@ -231,8 +235,9 @@ class ServiceRunner(Protocol):
         """Starts the service, waits until its port accepts a connection, and hands out its address.
 
         Raises ServiceStartError before the body runs when the service cannot be started. The
-        service is stopped when the body ends, whether it returns, raises or is interrupted, and
-        a service that cannot be stopped raises ServiceStopError. That error never replaces one
-        already on its way out.
+        service is stopped when the body ends, whether it returns, raises or is interrupted.
+        A service that exited by itself while the body ran raises ServiceDiedError, and one that
+        cannot be stopped raises ServiceStopError. Neither replaces an error already on its way
+        out: it is attached to that error as a note.
         """
         ...

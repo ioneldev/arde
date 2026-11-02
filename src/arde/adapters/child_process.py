@@ -126,7 +126,8 @@ def _start(
         raise ChildStartError(command, describe_os_error(error)) from error
 
 
-# The file named is the program, or the folder to run it in, whichever the system could not find.
+# Names the file the system refused: the program, the folder to run it in, or a log opened for it.
+# Without the name, a missing folder would be blamed on the program.
 def describe_os_error(error: OSError) -> str:
     reason = error.strerror or str(error)
     return f"{reason}: {error.filename}" if error.filename else reason
@@ -148,10 +149,13 @@ def _wait_for_exit(process: subprocess.Popen[bytes], command: ChildCommand) -> N
 # so that nothing it does can hold the caller.
 def force_stop(process: subprocess.Popen[bytes]) -> None:
     signal_group(process, signal.SIGKILL)
-    with contextlib.suppress(ProcessLookupError):
+    with contextlib.suppress(ProcessLookupError, PermissionError):
         process.kill()
     with contextlib.suppress(subprocess.TimeoutExpired):
         process.wait(timeout=WAIT_AFTER_KILL_S)
+    # On macOS one kill can miss a child that is being forked at that instant. The leader can fork
+    # no more once it is gone, so a second kill finds what the first missed.
+    signal_group(process, signal.SIGKILL)
 
 
 # The child leads its own group, so its process id is the group's.

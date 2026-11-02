@@ -1,9 +1,11 @@
 """The service runner against real processes.
 
-Stand-in services, scripts written to a temporary folder, cover the ways a service misbehaves. The
-shop fixture service, built by the Go toolchain, covers the way a real one behaves.
+Stand-in services, scripts written to a temporary folder, cover the ways a service misbehaves. They
+need no Go and run with the fast tests. The shop fixture service, built by the Go toolchain, covers
+the way a real one behaves, and its two tests are the ones marked integration.
 """
 
+import contextlib
 import json
 import os
 import shutil
@@ -18,13 +20,21 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from process_support import is_running, kill_leftover, wait_until_gone
+from process_support import (
+    is_running,
+    kill_leftover,
+    live_group_members,
+    wait_until_gone,
+    wait_until_group_is_empty,
+)
 
 from arde.adapters import child_process, service_runner
+from arde.adapters.child_env import ALLOWED_VARIABLES
 from arde.adapters.language.go.toolchain import build_service
 from arde.adapters.service_runner import local_service_runner
 from arde.application.ports import (
     ServiceConfig,
+    ServiceDiedError,
     ServiceRunner,
     ServiceStartError,
     ServiceStopError,
@@ -32,12 +42,13 @@ from arde.application.ports import (
 from arde.domain.errors import ArdeError
 from arde.domain.profile import RepoProfile
 
-pytestmark = pytest.mark.integration
-
 SHOP = Path(__file__).resolve().parents[1] / "fixtures" / "shop"
 PORT_ENV = "SERVICE_PORT"
 # Kept here because the started fixture swaps subprocess.Popen for a function that records.
 REAL_POPEN = subprocess.Popen
+# Kept for the same reason: a test that makes os.kill refuse must still clean up after itself.
+REAL_KILL = os.kill
+REAL_KILLPG = os.killpg
 # An hour: a stand-in never ends a test by itself.
 HOURS = "time.sleep(3600)"
 
@@ -69,6 +80,14 @@ signal.signal(signal.SIGTERM, signal.SIG_IGN)
 pathlib.Path("child.pid").write_text(str(os.getpid()))
 time.sleep(3600)
 """
+CHILD_THAT_HOLDS_THE_PORT = f"""
+import os, pathlib, socket, time
+server = socket.socket()
+server.bind(("127.0.0.1", int(os.environ["{PORT_ENV}"])))
+server.listen()
+pathlib.Path("child.pid").write_text(str(os.getpid()))
+time.sleep(3600)
+"""
 CHILD_THAT_LEAVES_WHEN_ASKED = """
 import os, pathlib, signal, time
 def leave(number, frame):
@@ -80,9 +99,41 @@ time.sleep(3600)
 """
 
 
-def starts_a_child(child_code: str) -> str:
+# The port is taken by another process, so this service cannot listen. It stays up until the test
+# says go, and then it exits the way a service does when its port is in use.
+EXITS_WHEN_ITS_PORT_IS_TAKEN = f"""
+try:
+    server = socket.socket()
+    server.bind(("127.0.0.1", int(os.environ["{PORT_ENV}"])))
+except OSError as error:
+    print(f"cannot listen: {{error}}", file=sys.stderr, flush=True)
+while not pathlib.Path("go.txt").exists():
+    time.sleep(0.01)
+sys.exit(1)
+"""
+# Without a pause the leader is inside fork most of the time, and the children end on their own
+# if a stop misses them. A child that ignores SIGCHLD is collected at once, so none piles up.
+FORKS_WITHOUT_A_PAUSE = (
+    "signal.signal(signal.SIGCHLD, signal.SIG_IGN)\n"
+    "open('leader.pid', 'w').write(str(os.getpid()))\n"
+    + IGNORE_SIGTERM
+    + LISTEN
+    + """
+for _ in range(3000):
+    if os.fork() == 0:
+        time.sleep(5)
+        os._exit(0)
+time.sleep(3600)
+"""
+)
+FORK_RACE_STOPS = 20
+
+
+def starts_a_child(child_code: str, *, own_session: bool = False) -> str:
     return (
-        f"import pathlib\nchild = subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
+        "import pathlib\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child_code!r}],"
+        f" start_new_session={own_session})\n"
         "pid_file = pathlib.Path('child.pid')\n"
         "while not (pid_file.exists() and pid_file.read_text()):\n"
         "    time.sleep(0.01)\n"
@@ -120,7 +171,7 @@ def runner() -> ServiceRunner:
 
 # The handle holds no process id, so the tests learn it from the process the runner started.
 @pytest.fixture
-def started(monkeypatch: pytest.MonkeyPatch) -> list[subprocess.Popen[bytes]]:
+def started(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[subprocess.Popen[bytes]]]:
     processes: list[subprocess.Popen[bytes]] = []
 
     def recording(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
@@ -129,7 +180,12 @@ def started(monkeypatch: pytest.MonkeyPatch) -> list[subprocess.Popen[bytes]]:
         return process
 
     monkeypatch.setattr(subprocess, "Popen", recording)
-    return processes
+    yield processes
+    for process in processes:
+        if process.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                REAL_KILLPG(process.pid, signal.SIGKILL)
+            process.wait(timeout=10)
 
 
 @pytest.fixture
@@ -150,6 +206,7 @@ def shop_binary(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
 # The real service
 
 
+@pytest.mark.integration
 def test_starts_on_free_port_and_answers(
     runner: ServiceRunner, shop_binary: Path, tmp_path: Path
 ) -> None:
@@ -161,6 +218,7 @@ def test_starts_on_free_port_and_answers(
     assert not accepts_connection(service.port)
 
 
+@pytest.mark.integration
 def test_two_services_run_side_by_side(
     runner: ServiceRunner, shop_binary: Path, tmp_path: Path
 ) -> None:
@@ -313,10 +371,16 @@ def test_keyboard_interrupt_while_waiting_for_the_port_stops_the_service(
     started: list[subprocess.Popen[bytes]],
     tmp_path: Path,
 ) -> None:
-    def interrupted(*args: object, **kwargs: object) -> socket.socket:
+    real_connect = socket.create_connection
+    probes: list[int] = []
+
+    def interrupted_once(*args: object, **kwargs: object) -> socket.socket:
+        if probes:
+            return real_connect(*args, **kwargs)  # type: ignore[call-overload, no-any-return]
+        probes.append(1)
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(socket, "create_connection", interrupted)
+    monkeypatch.setattr(socket, "create_connection", interrupted_once)
 
     with (
         pytest.raises(KeyboardInterrupt),
@@ -333,16 +397,11 @@ def test_keyboard_interrupt_while_waiting_for_the_port_stops_the_service(
 @pytest.fixture
 def a_stop_that_cannot_kill(
     monkeypatch: pytest.MonkeyPatch, started: list[subprocess.Popen[bytes]]
-) -> Iterator[None]:
+) -> None:
     monkeypatch.setattr(service_runner, "STOP_GRACE_S", 0.2)
     monkeypatch.setattr(child_process, "WAIT_AFTER_KILL_S", 0.2)
     monkeypatch.setattr(os, "killpg", lambda group, signal_number: None)
     monkeypatch.setattr(REAL_POPEN, "kill", lambda self: None)
-    yield
-    for process in started:
-        if process.poll() is None:
-            os.kill(process.pid, signal.SIGKILL)
-            process.wait(timeout=10)
 
 
 def test_a_service_that_cannot_be_stopped_is_reported_and_names_how_to_stop_it(
@@ -362,7 +421,10 @@ def test_a_service_that_cannot_be_stopped_is_reported_and_names_how_to_stop_it(
 
 
 def test_a_failed_stop_does_not_hide_the_error_that_caused_it(
-    runner: ServiceRunner, a_stop_that_cannot_kill: None, tmp_path: Path
+    runner: ServiceRunner,
+    a_stop_that_cannot_kill: None,
+    started: list[subprocess.Popen[bytes]],
+    tmp_path: Path,
 ) -> None:
     binary = stand_in(tmp_path, SERVES)
 
@@ -373,6 +435,7 @@ def test_a_failed_stop_does_not_hide_the_error_that_caused_it(
         raise ValueError("the body failed")
 
     assert any("did not stop" in note for note in raised.value.__notes__)
+    assert any(f"kill -9 -{started[0].pid}" in note for note in raised.value.__notes__)
 
 
 def test_a_failed_stop_is_raised_after_a_good_body_even_inside_an_except_block(
@@ -406,6 +469,8 @@ def test_start_timeout_raises_with_next_action(
     assert str(config.log) in str(failed.value)
     assert PORT_ENV in failed.value.next_action
     assert str(config.log) in failed.value.next_action
+    assert "127.0.0.1" in str(failed.value)
+    assert "127.0.0.1" in failed.value.next_action
     assert not is_running(started[0].pid)
 
 
@@ -424,6 +489,7 @@ def test_a_service_that_exits_before_opening_its_port_fails_at_once_with_its_log
 
     assert waited < 100, "the runner must not wait out a timeout for a process that has exited"
     assert "exited with code 3" in str(failed.value)
+    assert not getattr(failed.value, "__notes__", []), "one failure must not be reported twice"
     assert "cannot open the database" in str(failed.value)
     assert PORT_ENV in str(failed.value)
     assert str(config.log) in failed.value.next_action
@@ -556,3 +622,356 @@ def test_child_env_has_no_anthropic_vars(
     assert "SOMETHING_ELSE" not in seen
     assert PORT_ENV in seen
     assert "PATH" in seen
+
+
+# A service that dies on its own while the body is using it
+
+
+@pytest.fixture
+def quick_port_release(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(service_runner, "PORT_RELEASE_WAIT_S", 0.2)
+
+
+def test_a_service_that_dies_after_opening_its_port_is_reported(
+    runner: ServiceRunner, started: list[subprocess.Popen[bytes]], tmp_path: Path
+) -> None:
+    body = (
+        LISTEN
+        + "time.sleep(0.25)\n"
+        + "print('fatal: lost the database', file=sys.stderr, flush=True)\n"
+        + "sys.exit(5)"
+    )
+    config = config_for(stand_in(tmp_path, body), tmp_path)
+
+    with pytest.raises(ServiceDiedError) as died, runner.running(config) as service:
+        started[0].wait(timeout=30)
+
+    assert isinstance(died.value, ArdeError)
+    assert "exited with code 5" in str(died.value)
+    assert "fatal: lost the database" in str(died.value)
+    assert str(config.log) in died.value.next_action
+    assert not accepts_connection(service.port)
+
+
+def test_a_service_that_dies_leaving_a_child_is_reported_and_the_child_is_stopped(
+    runner: ServiceRunner, started: list[subprocess.Popen[bytes]], tmp_path: Path
+) -> None:
+    body = starts_a_child(CHILD_THAT_IGNORES_SIGTERM) + LISTEN + "time.sleep(0.25)\nsys.exit(9)"
+    config = config_for(stand_in(tmp_path, body), tmp_path)
+
+    try:
+        with pytest.raises(ServiceDiedError) as died, runner.running(config):
+            started[0].wait(timeout=30)
+        child_is_gone = wait_until_gone(int((tmp_path / "child.pid").read_text()))
+    finally:
+        kill_leftover(tmp_path, "child.pid")
+
+    assert "exited with code 9" in str(died.value)
+    assert child_is_gone
+
+
+@pytest.mark.usefixtures("quick_port_release")
+def test_a_service_that_lost_its_port_to_another_process_is_reported(
+    runner: ServiceRunner, started: list[subprocess.Popen[bytes]], tmp_path: Path
+) -> None:
+    other_process = starts_a_child(CHILD_THAT_HOLDS_THE_PORT, own_session=True)
+    config = config_for(stand_in(tmp_path, other_process + EXITS_WHEN_ITS_PORT_IS_TAKEN), tmp_path)
+
+    try:
+        with pytest.raises(ServiceDiedError) as died, runner.running(config):
+            (tmp_path / "go.txt").write_text("go")
+            started[0].wait(timeout=30)
+    finally:
+        kill_leftover(tmp_path, "child.pid")
+
+    assert "exited with code 1" in str(died.value)
+    assert "Address already in use" in str(died.value)
+    assert any("still accepts connections" in note for note in died.value.__notes__)
+
+
+def test_a_dead_service_does_not_hide_the_error_of_the_body(
+    runner: ServiceRunner, started: list[subprocess.Popen[bytes]], tmp_path: Path
+) -> None:
+    config = config_for(stand_in(tmp_path, LISTEN + "time.sleep(0.25)\nsys.exit(5)"), tmp_path)
+
+    with pytest.raises(ValueError, match="the body failed") as raised, runner.running(config):
+        started[0].wait(timeout=30)
+        raise ValueError("the body failed")
+
+    assert any("exited with code 5" in note for note in raised.value.__notes__)
+
+
+# After the stop, the port is checked once more, and a process outside the group is found there
+
+
+@pytest.mark.usefixtures("quick_port_release")
+def test_a_daemon_that_outlives_the_stop_is_reported_with_its_port(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    body = starts_a_child(CHILD_THAT_HOLDS_THE_PORT, own_session=True) + HOURS
+    config = config_for(stand_in(tmp_path, body), tmp_path)
+
+    try:
+        with pytest.raises(ServiceStopError) as refused, runner.running(config) as service:
+            assert accepts_connection(service.port)
+    finally:
+        kill_leftover(tmp_path, "child.pid")
+
+    assert str(service.port) in str(refused.value)
+    assert "lsof" in refused.value.next_action
+
+
+@pytest.mark.usefixtures("quick_port_release")
+def test_a_service_that_exits_leaving_a_daemon_on_its_port_does_not_claim_the_port_never_opened(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: ServiceRunner,
+    started: list[subprocess.Popen[bytes]],
+    tmp_path: Path,
+) -> None:
+    real_connect = socket.create_connection
+    probes: list[int] = []
+
+    # The first probe comes before the daemon is up and is refused, as it would be in life.
+    def refused_at_first(*args: object, **kwargs: object) -> socket.socket:
+        if not probes:
+            probes.append(1)
+            started[0].wait(timeout=30)
+            raise ConnectionRefusedError
+        return real_connect(*args, **kwargs)  # type: ignore[call-overload, no-any-return]
+
+    monkeypatch.setattr(socket, "create_connection", refused_at_first)
+    body = starts_a_child(CHILD_THAT_HOLDS_THE_PORT, own_session=True) + "sys.exit(0)"
+    config = config_for(stand_in(tmp_path, body), tmp_path)
+
+    try:
+        with pytest.raises(ServiceStartError) as failed, runner.running(config):
+            pytest.fail("the body must not run for a service that is gone")
+    finally:
+        kill_leftover(tmp_path, "child.pid")
+
+    assert "exited with code 0" in str(failed.value)
+    assert "still accepts connections" in str(failed.value)
+    assert "before it opened" not in str(failed.value)
+    assert any("lsof" in note for note in failed.value.__notes__)
+
+
+# The process group is killed twice, because one kill can miss a fork in flight
+
+
+def test_a_stop_that_lands_while_the_service_is_forking_leaves_nothing(
+    monkeypatch: pytest.MonkeyPatch, runner: ServiceRunner, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(service_runner, "STOP_GRACE_S", 0.05)
+    config = config_for(stand_in(tmp_path, FORKS_WITHOUT_A_PAUSE), tmp_path)
+
+    for attempt in range(FORK_RACE_STOPS):
+        with runner.running(config):
+            time.sleep(0.005 * (attempt % 6))
+        leader = int((tmp_path / "leader.pid").read_text())
+        assert wait_until_group_is_empty(leader), (
+            f"stop {attempt} left {live_group_members(leader)} running"
+        )
+
+
+def test_a_stop_that_is_not_permitted_to_signal_ends_in_a_stop_error(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: ServiceRunner,
+    started: list[subprocess.Popen[bytes]],
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(service_runner, "STOP_GRACE_S", 0.2)
+    monkeypatch.setattr(child_process, "WAIT_AFTER_KILL_S", 0.2)
+
+    def refused(*args: object) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", refused)
+    monkeypatch.setattr(os, "kill", refused)
+
+    with (
+        pytest.raises(ServiceStopError),
+        runner.running(config_for(stand_in(tmp_path, SERVES), tmp_path)),
+    ):
+        pass
+
+
+def test_an_interrupt_at_the_first_signal_still_kills_the_group(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: ServiceRunner,
+    started: list[subprocess.Popen[bytes]],
+    tmp_path: Path,
+) -> None:
+    def interrupted(process: REAL_POPEN[bytes], signal_number: int) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(service_runner, "signal_group", interrupted)
+    binary = stand_in(tmp_path, SERVES_AND_IGNORES_SIGTERM)
+
+    with pytest.raises(KeyboardInterrupt), runner.running(config_for(binary, tmp_path)):
+        pass
+
+    assert started[0].returncode == -signal.SIGKILL
+
+
+def test_the_grace_is_five_seconds() -> None:
+    assert service_runner.STOP_GRACE_S == 5
+
+
+# What the log may be
+
+
+def assert_the_log_is_refused(
+    runner: ServiceRunner, config: ServiceConfig, started: list[subprocess.Popen[bytes]]
+) -> None:
+    with pytest.raises(ServiceStartError) as failed, runner.running(config):
+        pytest.fail("the body must not run when the log cannot be used")
+
+    assert str(config.log) in str(failed.value)
+    assert failed.value.next_action
+    assert started == []
+
+
+def test_a_symlink_at_the_log_path_is_refused_and_its_target_left_alone(
+    runner: ServiceRunner, started: list[subprocess.Popen[bytes]], tmp_path: Path
+) -> None:
+    precious = tmp_path / "precious.txt"
+    precious.write_text("keep me\n")
+    precious.chmod(0o644)
+    config = config_for(stand_in(tmp_path, SERVES), tmp_path)
+    config.log.symlink_to(precious)
+
+    assert_the_log_is_refused(runner, config, started)
+
+    assert precious.read_text() == "keep me\n"
+    assert stat.S_IMODE(precious.stat().st_mode) == 0o644
+
+
+def test_a_dangling_symlink_at_the_log_path_is_refused_and_creates_nothing(
+    runner: ServiceRunner, started: list[subprocess.Popen[bytes]], tmp_path: Path
+) -> None:
+    target = tmp_path / "not-created.txt"
+    config = config_for(stand_in(tmp_path, SERVES), tmp_path)
+    config.log.symlink_to(target)
+
+    assert_the_log_is_refused(runner, config, started)
+
+    assert not target.exists()
+
+
+def test_a_fifo_at_the_log_path_is_refused_and_does_not_hang(
+    runner: ServiceRunner, started: list[subprocess.Popen[bytes]], tmp_path: Path
+) -> None:
+    config = config_for(stand_in(tmp_path, SERVES), tmp_path)
+    os.mkfifo(config.log)
+
+    assert_the_log_is_refused(runner, config, started)
+
+
+def test_a_fifo_with_a_reader_at_the_log_path_is_refused(
+    runner: ServiceRunner, started: list[subprocess.Popen[bytes]], tmp_path: Path
+) -> None:
+    config = config_for(stand_in(tmp_path, SERVES), tmp_path)
+    os.mkfifo(config.log)
+    reader = os.open(config.log, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        assert_the_log_is_refused(runner, config, started)
+    finally:
+        os.close(reader)
+
+
+def test_a_folder_at_the_log_path_is_refused(
+    runner: ServiceRunner, started: list[subprocess.Popen[bytes]], tmp_path: Path
+) -> None:
+    config = config_for(stand_in(tmp_path, SERVES), tmp_path)
+    config.log.mkdir()
+
+    assert_the_log_is_refused(runner, config, started)
+
+
+def test_a_log_the_service_deletes_cannot_replace_the_error_about_the_service(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    log = tmp_path / "service.log"
+    binary = stand_in(tmp_path, f"os.unlink({str(log)!r})\nsys.exit(4)")
+    config = config_for(binary, tmp_path, log=log)
+
+    with pytest.raises(ServiceStartError) as failed, runner.running(config):
+        pass
+
+    assert "exited with code 4" in str(failed.value)
+    assert "could not be read" in str(failed.value)
+    assert str(config.log) in failed.value.next_action
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_a_log_the_service_makes_unreadable_cannot_replace_the_error_about_the_service(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    log = tmp_path / "service.log"
+    binary = stand_in(tmp_path, f"os.chmod({str(log)!r}, 0)\nsys.exit(4)")
+    config = config_for(binary, tmp_path, log=log)
+
+    with pytest.raises(ServiceStartError) as failed, runner.running(config):
+        pass
+
+    assert "exited with code 4" in str(failed.value)
+    assert "could not be read" in str(failed.value)
+
+
+# What the runner promises about the child's side of the process
+
+
+@pytest.mark.parametrize("name", ALLOWED_VARIABLES)
+def test_a_port_variable_the_service_needs_as_it_is_is_refused(
+    runner: ServiceRunner,
+    started: list[subprocess.Popen[bytes]],
+    tmp_path: Path,
+    name: str,
+) -> None:
+    config = config_for(stand_in(tmp_path, SERVES), tmp_path, port_env=name)
+
+    with pytest.raises(ServiceStartError) as failed, runner.running(config):
+        pytest.fail("the body must not run with a port variable that would break the service")
+
+    assert name in str(failed.value)
+    assert failed.value.next_action
+    assert started == []
+
+
+@pytest.fixture
+def a_stdin_that_is_not_devnull() -> Iterator[None]:
+    saved = os.dup(0)
+    read_end, write_end = os.pipe()
+    os.dup2(read_end, 0)
+    yield
+    os.dup2(saved, 0)
+    for descriptor in (saved, read_end, write_end):
+        os.close(descriptor)
+
+
+@pytest.mark.usefixtures("a_stdin_that_is_not_devnull")
+def test_the_service_gets_no_input_from_arde(runner: ServiceRunner, tmp_path: Path) -> None:
+    body = "print(os.path.samestat(os.fstat(0), os.stat(os.devnull)), flush=True)\n" + SERVES
+    config = config_for(stand_in(tmp_path, body), tmp_path)
+
+    with runner.running(config):
+        pass
+
+    assert config.log.read_text().strip() == "True"
+
+
+def open_descriptors() -> list[str]:
+    return sorted(os.listdir("/dev/fd"))
+
+
+def test_arde_keeps_no_descriptor_open_on_the_log_or_the_probe(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    config = config_for(stand_in(tmp_path, SERVES), tmp_path)
+    before = open_descriptors()
+
+    with runner.running(config):
+        during = open_descriptors()
+    after = open_descriptors()
+
+    assert (during, after) == (before, before)
