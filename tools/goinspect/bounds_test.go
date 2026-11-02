@@ -166,15 +166,19 @@ func TestAShortChainIsNamedAsWritten(t *testing.T) {
 }
 
 func TestAChainPastTheCapKeepsItsLastNameSoAPatternOnTheEndStillMatches(t *testing.T) {
-	links := maxPrintedBytes // Four bytes each, so the name of the last call is past the cap.
+	links := maxPrintedBytes // Four bytes each, so the outer calls are past the cap.
 
 	found := matchesIn(t, map[string]string{"a.go": chainOfCalls(links)}, nameEndingInB)
 
 	if len(found) != links {
 		t.Fatalf("every link must still match, got %d of %d", len(found), links)
 	}
-	if got, want := found[links-1].Call, tooLongToPrint+".b"; got != want && found[0].Call != want {
-		t.Fatalf("the longest chain reads %q and %q, want %q", found[0].Call[:40], got, want)
+	// Calls are found from the outside in, so the first is the longest chain and the last the shortest.
+	if got, want := found[0].Call, tooLongToPrint+".b"; got != want {
+		t.Fatalf("the longest chain reads %.40q, want %q", got, want)
+	}
+	if got, want := found[links-1].Call, "a.b"; got != want {
+		t.Fatalf("the shortest chain reads %.40q, want %q", got, want)
 	}
 }
 
