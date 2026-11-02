@@ -63,7 +63,7 @@ What exists today:
 - `src/arde/adapters/llm/anthropic_client.py`: the Anthropic API behind `LLMClient`.
 - `src/arde/adapters/tracer.py`: writes `trace.jsonl` and `debug.log`.
 - `src/arde/adapters/models_file.py`: reads the model settings per role.
-- `tools/goinspect/`: the Go helper. `compare` lists the Go files that changed, ignoring comments, formatting, line endings and the two struct tags ARDE adds. `declarations` hashes every top-level declaration and lists struct fields. `match` and `fingerprints` arrive with Task 7.
+- `tools/goinspect/`: the Go helper. `compare` lists the Go files that changed, ignoring comments, formatting, line endings and the two struct tags ARDE adds. `declarations` hashes every top-level declaration and lists struct fields. `match` applies the profile's call patterns to every non-test Go file and prints each call that matches. `fingerprints` hashes everything a route's handler reaches by static calls, closures included, so a later run knows which routes changed.
 
 Imports go inward. These rules are enforced by `tests/test_architecture.py`:
 
