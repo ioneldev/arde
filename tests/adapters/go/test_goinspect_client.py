@@ -14,6 +14,7 @@ from arde.adapters.child_process import (
     ChildTimeoutError,
     OutputLimit,
 )
+from arde.adapters.child_text import MESSAGE_TAIL_BYTES
 from arde.adapters.language.go import goinspect_client
 from arde.adapters.language.go.goinspect_client import (
     GOINSPECT_REPLY_LIMIT,
@@ -59,6 +60,7 @@ class StandIn:
 
 
 GO_ENVIRONMENT = {"PATH": os.environ["PATH"], "GOPRIVATE": "corp.example/*", "GOENV": "off"}
+NOISY_STDERR = "\x1b[2J" + "bad package\n" * 5000 + "the real reason\n"
 
 
 # The real environment is read from the toolchain, which these tests do without.
@@ -287,6 +289,34 @@ def test_a_failed_build_names_the_next_action(
         build_goinspect(tmp_path / "bin")
 
     assert failed.value.next_action
+
+
+def test_a_failed_build_gives_a_short_clean_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def noisy_build(command: ChildCommand) -> ChildOutcome:
+        return ChildOutcome(exit_code=2, stdout="", stderr=NOISY_STDERR)
+
+    monkeypatch.setattr(goinspect_client, "run_child", noisy_build)
+    monkeypatch.setattr(goinspect_client, "_built", set())
+
+    with pytest.raises(GoinspectError) as failed:
+        build_goinspect(tmp_path / "bin")
+
+    assert "the real reason" in str(failed.value)
+    assert "\x1b" not in str(failed.value)
+    assert len(str(failed.value)) < 2 * MESSAGE_TAIL_BYTES
+
+
+def test_a_failing_helper_gives_a_short_clean_message(stand_in: StandIn, folder: Path) -> None:
+    stand_in.replies_with("", stderr=NOISY_STDERR, exit_code=1)
+
+    with pytest.raises(GoinspectError) as failed:
+        GoinspectClient(stand_in.binary).declarations(folder)
+
+    assert "the real reason" in str(failed.value)
+    assert "\x1b" not in str(failed.value)
+    assert len(str(failed.value)) < 2 * MESSAGE_TAIL_BYTES
 
 
 def test_the_whole_reply_is_kept_up_to_64_megabytes_and_a_longer_one_is_refused() -> None:

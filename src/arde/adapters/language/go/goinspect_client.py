@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from arde.adapters.child_process import ChildCommand, ChildOutcome, run_child
+from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text
 from arde.adapters.language.go.go_environment import go_environment
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT, GOINSPECT_REPLY_LIMIT
 from arde.adapters.language.go.timeouts import GO_BUILD_TIMEOUT_S, GOINSPECT_TIMEOUT_S
@@ -100,7 +101,8 @@ def build_goinspect(bin_dir: Path) -> Path:
     outcome = run_child(command)
     if not outcome.succeeded:
         raise GoinspectError(
-            f"Cannot build {HELPER_NAME} from {GOINSPECT_SOURCE}: {outcome.output.strip()}",
+            f"Cannot build {HELPER_NAME} from {GOINSPECT_SOURCE}: "
+            f"{bounded_text(outcome.output.strip(), MESSAGE_TAIL_BYTES)}",
             next_action=(
                 f"Check that Go is installed and that {GOINSPECT_SOURCE} builds on its own, "
                 "then run again."
@@ -156,7 +158,7 @@ class GoinspectClient:
         if not outcome.succeeded:
             raise GoinspectError(
                 f"goinspect {question.name} failed with exit {outcome.exit_code}: "
-                f"{outcome.stderr.strip()}",
+                f"{bounded_text(outcome.stderr.strip(), MESSAGE_TAIL_BYTES)}",
                 next_action=(
                     "Fix what the message names, usually a Go file that does not parse, "
                     "and run again."

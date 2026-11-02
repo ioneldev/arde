@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from arde.adapters.child_process import ChildCommand, ChildOutcome, run_child
+from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text, visible_text
 from arde.adapters.language.go.errors import GoCommandError
 from arde.adapters.language.go.go_environment import go_environment
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
@@ -66,7 +67,7 @@ def _require_one_main_package(repo: Path, main_package: str) -> None:
     listing = _go(repo, GoStep(arguments, GO_LIST_TIMEOUT_S))
     if not listing.succeeded:
         raise GoCommandError(
-            f"main_package {main_package} cannot be loaded: {listing.output.strip()}",
+            f"main_package {main_package} cannot be loaded: {_end_of(listing)}",
             next_action="Correct main_package in the profile to name a package, then run again.",
         )
     names = listing.stdout.split()
@@ -83,7 +84,7 @@ def _what_it_names(names: list[str]) -> str:
         return "names no package"
     if len(names) == 1:
         return f"is package {names[0]}"
-    return f"names {len(names)} packages ({', '.join(names)})"
+    return f"names {len(names)} packages ({bounded_text(', '.join(names), MESSAGE_TAIL_BYTES)})"
 
 
 # The package comes after "--" so that no text from the profile can be read as a flag, and
@@ -93,7 +94,7 @@ def _build_into(repo: Path, profile: RepoProfile, *, binary: Path) -> None:
     outcome = _go(repo, GoStep(arguments, GO_BUILD_TIMEOUT_S))
     if not outcome.succeeded:
         raise GoCommandError(
-            f"The service does not build: {outcome.output.strip()}",
+            f"The service does not build: {_end_of(outcome)}",
             next_action=(
                 "Fix the build errors, or correct main_package in the profile if it names the "
                 "wrong package, then run again."
@@ -124,8 +125,15 @@ def run_checks(repo: Path, profile: RepoProfile) -> CheckResult:
     )
 
 
+# All of it, not the end alone: the output is already limited, and the repair loop reads it. Code
+# decides pass or fail from the booleans and never from this text, so a forged header changes
+# nothing.
 def _section(title: str, outcome: ChildOutcome) -> str:
-    return f"== {title} (exit {outcome.exit_code}) ==\n{outcome.output.strip()}\n"
+    return f"== {title} (exit {outcome.exit_code}) ==\n{visible_text(outcome.output.strip())}\n"
+
+
+def _end_of(outcome: ChildOutcome) -> str:
+    return bounded_text(outcome.output.strip(), MESSAGE_TAIL_BYTES)
 
 
 # Zero must mean zero tests. A listing that failed after the tests passed would read as zero, and
@@ -135,7 +143,7 @@ def _count_listed_tests(listing: ChildOutcome, *, tests_passed: bool) -> int:
     if tests_passed and not listing.succeeded:
         raise GoCommandError(
             f"The tests passed, but listing them failed, so they cannot be counted: "
-            f"{listing.output.strip()}",
+            f"{_end_of(listing)}",
             next_action="Run the list command by hand in the repo to see why, then run again.",
         )
     return sum(1 for line in listing.stdout.splitlines() if _LISTED_TEST.fullmatch(line))
@@ -166,7 +174,7 @@ def _list_ignored_files(repo: Path, folders: list[str]) -> str:
     _require_whole(listing, "the list of files the build leaves out")
     if not listing.succeeded:
         raise GoCommandError(
-            f"Cannot list the files the build leaves out: {listing.output.strip()}",
+            f"Cannot list the files the build leaves out: {_end_of(listing)}",
             next_action="Run the same list command by hand in the repo to see why, then run again.",
         )
     return listing.stdout

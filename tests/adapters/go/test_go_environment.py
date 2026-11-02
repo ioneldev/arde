@@ -15,6 +15,7 @@ import pytest
 
 from arde.adapters.child_env import child_environment
 from arde.adapters.child_process import ChildCommand, ChildOutcome, run_child
+from arde.adapters.child_text import MESSAGE_TAIL_BYTES
 from arde.adapters.language.go import go_environment
 from arde.adapters.language.go.errors import GoCommandError
 from arde.adapters.language.go.go_environment import (
@@ -60,6 +61,7 @@ class StandInGoEnv:
         self.extras = extras or {}
         self.exit_code = exit_code
         self.stdout: str | None = None
+        self.stderr = "go: oops\n"
         self.asked: list[ChildCommand] = []
         self.folder_contents: list[list[str]] = []
 
@@ -67,7 +69,7 @@ class StandInGoEnv:
         self.asked.append(command)
         self.folder_contents.append(sorted(path.name for path in command.cwd.iterdir()))
         reply = self.stdout if self.stdout is not None else json.dumps(self._answer(command))
-        return ChildOutcome(exit_code=self.exit_code, stdout=reply, stderr="go: oops\n")
+        return ChildOutcome(exit_code=self.exit_code, stdout=reply, stderr=self.stderr)
 
     def _answer(self, command: ChildCommand) -> dict[str, str]:
         def known(name: str) -> str:
@@ -365,6 +367,20 @@ def test_a_failing_go_env_stops_the_run_and_does_not_go_on_without_the_settings(
 
     assert "go: oops" in str(stopped.value)
     assert "private" in stopped.value.next_action
+
+
+def test_a_failing_go_env_gives_a_short_clean_message(
+    clean_environment: pytest.MonkeyPatch, repo: Path
+) -> None:
+    go = stand_in(clean_environment, exit_code=2)
+    go.stderr = "\x1b[2J" + "noise\n" * 5000 + "the real reason\n"
+
+    with pytest.raises(GoCommandError) as stopped:
+        read_go_environment(repo)
+
+    assert "the real reason" in str(stopped.value)
+    assert "\x1b" not in str(stopped.value)
+    assert len(str(stopped.value)) < 2 * MESSAGE_TAIL_BYTES
 
 
 def test_a_failure_is_not_remembered(clean_environment: pytest.MonkeyPatch, repo: Path) -> None:

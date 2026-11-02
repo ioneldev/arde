@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 from typing import IO, Literal
 
+from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text
 from arde.domain.base import Frozen
 from arde.domain.errors import ArdeError
 from arde.domain.report import ExitCode
@@ -56,10 +57,15 @@ class ChildOutcome(Frozen):
         return self.stdout + self.stderr
 
 
+# A go command can name a thousand folders of the repo, and a folder's name can hold anything.
+def _shown_command(command: ChildCommand) -> str:
+    return bounded_text(" ".join(command.argv), MESSAGE_TAIL_BYTES)
+
+
 class ChildTimeoutError(ArdeError):
     def __init__(self, command: ChildCommand) -> None:
         super().__init__(
-            f"`{' '.join(command.argv)}` ran longer than {command.timeout_s:g} s and was stopped.",
+            f"`{_shown_command(command)}` ran longer than {command.timeout_s:g} s and was stopped.",
             next_action=(
                 f"Run it by hand in {command.cwd} to see where it hangs, fix that, and run again."
             ),
@@ -70,7 +76,7 @@ class ChildTimeoutError(ArdeError):
 class ChildOutputTooLongError(ArdeError):
     def __init__(self, command: ChildCommand, *, stream: str, size: int) -> None:
         super().__init__(
-            f"`{' '.join(command.argv)}` wrote {size} bytes to {stream}, past the limit of "
+            f"`{_shown_command(command)}` wrote {size} bytes to {stream}, past the limit of "
             f"{command.output.max_bytes} bytes.",
             next_action=(
                 f"Run it by hand in {command.cwd} to see why it writes so much, fix that, "

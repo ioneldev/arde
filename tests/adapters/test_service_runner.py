@@ -495,6 +495,32 @@ def test_a_service_that_exits_before_opening_its_port_fails_at_once_with_its_log
     assert str(config.log) in failed.value.next_action
 
 
+def test_a_control_character_in_the_log_is_shown_and_never_passed_on(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    binary = stand_in(
+        tmp_path, "print('\\x1b]0;OWNED\\x07\\x1b[2Jstarting', flush=True)\nsys.exit(3)"
+    )
+
+    with pytest.raises(ServiceStartError) as failed, runner.running(config_for(binary, tmp_path)):
+        pass
+
+    assert "\x1b" not in str(failed.value)
+    assert "\x07" not in str(failed.value)
+    assert "starting" in str(failed.value)
+
+
+def test_the_tail_of_a_log_stays_short_when_control_characters_grow_into_escapes(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    binary = stand_in(tmp_path, "print('\\x1b' * 5000, flush=True)\nsys.exit(3)")
+
+    with pytest.raises(ServiceStartError) as failed, runner.running(config_for(binary, tmp_path)):
+        pass
+
+    assert len(str(failed.value)) < 3000
+
+
 def test_only_the_end_of_a_long_log_goes_into_the_error(
     runner: ServiceRunner, tmp_path: Path
 ) -> None:

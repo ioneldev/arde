@@ -24,6 +24,7 @@ from arde.adapters.child_process import (
     OutputLimit,
     run_child,
 )
+from arde.adapters.child_text import MESSAGE_TAIL_BYTES
 from arde.domain.errors import ArdeError
 from arde.domain.report import ExitCode
 
@@ -387,3 +388,39 @@ def test_a_process_the_child_left_running_in_its_group_is_stopped_when_the_child
     assert outcome.succeeded
     assert waited < 10
     assert gone, "the extra command left a process behind, as a server would keep its port"
+
+
+# A go command can name a thousand folders of the repo, and a folder's name can hold anything.
+def repo_folders(cwd: Path) -> ChildCommand:
+    folders = tuple(f"./e\x1b[2Jvil{number}" for number in range(1000))
+    return ChildCommand(
+        argv=(sys.executable, "-c", "import time; print('x' * 200); time.sleep(30)", *folders),
+        cwd=cwd,
+        timeout_s=0.3,
+        output=OutputLimit(max_bytes=10, when_longer="fail"),
+        env=child_environment(),
+    )
+
+
+def test_a_timeout_message_stays_short_and_clean_whatever_the_command_names(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ChildTimeoutError) as stopped:
+        run_child(repo_folders(tmp_path))
+
+    assert "\x1b" not in str(stopped.value)
+    assert len(str(stopped.value)) < 2 * MESSAGE_TAIL_BYTES
+
+
+def test_a_too_long_output_message_stays_short_and_clean_whatever_the_command_names(
+    tmp_path: Path,
+) -> None:
+    command = repo_folders(tmp_path).model_copy(
+        update={"argv": (sys.executable, "-c", "print('x' * 200)", "./e\x1b[2Jvil" * 1000)}
+    )
+
+    with pytest.raises(ChildOutputTooLongError) as refused:
+        run_child(command)
+
+    assert "\x1b" not in str(refused.value)
+    assert len(str(refused.value)) < 2 * MESSAGE_TAIL_BYTES

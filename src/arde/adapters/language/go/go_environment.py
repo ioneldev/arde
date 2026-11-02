@@ -13,6 +13,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from arde.adapters.child_env import child_environment
 from arde.adapters.child_process import ChildCommand, run_child
+from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text
 from arde.adapters.language.go.errors import GoCommandError
 from arde.adapters.language.go.output_limits import GO_ENV_REPLY_LIMIT
 from arde.adapters.language.go.timeouts import GO_ENV_TIMEOUT_S
@@ -84,7 +85,8 @@ def _user_settings() -> dict[str, str]:
         outcome = run_child(command)
     if not outcome.succeeded:
         raise GoCommandError(
-            f"Cannot read the Go settings with go env: {outcome.output.strip()}",
+            "Cannot read the Go settings with go env: "
+            f"{bounded_text(outcome.output.strip(), MESSAGE_TAIL_BYTES)}",
             next_action=_RUN_IT_BY_HAND,
         )
     return _the_three_settings(outcome.stdout)

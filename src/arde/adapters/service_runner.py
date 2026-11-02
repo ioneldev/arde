@@ -20,6 +20,7 @@ from typing import BinaryIO
 
 from arde.adapters.child_env import ALLOWED_VARIABLES, child_environment
 from arde.adapters.child_process import describe_os_error, force_stop, signal_group
+from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text
 from arde.application.ports import (
     ServiceConfig,
     ServiceDiedError,
@@ -35,7 +36,6 @@ LOOPBACK = "127.0.0.1"
 STOP_GRACE_S = 5
 # The log may hold anything the service printed, so only its owner may read it.
 LOG_MODE = 0o600
-LOG_TAIL_BYTES = 2000
 POLL_INTERVAL_S = 0.05
 CONNECT_TIMEOUT_S = 1
 # A process that was killed may take a moment to let go of the socket it held.
@@ -231,11 +231,13 @@ def _log_tail(log: Path) -> str:
     try:
         with log.open("rb") as file:
             size = file.seek(0, os.SEEK_END)
-            file.seek(max(size - LOG_TAIL_BYTES, 0))
+            file.seek(max(size - MESSAGE_TAIL_BYTES, 0))
             tail = file.read().decode("utf-8", errors="replace").strip()
     except OSError as error:
         return f"{log} could not be read: {describe_os_error(error)}."
-    return f"The end of {log}:\n{tail}" if tail else f"{log} is empty."
+    if not tail:
+        return f"{log} is empty."
+    return f"The end of {log}:\n{bounded_text(tail, MESSAGE_TAIL_BYTES)}"
 
 
 # The error on its way out is the one that says what went wrong. What the stop finds is attached
