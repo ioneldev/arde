@@ -52,14 +52,21 @@ PROBE_FIXED_VARIABLES = {"GOTOOLCHAIN": "local"}
 FIXED_VARIABLES = {"GOENV": "off"}
 
 
-def go_environment() -> dict[str, str]:
+def go_environment(repo: Path) -> dict[str, str]:
     exported = {
         name: os.environ[name]
         for name in TOOLCHAIN_VARIABLES
         if name in os.environ and name not in USER_SETTINGS
     }
     settings = {name: value for name, value in _user_settings().items() if value}
-    return {**child_environment(), **exported, **settings, **FIXED_VARIABLES}
+    return {**child_environment(), **exported, **settings, **FIXED_VARIABLES, **_workspace(repo)}
+
+
+# Go looks for a go.work in every folder above the one it runs in, so a file above the repo could
+# choose the code that is built and run. A blanket "off" would break a repo that needs its own.
+def _workspace(repo: Path) -> dict[str, str]:
+    own_file = repo.resolve() / "go.work"
+    return {"GOWORK": str(own_file) if os.path.isfile(own_file) else "off"}
 
 
 # Once per process. A failure is not remembered, so the next call asks again.

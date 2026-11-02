@@ -95,6 +95,13 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     return monkeypatch
 
 
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    folder = tmp_path / "repo"
+    folder.mkdir()
+    return folder
+
+
 def stand_in(monkeypatch: pytest.MonkeyPatch, **kwargs: object) -> StandInGoEnv:
     go = StandInGoEnv(**kwargs)  # type: ignore[arg-type]
     monkeypatch.setattr(go_environment, "run_child", go)
@@ -103,63 +110,70 @@ def stand_in(monkeypatch: pytest.MonkeyPatch, **kwargs: object) -> StandInGoEnv:
 
 @pytest.mark.parametrize("name", TOOLCHAIN_VARIABLES)
 def test_a_toolchain_variable_that_is_exported_reaches_a_command(
-    clean_environment: pytest.MonkeyPatch, name: str
+    clean_environment: pytest.MonkeyPatch, repo: Path, name: str
 ) -> None:
     stand_in(clean_environment)
     clean_environment.setenv(name, "exported-value")
 
-    assert read_go_environment()[name] == "exported-value"
+    assert read_go_environment(repo)[name] == "exported-value"
 
 
 def test_an_exported_goprivate_reaches_a_command_with_the_generic_variables(
     clean_environment: pytest.MonkeyPatch,
+    repo: Path,
 ) -> None:
     stand_in(clean_environment)
     clean_environment.setenv("GOPRIVATE", "corp.example/*")
 
-    assert read_go_environment() == {
+    assert read_go_environment(repo) == {
         "PATH": "/usr/bin",
         "GOPRIVATE": "corp.example/*",
         "GONOPROXY": "corp.example/*",
         "GONOSUMDB": "corp.example/*",
         "GOENV": "off",
+        "GOWORK": "off",
     }
 
 
 def test_goflags_stays_out_because_it_can_name_a_program_to_run(
     clean_environment: pytest.MonkeyPatch,
+    repo: Path,
 ) -> None:
     stand_in(clean_environment)
     clean_environment.setenv("GOFLAGS", "-toolexec=/tmp/run-me")
 
     assert "GOFLAGS" not in TOOLCHAIN_VARIABLES
-    assert "GOFLAGS" not in read_go_environment()
+    assert "GOFLAGS" not in read_go_environment(repo)
 
 
 def test_the_go_env_file_is_switched_off_for_every_command_whatever_the_parent_says(
     clean_environment: pytest.MonkeyPatch,
+    repo: Path,
 ) -> None:
     stand_in(clean_environment)
     clean_environment.setenv("GOENV", "/somewhere/with/flags")
 
-    assert read_go_environment()["GOENV"] == "off"
+    assert read_go_environment(repo)["GOENV"] == "off"
 
 
 def test_nothing_is_invented_for_a_variable_that_is_not_set(
     clean_environment: pytest.MonkeyPatch,
+    repo: Path,
 ) -> None:
     stand_in(clean_environment)
 
-    assert read_go_environment() == {"PATH": "/usr/bin", "GOENV": "off"}
+    assert read_go_environment(repo) == {"PATH": "/usr/bin", "GOENV": "off", "GOWORK": "off"}
 
 
 @pytest.mark.parametrize("name", USER_SETTINGS)
 def test_a_setting_stored_in_the_users_go_env_file_reaches_a_command(
-    clean_environment: pytest.MonkeyPatch, name: str
+    clean_environment: pytest.MonkeyPatch,
+    name: str,
+    repo: Path,
 ) -> None:
     stand_in(clean_environment, file={name: "corp.example/*"})
 
-    assert read_go_environment()[name] == "corp.example/*"
+    assert read_go_environment(repo)[name] == "corp.example/*"
 
 
 def test_the_three_settings_are_exactly_the_ones_that_keep_private_paths_private() -> None:
@@ -168,11 +182,12 @@ def test_the_three_settings_are_exactly_the_ones_that_keep_private_paths_private
 
 def test_what_goes_to_a_command_is_the_answer_of_go_env_for_the_three_settings(
     clean_environment: pytest.MonkeyPatch,
+    repo: Path,
 ) -> None:
     stand_in(clean_environment, file={"GOPRIVATE": "a", "GONOPROXY": "c"})
     clean_environment.setenv("GOPRIVATE", "b")
 
-    environment = read_go_environment()
+    environment = read_go_environment(repo)
 
     assert (environment["GOPRIVATE"], environment["GONOPROXY"], environment["GONOSUMDB"]) == (
         "b",
@@ -181,14 +196,15 @@ def test_what_goes_to_a_command_is_the_answer_of_go_env_for_the_three_settings(
     )
 
 
-def test_an_empty_answer_adds_nothing(clean_environment: pytest.MonkeyPatch) -> None:
+def test_an_empty_answer_adds_nothing(clean_environment: pytest.MonkeyPatch, repo: Path) -> None:
     stand_in(clean_environment)
 
-    assert not [name for name in read_go_environment() if name in USER_SETTINGS]
+    assert not [name for name in read_go_environment(repo) if name in USER_SETTINGS]
 
 
 def test_settings_that_could_redirect_downloads_are_never_taken_from_the_file(
     clean_environment: pytest.MonkeyPatch,
+    repo: Path,
 ) -> None:
     stand_in(
         clean_environment,
@@ -202,28 +218,31 @@ def test_settings_that_could_redirect_downloads_are_never_taken_from_the_file(
         },
     )
 
-    environment = read_go_environment()
+    environment = read_go_environment(repo)
 
     assert environment["GOPRIVATE"] == "corp.example/*"
     for name in ("GOPROXY", "GOSUMDB", "GOTOOLCHAIN", "GOFLAGS", "GOINSECURE"):
         assert name not in environment
 
 
-def test_the_file_is_read_once_per_process(clean_environment: pytest.MonkeyPatch) -> None:
+def test_the_file_is_read_once_per_process(
+    clean_environment: pytest.MonkeyPatch, repo: Path
+) -> None:
     go = stand_in(clean_environment, file={"GOPRIVATE": "corp.example/*"})
 
     for _ in range(5):
-        read_go_environment()
+        read_go_environment(repo)
 
     assert len(go.asked) == 1
 
 
 def test_go_env_is_asked_from_a_folder_that_belongs_to_no_repo(
     clean_environment: pytest.MonkeyPatch,
+    repo: Path,
 ) -> None:
     go = stand_in(clean_environment)
 
-    read_go_environment()
+    read_go_environment(repo)
 
     [asked] = go.asked
     assert asked.argv[:3] == ("go", "env", "-json")
@@ -235,13 +254,14 @@ def test_go_env_is_asked_from_a_folder_that_belongs_to_no_repo(
 
 def test_the_probe_gets_the_exported_settings_so_that_go_resolves_them(
     clean_environment: pytest.MonkeyPatch,
+    repo: Path,
 ) -> None:
     clean_environment.setenv("GOPRIVATE", "b")
     clean_environment.setenv("GONOPROXY", "c")
     clean_environment.setenv("GONOSUMDB", "d")
     go = stand_in(clean_environment)
 
-    read_go_environment()
+    read_go_environment(repo)
 
     [asked] = go.asked
     assert (asked.env["GOPRIVATE"], asked.env["GONOPROXY"], asked.env["GONOSUMDB"]) == (
@@ -254,12 +274,13 @@ def test_the_probe_gets_the_exported_settings_so_that_go_resolves_them(
 
 def test_the_probe_alone_gets_the_users_config_folder_and_env_file_so_it_looks_where_go_does(
     clean_environment: pytest.MonkeyPatch,
+    repo: Path,
 ) -> None:
     clean_environment.setenv("XDG_CONFIG_HOME", "/home/user/.config-elsewhere")
     clean_environment.setenv("GOENV", "/home/user/go-env-file")
     go = stand_in(clean_environment)
 
-    environment = read_go_environment()
+    environment = read_go_environment(repo)
 
     [asked] = go.asked
     assert asked.env["XDG_CONFIG_HOME"] == "/home/user/.config-elsewhere"
@@ -271,12 +292,13 @@ def test_the_probe_alone_gets_the_users_config_folder_and_env_file_so_it_looks_w
 
 def test_the_probe_does_not_get_what_could_change_the_answer_or_run_a_program(
     clean_environment: pytest.MonkeyPatch,
+    repo: Path,
 ) -> None:
     clean_environment.setenv("GOFLAGS", "-toolexec=/tmp/run-me")
     clean_environment.setenv("GOPROXY", "http://elsewhere.invalid")
     go = stand_in(clean_environment)
 
-    read_go_environment()
+    read_go_environment(repo)
 
     [asked] = go.asked
     for name in ("GOFLAGS", "GOPROXY"):
@@ -285,11 +307,12 @@ def test_the_probe_does_not_get_what_could_change_the_answer_or_run_a_program(
 
 def test_the_probe_runs_with_the_local_toolchain_whatever_is_exported(
     clean_environment: pytest.MonkeyPatch,
+    repo: Path,
 ) -> None:
     clean_environment.setenv("GOTOOLCHAIN", "go9.9")
     go = stand_in(clean_environment)
 
-    environment = read_go_environment()
+    environment = read_go_environment(repo)
 
     [asked] = go.asked
     assert asked.env["GOTOOLCHAIN"] == "local"
@@ -301,13 +324,15 @@ def test_the_probe_runs_with_the_local_toolchain_whatever_is_exported(
     ["", "not json", "[]", '{"GOPRIVATE": 3}', '{"GOPRIVATE": null}'],
 )
 def test_a_reply_that_cannot_be_read_stops_the_run(
-    clean_environment: pytest.MonkeyPatch, stdout: str
+    clean_environment: pytest.MonkeyPatch,
+    stdout: str,
+    repo: Path,
 ) -> None:
     go = stand_in(clean_environment)
     go.stdout = stdout
 
     with pytest.raises(GoCommandError) as stopped:
-        read_go_environment()
+        read_go_environment(repo)
 
     assert "go env" in str(stopped.value)
     assert stopped.value.next_action
@@ -315,13 +340,15 @@ def test_a_reply_that_cannot_be_read_stops_the_run(
 
 @pytest.mark.parametrize("missing", USER_SETTINGS)
 def test_a_reply_that_lacks_a_requested_setting_stops_the_run_and_is_not_read_as_empty(
-    clean_environment: pytest.MonkeyPatch, missing: str
+    clean_environment: pytest.MonkeyPatch,
+    missing: str,
+    repo: Path,
 ) -> None:
     go = stand_in(clean_environment)
     go.stdout = json.dumps({name: "x" for name in USER_SETTINGS if name != missing})
 
     with pytest.raises(GoCommandError) as stopped:
-        read_go_environment()
+        read_go_environment(repo)
 
     assert missing in str(stopped.value)
     assert "private" in stopped.value.next_action
@@ -329,23 +356,81 @@ def test_a_reply_that_lacks_a_requested_setting_stops_the_run_and_is_not_read_as
 
 def test_a_failing_go_env_stops_the_run_and_does_not_go_on_without_the_settings(
     clean_environment: pytest.MonkeyPatch,
+    repo: Path,
 ) -> None:
     stand_in(clean_environment, exit_code=2)
 
     with pytest.raises(GoCommandError) as stopped:
-        read_go_environment()
+        read_go_environment(repo)
 
     assert "go: oops" in str(stopped.value)
     assert "private" in stopped.value.next_action
 
 
-def test_a_failure_is_not_remembered(clean_environment: pytest.MonkeyPatch) -> None:
+def test_a_failure_is_not_remembered(clean_environment: pytest.MonkeyPatch, repo: Path) -> None:
     stand_in(clean_environment, exit_code=2)
     with pytest.raises(GoCommandError):
-        read_go_environment()
+        read_go_environment(repo)
     stand_in(clean_environment, file={"GOPRIVATE": "corp.example/*"})
 
-    assert read_go_environment()["GOPRIVATE"] == "corp.example/*"
+    assert read_go_environment(repo)["GOPRIVATE"] == "corp.example/*"
+
+
+def test_a_repo_with_no_go_work_of_its_own_gets_no_workspace(
+    clean_environment: pytest.MonkeyPatch, repo: Path
+) -> None:
+    stand_in(clean_environment)
+
+    assert read_go_environment(repo)["GOWORK"] == "off"
+
+
+def test_a_repos_own_go_work_is_named_whole_because_go_refuses_a_relative_path(
+    clean_environment: pytest.MonkeyPatch, repo: Path
+) -> None:
+    stand_in(clean_environment)
+    (repo / "go.work").write_text("go 1.27\n", encoding="utf-8")
+    clean_environment.chdir(repo.parent)
+
+    assert read_go_environment(Path("repo"))["GOWORK"] == str(repo.resolve() / "go.work")
+
+
+def test_a_folder_named_go_work_is_no_workspace(
+    clean_environment: pytest.MonkeyPatch, repo: Path
+) -> None:
+    stand_in(clean_environment)
+    (repo / "go.work").mkdir()
+
+    assert read_go_environment(repo)["GOWORK"] == "off"
+
+
+def test_a_go_work_above_the_repo_is_no_workspace(
+    clean_environment: pytest.MonkeyPatch, repo: Path
+) -> None:
+    stand_in(clean_environment)
+    (repo.parent / "go.work").write_text("go 1.27\n", encoding="utf-8")
+
+    assert read_go_environment(repo)["GOWORK"] == "off"
+
+
+def test_an_exported_gowork_cannot_name_another_workspace(
+    clean_environment: pytest.MonkeyPatch, repo: Path
+) -> None:
+    stand_in(clean_environment)
+    clean_environment.setenv("GOWORK", "/elsewhere/go.work")
+
+    assert read_go_environment(repo)["GOWORK"] == "off"
+
+
+def test_each_repo_gets_its_own_answer_in_one_process(
+    clean_environment: pytest.MonkeyPatch, repo: Path, tmp_path: Path
+) -> None:
+    stand_in(clean_environment)
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "go.work").write_text("go 1.27\n", encoding="utf-8")
+
+    assert read_go_environment(repo)["GOWORK"] == "off"
+    assert read_go_environment(other)["GOWORK"] == str(other.resolve() / "go.work")
 
 
 # Against the real toolchain, with the file named through GOENV, which works on every platform.
@@ -381,7 +466,7 @@ def ask_go(names: tuple[str, ...], cwd: Path) -> dict[str, str]:
         cwd=cwd,
         timeout_s=60,
         output=CHECK_OUTPUT_LIMIT,
-        env=read_go_environment(),
+        env=read_go_environment(cwd),
     )
     values = run_child(command).stdout.splitlines()
     return dict(zip(names, values, strict=True))
@@ -389,7 +474,8 @@ def ask_go(names: tuple[str, ...], cwd: Path) -> dict[str, str]:
 
 @pytest.mark.integration
 def test_a_private_path_in_the_users_go_env_file_reaches_a_command_and_nothing_else_there_does(
-    go_env_file: Path, tmp_path: Path
+    go_env_file: Path,
+    tmp_path: Path,
 ) -> None:
     write_the_file(
         go_env_file,
@@ -415,7 +501,9 @@ def test_a_private_path_in_the_users_go_env_file_reaches_a_command_and_nothing_e
 
 @pytest.mark.integration
 def test_the_file_goprivate_loses_to_an_exported_one_for_all_three_settings(
-    go_env_file: Path, clean_environment: pytest.MonkeyPatch, tmp_path: Path
+    go_env_file: Path,
+    clean_environment: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     write_the_file(go_env_file, GOPRIVATE="a")
     clean_environment.setenv("GOPRIVATE", "b")
@@ -431,7 +519,9 @@ def test_the_file_goprivate_loses_to_an_exported_one_for_all_three_settings(
 
 @pytest.mark.integration
 def test_a_gonoproxy_in_the_file_is_kept_beside_an_exported_goprivate_as_go_does(
-    go_env_file: Path, clean_environment: pytest.MonkeyPatch, tmp_path: Path
+    go_env_file: Path,
+    clean_environment: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     write_the_file(go_env_file, GONOPROXY="c")
     clean_environment.setenv("GOPRIVATE", "b")
@@ -446,7 +536,8 @@ def test_a_gonoproxy_in_the_file_is_kept_beside_an_exported_goprivate_as_go_does
 
 @pytest.mark.integration
 def test_a_goprivate_in_the_file_alone_gives_all_three_settings_to_a_command(
-    go_env_file: Path, tmp_path: Path
+    go_env_file: Path,
+    tmp_path: Path,
 ) -> None:
     write_the_file(go_env_file, GOPRIVATE="a")
 
@@ -457,7 +548,9 @@ def test_a_goprivate_in_the_file_alone_gives_all_three_settings_to_a_command(
 
 @pytest.mark.integration
 def test_every_command_still_runs_with_the_go_env_file_switched_off(
-    go_env_file: Path, tmp_path: Path
+    go_env_file: Path,
+    tmp_path: Path,
+    repo: Path,
 ) -> None:
     write_the_file(
         go_env_file, GOPRIVATE="a", GOFLAGS="-mod=readonly", GOPROXY="http://evil.invalid"
@@ -468,7 +561,7 @@ def test_every_command_still_runs_with_the_go_env_file_switched_off(
 
     seen = ask_go(("GOFLAGS", "GOPROXY"), tmp_path)
 
-    assert read_go_environment()["GOENV"] == "off"
+    assert read_go_environment(repo)["GOENV"] == "off"
     assert seen["GOFLAGS"] == ""
     assert "evil.invalid" not in seen["GOPROXY"]
 
@@ -481,6 +574,7 @@ def test_a_gotoolchain_in_the_file_cannot_start_a_program_found_on_path(
     go_env_file: Path,
     clean_environment: pytest.MonkeyPatch,
     tmp_path: Path,
+    repo: Path,
 ) -> None:
     ran = tmp_path / "the-program-ran"
     program = tmp_path / "bin" / NAMED_TOOLCHAIN
@@ -506,7 +600,7 @@ def test_a_gotoolchain_in_the_file_cannot_start_a_program_found_on_path(
     assert ran.exists(), f"the control must start the program: {control.stdout} {control.stderr}"
     ran.unlink()
 
-    environment = read_go_environment()
+    environment = read_go_environment(repo)
 
     assert not ran.exists(), "the program named by the file's GOTOOLCHAIN was run"
     assert environment["GOPRIVATE"] == "corp.example/*"

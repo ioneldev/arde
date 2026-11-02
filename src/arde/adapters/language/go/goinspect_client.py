@@ -93,7 +93,7 @@ def build_goinspect(bin_dir: Path) -> Path:
         cwd=GOINSPECT_SOURCE,
         timeout_s=GO_BUILD_TIMEOUT_S,
         output=CHECK_OUTPUT_LIMIT,
-        env=go_environment(),
+        env=go_environment(GOINSPECT_SOURCE),
     )
     outcome = run_child(command)
     if not outcome.succeeded:
@@ -148,7 +148,7 @@ class GoinspectClient:
             cwd=question.cwd,
             timeout_s=GOINSPECT_TIMEOUT_S,
             output=GOINSPECT_REPLY_LIMIT,
-            env=go_environment(),
+            env=go_environment(question.cwd),
         )
         outcome = run_child(command)
         if not outcome.succeeded:

@@ -54,7 +54,9 @@ GO_ENVIRONMENT = {"PATH": "/usr/bin", "GOPRIVATE": "corp.example/*", "GOENV": "o
 # The real environment is read from the toolchain, which these tests do without.
 @pytest.fixture(autouse=True)
 def a_known_go_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(toolchain, "go_environment", lambda: dict(GO_ENVIRONMENT))
+    monkeypatch.setattr(
+        toolchain, "go_environment", lambda repo: {**GO_ENVIRONMENT, "FOR": str(repo)}
+    )
 
 
 @pytest.fixture
@@ -207,7 +209,7 @@ def test_every_go_command_and_every_extra_command_runs_with_the_go_environment(
     build_service(repo, shop_profile()).parent.rmdir()
 
     assert len(go.asked) >= 8
-    assert go.environments == [GO_ENVIRONMENT] * len(go.asked)
+    assert go.environments == [{**GO_ENVIRONMENT, "FOR": str(repo)}] * len(go.asked)
     assert ("make", "smoke") in go.asked
 
 

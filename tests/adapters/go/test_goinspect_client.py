@@ -17,6 +17,7 @@ from arde.adapters.child_process import (
 from arde.adapters.language.go import goinspect_client
 from arde.adapters.language.go.goinspect_client import (
     GOINSPECT_REPLY_LIMIT,
+    GOINSPECT_SOURCE,
     CallMatch,
     GoinspectClient,
     GoinspectError,
@@ -63,7 +64,9 @@ GO_ENVIRONMENT = {"PATH": os.environ["PATH"], "GOPRIVATE": "corp.example/*", "GO
 # The real environment is read from the toolchain, which these tests do without.
 @pytest.fixture(autouse=True)
 def a_known_go_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(goinspect_client, "go_environment", lambda: dict(GO_ENVIRONMENT))
+    monkeypatch.setattr(
+        goinspect_client, "go_environment", lambda repo: {**GO_ENVIRONMENT, "FOR": str(repo)}
+    )
 
 
 @pytest.fixture
@@ -368,7 +371,7 @@ def test_every_call_to_goinspect_runs_with_the_go_environment(
     GoinspectClient(tmp_path / "goinspect").declarations(folder)
 
     [command] = recording.commands
-    assert command.env == GO_ENVIRONMENT
+    assert command.env == {**GO_ENVIRONMENT, "FOR": str(folder)}
 
 
 def test_the_build_of_goinspect_runs_with_the_go_environment(
@@ -381,4 +384,4 @@ def test_the_build_of_goinspect_runs_with_the_go_environment(
     build_goinspect(tmp_path / "bin")
 
     [command] = recording.commands
-    assert command.env == GO_ENVIRONMENT
+    assert command.env == {**GO_ENVIRONMENT, "FOR": str(GOINSPECT_SOURCE)}

@@ -211,7 +211,7 @@ def _run_extra(repo: Path, words: tuple[str, ...]) -> ChildOutcome:
         cwd=repo,
         timeout_s=EXTRA_TEST_COMMAND_TIMEOUT_S,
         output=CHECK_OUTPUT_LIMIT,
-        env=go_environment(),
+        env=go_environment(repo),
     )
     return run_child(extra)
 
@@ -222,6 +222,6 @@ def _go(repo: Path, step: GoStep) -> ChildOutcome:
         cwd=repo,
         timeout_s=step.timeout_s,
         output=CHECK_OUTPUT_LIMIT,
-        env=go_environment(),
+        env=go_environment(repo),
     )
     return run_child(command)

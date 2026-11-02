@@ -327,6 +327,72 @@ def test_a_vet_finding_fails_vet_alone(adapter: GoAdapter, shop: Path) -> None:
     assert (result.build_ok, result.vet_ok, result.test_ok) == (True, False, True)
 
 
+DEPENDENT_SERVICE = """package main
+
+import "example.com/dep"
+
+func main() { dep.Hello() }
+"""
+DEPENDENT_TEST = """package main
+
+import "testing"
+
+func TestRuns(t *testing.T) {}
+"""
+
+
+def write_a_module_that_needs_a_dep(repo: Path, *, replace: bool) -> None:
+    replaced = "\nreplace example.com/dep => ./third_party/dep\n" if replace else ""
+    (repo / "go.mod").write_text(
+        f"module example.com/t\n\ngo 1.22\n\nrequire example.com/dep v1.0.0\n{replaced}",
+        encoding="utf-8",
+    )
+    (repo / "main.go").write_text(DEPENDENT_SERVICE, encoding="utf-8")
+    (repo / "main_test.go").write_text(DEPENDENT_TEST, encoding="utf-8")
+
+
+def write_a_dep(folder: Path, says: str) -> None:
+    folder.mkdir(parents=True)
+    (folder / "go.mod").write_text("module example.com/dep\n\ngo 1.22\n", encoding="utf-8")
+    (folder / "dep.go").write_text(
+        f'package dep\n\nfunc Hello() {{ println("{says}") }}\n', encoding="utf-8"
+    )
+
+
+def test_a_go_work_above_the_repo_cannot_choose_the_code_that_is_built(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = tmp_path / "shared" / "repo"
+    repo.mkdir(parents=True)
+    write_a_module_that_needs_a_dep(repo, replace=True)
+    write_a_dep(repo / "third_party" / "dep", says="honest dep")
+    write_a_dep(tmp_path / "shared" / "planted", says="planted dep")
+    (tmp_path / "shared" / "go.work").write_text(
+        "go 1.22\n\nuse ./repo\n\nreplace example.com/dep => ./planted\n", encoding="utf-8"
+    )
+
+    binary = adapter.build_service(repo, shop_profile())
+    ran = subprocess.run([binary], capture_output=True, text=True, timeout=10, check=True)
+    shutil.rmtree(binary.parent)
+
+    assert "honest dep" in ran.stderr
+    assert "planted dep" not in ran.stderr
+
+
+def test_a_repos_own_go_work_still_chooses_its_modules(adapter: GoAdapter, tmp_path: Path) -> None:
+    write_a_module_that_needs_a_dep(tmp_path, replace=False)
+    write_a_dep(tmp_path / "sub", says="workspace dep")
+    (tmp_path / "go.work").write_text("go 1.22\n\nuse (\n\t.\n\t./sub\n)\n", encoding="utf-8")
+
+    result = adapter.run_checks(tmp_path, shop_profile())
+    binary = adapter.build_service(tmp_path, shop_profile())
+    ran = subprocess.run([binary], capture_output=True, text=True, timeout=10, check=True)
+    shutil.rmtree(binary.parent)
+
+    assert (result.build_ok, result.test_ok) == (True, True)
+    assert "workspace dep" in ran.stderr
+
+
 NOISY_TEST = """package noisy
 
 import (
