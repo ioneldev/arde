@@ -487,7 +487,7 @@ def test_a_main_package_cannot_be_read_as_a_flag(value: str) -> None:
         DiscoveredProfile(**{**PROFILE_FIELDS, "main_package": value})
 
 
-@pytest.mark.parametrize("value", ["./cmd/server", ".", "./...", "github.com/acme/api/cmd/api"])
+@pytest.mark.parametrize("value", ["./cmd/server", ".", "./...", "./main.go", ".//cmd", "./cmd/"])
 def test_a_real_main_package_is_accepted(value: str) -> None:
     assert DiscoveredProfile(**{**PROFILE_FIELDS, "main_package": value}).main_package == value
 
@@ -498,7 +498,31 @@ def test_a_main_package_with_the_wrong_shape_is_refused(value: str) -> None:
         DiscoveredProfile(**{**PROFILE_FIELDS, "main_package": value})
 
 
-@pytest.mark.parametrize("value", ["../outside", "/abs/path", "cmd/../../x", "..", "a/..", "..\\x"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "cmd/go",
+        "cmd/gofmt",
+        "net/http",
+        "github.com/acme/api/cmd/api",
+        "example.com/dep/cmd/tool",
+        "all",
+        "std",
+        "cmd",
+        "...",
+        "./",
+        ".hidden",
+        ".hidden/cmd",
+        "/abs/path",
+        "main",
+    ],
+)
+def test_a_main_package_must_name_a_folder_of_this_repo_with_a_leading_dot(value: str) -> None:
+    with pytest.raises(ValidationError, match="must be"):
+        DiscoveredProfile(**{**PROFILE_FIELDS, "main_package": value})
+
+
+@pytest.mark.parametrize("value", ["./../outside", "./cmd/../../x", "./a/..", "./..\\x"])
 def test_a_main_package_cannot_leave_the_repo(value: str) -> None:
     with pytest.raises(ValidationError, match="must stay inside the repo"):
         DiscoveredProfile(**{**PROFILE_FIELDS, "main_package": value})

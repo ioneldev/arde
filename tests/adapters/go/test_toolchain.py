@@ -145,7 +145,6 @@ def test_a_package_named_main_is_built(
     ("answer", "main_package"),
     [
         ("pricing\n", "./pricing"),
-        ("pricing\n", "example.com/shop/pricing"),
         ("pricing\n", "./pricing/"),
         ("pricing\n", ".//pricing"),
         ("main\npricing\nweb\n", "./..."),

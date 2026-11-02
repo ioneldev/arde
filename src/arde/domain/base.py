@@ -131,13 +131,16 @@ def _require_package_inside_repo(package: str) -> str:
     return package
 
 
-# The build tool reads a leading hyphen as a flag, and one of its flags runs any command it is
-# given, so this text could otherwise execute without a single file in the repo changing.
+# The leading dot ties the package to this repo: any other text can name a package anywhere, such
+# as cmd/go in the toolchain or a dependency's program. It also stops the text being read as a
+# flag, because the build tool reads a leading hyphen as one, and one of its flags runs any command
+# it is given.
 MainPackage = Annotated[
     str,
     _matching(
-        rf"(?!-){_PLAIN_CHAR}+",
-        "a package path: do not start with a hyphen, and use no whitespace, quotes or backticks",
+        rf"\.(?:/{_PLAIN_CHAR}+)?",
+        "a package in this repo: use . or a path that starts with ./, with no whitespace, quotes "
+        "or backticks",
     ),
     AfterValidator(_require_package_inside_repo),
 ]

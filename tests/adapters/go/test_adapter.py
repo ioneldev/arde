@@ -703,6 +703,13 @@ def test_a_package_that_is_not_main_is_refused_and_main_package_is_named(
     assert list(binaries_in_tmp.iterdir()) == []
 
 
+def test_every_package_at_once_passes_the_type_and_stops_at_the_main_check(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    with pytest.raises(GoCommandError, match=r"main_package \./\.\.\."):
+        adapter.build_service(shop, shop_profile(main_package="./..."))
+
+
 def test_a_package_that_does_not_exist_is_an_error(
     adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
 ) -> None:
