@@ -24,6 +24,22 @@ class BadPatternError(ProfileProblem):
         )
 
 
+class RenderError(ArdeError):
+    """The renderer cannot write what the facts call for without writing something else too."""
+
+    def __init__(self, message: str, *, next_action: str) -> None:
+        super().__init__(message, next_action=next_action, exit_code=ExitCode.CHECKS_FAILED)
+
+
+class NoMainFunctionError(ProfileProblem):
+    def __init__(self, main_file: str) -> None:
+        super().__init__(
+            f"main_file {main_file} holds no func main, so the API's own annotations have no "
+            "place to go.",
+            next_action="Set main_file in the profile to the file that holds func main.",
+        )
+
+
 class BadPackageError(ProfileProblem):
     def __init__(self, reason: str) -> None:
         super().__init__(

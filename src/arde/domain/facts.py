@@ -6,9 +6,11 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, model_validator
 
 from arde.domain.base import (
+    AttributeValue,
     CodeIdentifier,
     ErrorCodeName,
     Frozen,
+    NonBlankLine,
     ParamName,
     QualifiedTypeName,
     RepoRelativePath,
@@ -72,11 +74,11 @@ class ParamFact(Frozen):
     location: Literal["path", "query"]
     declared_type: Literal["int", "string"]
     required: bool
-    description: SingleLine
+    description: NonBlankLine
     minimum: int | None
     maximum: int | None
-    enum: tuple[SingleLine, ...]
-    default: SingleLine | None
+    enum: tuple[AttributeValue, ...]
+    default: AttributeValue | None
 
 
 class ResponseFact(Frozen):

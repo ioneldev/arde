@@ -17,8 +17,16 @@ from arde.adapters.language.go.goinspect_client import (
 )
 from arde.adapters.language.go.inventory_builder import SourceReading, build_inventory
 from arde.adapters.language.go.makefile import make_targets_of
+from arde.adapters.language.go.renderer import render
 from arde.adapters.repo_links import require_no_link_leaves
-from arde.application.ports import CheckResult, LanguageAdapter, RouteHashes, UnhashedReason
+from arde.application.ports import (
+    CheckResult,
+    LanguageAdapter,
+    RenderOutcome,
+    RenderRequest,
+    RouteHashes,
+    UnhashedReason,
+)
 from arde.domain.inventory import INLINE_HANDLER, Inventory, Route
 from arde.domain.profile import ExtractionPattern, RepoProfile
 
@@ -112,6 +120,10 @@ class GoAdapter(LanguageAdapter):
             else:
                 unhashed[key] = "no function"
         return RouteHashes(hashes=hashes, unhashed=unhashed)
+
+    def render_annotations(self, request: RenderRequest) -> RenderOutcome:
+        require_no_link_leaves(request.repo)
+        return render(request, self._goinspect.declarations(request.repo))
 
     def run_checks(self, repo: Path, profile: RepoProfile) -> CheckResult:
         require_no_link_leaves(repo)
