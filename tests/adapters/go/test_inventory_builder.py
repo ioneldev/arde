@@ -506,6 +506,15 @@ def test_a_path_that_is_no_literal_is_shown_on_one_clean_line() -> None:
     assert "\n" not in str(stopped.value)
 
 
+# The boundary review's route path: goinspect's decoded literal reached the message as it was.
+def test_a_path_shows_no_direction_control_in_the_message_that_stops_the_run() -> None:
+    with pytest.raises(RouteNotUnderstoodError) as stopped:
+        routes_of(registering(Lit("x\u202eevil\u2066")))
+
+    assert "\u202e" not in str(stopped.value)
+    assert "\u2066" not in str(stopped.value)
+
+
 def test_a_path_that_does_not_start_with_a_slash_is_shown_on_one_clean_line() -> None:
     with pytest.raises(RouteNotUnderstoodError) as stopped:
         routes_of(registering(Lit("evil.example/\x1b[2J")))

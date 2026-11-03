@@ -32,24 +32,58 @@ def printable_name(name: str) -> str:
     return json.dumps(name[:_SHOWN_NAME_LENGTH])[1:-1][:_SHOWN_NAME_LENGTH]
 
 
-# Go refuses NUL and a byte order mark inside a source file, so either one stops the build after
-# the paid work is done. The other control characters are refused for the same reason: none has a
-# place in a comment or a tag. The two Unicode separators would make one line read as two.
-_CONTROL_CHARACTERS = "\x00-\x1f\x7f-\x9f\u2028\u2029\ufeff"
-_CONTROL_CHARACTER = re.compile(f"[{_CONTROL_CHARACTERS}]")
+# The characters no reader can see as themselves: every code point of the Unicode categories Cc
+# (controls), Cf (format characters, such as the direction controls, the zero-width space and the
+# byte order mark), Zl and Zp (the line and paragraph separators), as the Unicode database of this
+# Python lists them, and a test checks the list against it. A message shows each one escaped, and
+# text bound for a comment or a tag may hold none: Go refuses NUL and a byte order mark in a source
+# file, a separator makes one line read as two, and a direction control reorders what a reader sees.
+UNPRINTABLE_RANGES: tuple[tuple[int, int], ...] = (
+    (0x0000, 0x001F),
+    (0x007F, 0x009F),
+    (0x00AD, 0x00AD),
+    (0x0600, 0x0605),
+    (0x061C, 0x061C),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x0890, 0x0891),
+    (0x08E2, 0x08E2),
+    (0x180E, 0x180E),
+    (0x200B, 0x200F),
+    (0x2028, 0x202E),
+    (0x2060, 0x2064),
+    (0x2066, 0x206F),
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFB),
+    (0x110BD, 0x110BD),
+    (0x110CD, 0x110CD),
+    (0x13430, 0x1343F),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0001, 0xE0001),
+    (0xE0020, 0xE007F),
+)
+# The ranges as the inside of a regex character class.
+UNPRINTABLE_CHARACTERS = "".join(
+    f"\\U{first:08x}-\\U{last:08x}" for first, last in UNPRINTABLE_RANGES
+)
+_UNPRINTABLE_CHARACTER = re.compile(f"[{UNPRINTABLE_CHARACTERS}]")
 
 
 # Cut first, because one literal in a repo can run to many megabytes.
 def one_line(text: str, limit: int) -> str:
-    """The first characters of repo text, with each break or control character made a space."""
-    return " ".join(_CONTROL_CHARACTER.sub(" ", text[:limit]).split())
+    """The first characters of repo text, with each break or unprintable character a space."""
+    return " ".join(_UNPRINTABLE_CHARACTER.sub(" ", text[:limit]).split())
 
 
 def _require_clean_single_line(text: str) -> str:
     if "\n" in text or "\r" in text:
         raise ValueError("must be a single line: remove the line break")
-    if _CONTROL_CHARACTER.search(text):
-        raise ValueError("must hold no control character or byte order mark: remove it")
+    if _UNPRINTABLE_CHARACTER.search(text):
+        raise ValueError(
+            "must hold no control, format or separator character, such as a byte order mark or "
+            "a direction control: remove it"
+        )
     return text
 
 
@@ -75,7 +109,7 @@ def _matching(pattern: str, requirement: str) -> AfterValidator:
 # nothing more. Identifiers are ASCII only: a name outside it is refused rather than escaped.
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
 _TYPE_PREFIX = r"(?:\[\]|\*)*"  # stacks, as in []*Product
-_PLAIN_CHAR = rf"""[^\s"'`{_CONTROL_CHARACTERS}]"""
+_PLAIN_CHAR = rf"""[^\s"'`{UNPRINTABLE_CHARACTERS}]"""
 
 CodeIdentifier = Annotated[
     str,

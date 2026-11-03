@@ -5,15 +5,13 @@ An escape sequence can rewrite a terminal's title or clear the screen, and hide 
 
 import re
 
+from arde.domain.base import UNPRINTABLE_CHARACTERS
+
 # What a message keeps of a child's output. A failing command says what went wrong at the end.
 MESSAGE_TAIL_BYTES = 2000
 
-# Every control character but the line break and tab that Go's own errors are laid out with, and
-# the Unicode separators and direction controls: a separator breaks a line in many viewers, and a
-# direction control reorders what a reader sees.
-_CONTROL_CHARACTER = re.compile(
-    r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]"
-)
+# Every unprintable character but the line break and tab that Go's own errors are laid out with.
+_SHOWN_ESCAPED = re.compile(f"(?![\\t\\n])[{UNPRINTABLE_CHARACTERS}]")
 
 
 def bounded_text(text: str, limit: int) -> str:
@@ -38,10 +36,13 @@ def with_kept_tail(text: str, max_bytes: int) -> str:
 
 
 def visible_text(text: str) -> str:
-    """The whole text, with each control character written out as \\xNN, or \\uNNNN past U+00FF."""
-    return _CONTROL_CHARACTER.sub(_written_out, text)
+    """The whole text, with each unprintable character written out as \\xNN up to U+00FF, as
+    \\uNNNN up to U+FFFF and as \\UNNNNNNNN past it."""
+    return _SHOWN_ESCAPED.sub(_written_out, text)
 
 
 def _written_out(character: re.Match[str]) -> str:
     code = ord(character[0])
-    return f"\\x{code:02x}" if code <= 0xFF else f"\\u{code:04x}"
+    if code <= 0xFF:
+        return f"\\x{code:02x}"
+    return f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}"

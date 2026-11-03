@@ -687,6 +687,38 @@ def test_names_refuse_control_characters(build: Callable[[str], object], char: s
         build(f"before{char}after")
 
 
+# Each one changes what a reader sees and is not seen itself, so it can hide or reorder text.
+HIDES_FROM_A_READER = {
+    "right-to-left override": "\u202e",
+    "first strong isolate": "\u2068",
+    "left-to-right mark": "\u200e",
+    "right-to-left mark": "\u200f",
+    "arabic letter mark": "\u061c",
+    "zero-width space": "\u200b",
+    "zero-width joiner": "\u200d",
+    "soft hyphen": "\u00ad",
+    "a tag character": "\U000e0041",
+}
+
+
+@pytest.mark.parametrize("char", HIDES_FROM_A_READER.values(), ids=HIDES_FROM_A_READER.keys())
+@pytest.mark.parametrize("build", FREE_TEXT_FIELDS.values(), ids=FREE_TEXT_FIELDS.keys())
+def test_free_text_refuses_a_character_that_hides_from_a_reader(
+    build: Callable[[str], object], char: str
+) -> None:
+    with pytest.raises(ValidationError, match="format"):
+        build(f"before{char}after")
+
+
+@pytest.mark.parametrize("char", HIDES_FROM_A_READER.values(), ids=HIDES_FROM_A_READER.keys())
+@pytest.mark.parametrize("build", INJECTION_TARGETS.values(), ids=INJECTION_TARGETS.keys())
+def test_names_refuse_a_character_that_hides_from_a_reader(
+    build: Callable[[str], object], char: str
+) -> None:
+    with pytest.raises(ValidationError, match="must be"):
+        build(f"before{char}after")
+
+
 @pytest.mark.parametrize("build", FREE_TEXT_FIELDS.values(), ids=FREE_TEXT_FIELDS.keys())
 def test_free_text_keeps_ordinary_unicode(build: Callable[[str], object]) -> None:
     build("Prețul în bani — „exact”")
@@ -786,7 +818,16 @@ def test_one_line_folds_a_printed_function_onto_one_line() -> None:
 
 
 @pytest.mark.parametrize(
-    "hostile", ["a\x1b[2Jb", "a\x00b", "a\rb", "a\u2028b", "a\x9bb", "a\ufeffb"]
+    "hostile",
+    [
+        "a\x1b[2Jb",
+        "a\x00b",
+        "a\rb",
+        "a\u2028b",
+        "a\x9bb",
+        "a\ufeffb",
+        *(f"a{char}b" for char in HIDES_FROM_A_READER.values()),
+    ],
 )
 def test_one_line_holds_no_control_character(hostile: str) -> None:
     assert one_line(hostile, 80).isprintable()

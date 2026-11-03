@@ -89,3 +89,20 @@ def test_the_limit_is_in_bytes_and_a_cut_character_is_dropped_whole() -> None:
     kept = with_kept_tail("ééé", 3)
 
     assert kept.endswith("\né")
+
+
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        ("\u200e", "\\u200e"),
+        ("\u200f", "\\u200f"),
+        ("\u061c", "\\u061c"),
+        ("\u200b", "\\u200b"),
+        ("\u00ad", "\\xad"),
+        ("\U000e0041", "\\U000e0041"),
+    ],
+)
+def test_a_mark_or_an_invisible_format_character_is_shown_and_never_passed_on(
+    raw: str, shown: str
+) -> None:
+    assert visible_text(f"a{raw}b") == f"a{shown}b"
