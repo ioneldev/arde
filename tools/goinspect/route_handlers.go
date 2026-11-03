@@ -31,7 +31,8 @@ type handlerReading struct {
 	// identity is what the handler holds, so that two routes sharing an anchor can tell whether
 	// they share a handler.
 	identity string
-	// constants is a hash of the constants the handler holds, or empty when it holds none.
+	// constants is a hash of the constants the handler holds, or empty when it holds none or has
+	// no roots, and so no hash for them to join.
 	constants string
 }
 
@@ -80,7 +81,7 @@ func (reader handlerReader) read(registered registration) handlerReading {
 	}
 	innermost := reader.innermost(handler)
 	held := reader.heldBy(registered.parts())
-	reading := handlerReading{isMount: reader.isMount(innermost), identity: held.identity, constants: held.constants}
+	reading := handlerReading{isMount: reader.isMount(innermost), identity: held.identity}
 	if slices.ContainsFunc(registered.parts(), holdsAFunctionLiteral) {
 		return reading
 	}
@@ -91,6 +92,7 @@ func (reader handlerReader) read(registered registration) handlerReading {
 			named = append(named, reader.functionsNamedIn(part)...)
 		}
 		reading.roots = sortedByID(slices.Concat(named, reader.methodsHandedToAnInterface(registered)))
+		reading.constants = held.constants
 	}
 	return reading
 }

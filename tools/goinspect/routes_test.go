@@ -2239,6 +2239,7 @@ func main() {
 	http.Handle("/five", paged(5, first))
 	http.Handle("/nine", paged(9, first))
 	http.Handle("/five-again", paged(2+3, first))
+	http.HandleFunc("/inline", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(201) })
 }
 ` + handlerFuncs
 	constants := map[string]string{}
@@ -2248,6 +2249,9 @@ func main() {
 
 	if constants["/bare"] != "" || constants["/converted"] != "" {
 		t.Errorf("a handler with no constant must hash none, got %v", constants)
+	}
+	if constants["/inline"] != "" {
+		t.Errorf("a route with no roots has no hash for its constants to join, got %v", constants)
 	}
 	if constants["/five"] == "" || constants["/five"] == constants["/nine"] || constants["/five"] != constants["/five-again"] {
 		t.Errorf("got %v", constants)
