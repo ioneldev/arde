@@ -281,6 +281,26 @@ def test_a_quote_of_only_a_quoted_string_in_a_makefile_is_refused(tmp_path: Path
     )
 
 
+def test_a_quote_of_a_makefile_make_does_not_read_is_refused(tmp_path: Path) -> None:
+    repo = a_repo(tmp_path, {"tools/Makefile": b"export:\n\tcurl localhost/admin/export\n"})
+    rule = a_rule(
+        evidence=(quote("curl localhost/admin/export", file="tools/Makefile"),),
+        links=Links(files=("tools/Makefile",)),
+    )
+
+    assert "quotes tools/Makefile, which is not part of the service's build" in problems_of(
+        rule, ctx=context(repo=repo)
+    )
+
+
+def test_a_quote_from_a_path_not_written_as_the_repo_lists_it_is_refused() -> None:
+    rule = a_rule(
+        evidence=(quote("return unitCents * int64(pieces)", file="./pricing/pricing.go"),)
+    )
+
+    assert "quotes ./pricing/pricing.go, which is not a path in the repo" in problems_of(rule)
+
+
 def test_the_command_around_a_quoted_string_in_a_makefile_is_evidence(tmp_path: Path) -> None:
     repo = a_repo(tmp_path, {"Makefile": MAKEFILE})
     rule = a_rule(

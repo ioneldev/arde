@@ -233,9 +233,17 @@ class RenderOutcome(Frozen):
 # Evidence. Anyone can write anything in a comment or a string literal, planted instructions
 # included, so a quote is evidence only where it holds code.
 
-# "not source" is a file whose syntax the adapter does not read, such as a README, and "outside
-# the build" a source file the service is not built from, such as test data.
-QuoteContent = Literal["code", "comment", "string literal", "not source", "outside the build"]
+# "not source" is a file whose syntax the adapter does not read, such as a README. "outside the
+# build" is a source file that does not shape the service, such as test data. "not a path in the
+# repo" is a path not written as the repo lists it, such as ./main.go.
+QuoteContent = Literal[
+    "code",
+    "comment",
+    "string literal",
+    "not source",
+    "outside the build",
+    "not a path in the repo",
+]
 
 
 class SourceQuote(Frozen):
@@ -249,6 +257,8 @@ class SourceQuote(Frozen):
     places: tuple[tuple[int, int], ...]
     # The files the inventory's declarations name, which are the files the service is built from.
     build_files: frozenset[str]
+    # The names of the regular files at the repo root, where a build tool looks for its own file.
+    root_files: frozenset[str]
 
 
 class LanguageAdapter(Protocol):
@@ -332,8 +342,9 @@ class LanguageAdapter(Protocol):
 
         It is code when any of its places has something outside every comment and string literal,
         else a comment or a string literal. It is "not source" in a file whose syntax the adapter
-        does not read, and "outside the build" in a source file that build_files does not name.
-        It reads only the text it is given, so it opens no file and needs no gate.
+        does not read, "outside the build" in a source file that does not shape the service, and
+        "not a path in the repo" when the file is not written as the repo lists it. It reads only
+        the text it is given, so it opens no file and needs no gate.
         """
         ...
 
