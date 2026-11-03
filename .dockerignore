@@ -1,0 +1,18 @@
+# The key stays on the host: compose hands .env to the container at run time, and no build step
+# may see it. tests/test_container.py proves no layer holds it.
+.env
+.env.*
+!.env.example
+
+.git
+.venv
+.superpowers
+.worktrees
+runs
+debug.log
+**/__pycache__
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.DS_Store
+tools/goinspect/goinspect
