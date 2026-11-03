@@ -16,14 +16,13 @@ from arde.adapters.child_process import (
     run_child,
 )
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text
-from arde.adapters.language.go.errors import BadPackageError, BadPatternError
+from arde.adapters.language.go.errors import BadPackageError, BadPatternError, GoinspectError
 from arde.adapters.language.go.go_environment import go_environment
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT, GOINSPECT_REPLY_LIMIT
 from arde.adapters.language.go.timeouts import GO_BUILD_TIMEOUT_S, GOINSPECT_TIMEOUT_S
 from arde.domain.base import Frozen, describe_problems
 from arde.domain.errors import ArdeError
 from arde.domain.profile import ExtractionPattern
-from arde.domain.report import ExitCode
 
 # The helper's source ships in this repo, next to the package.
 GOINSPECT_SOURCE = Path(__file__).resolve().parents[5] / "tools" / "goinspect"
@@ -35,11 +34,6 @@ TOO_LONG_TO_PRINT = "(too long to print)"
 EXIT_PROFILE_PROBLEM = 2
 BAD_PATTERNS_MARK = "goinspect: bad patterns: "
 BAD_MAIN_PACKAGE_MARK = "goinspect: bad main_package: "
-
-
-class GoinspectError(ArdeError):
-    def __init__(self, problem: str, *, next_action: str) -> None:
-        super().__init__(problem, next_action=next_action, exit_code=ExitCode.CHECKS_FAILED)
 
 
 class CompareReply(Frozen):

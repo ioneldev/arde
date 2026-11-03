@@ -1,4 +1,4 @@
-"""The errors of the Go language adapter that more than one file raises."""
+"""The errors of the Go language adapter that other files raise or name."""
 
 from arde.application.ports import ProfileProblem
 from arde.domain.errors import ArdeError
@@ -10,6 +10,10 @@ class GoCommandError(ArdeError):
 
     def __init__(self, message: str, *, next_action: str) -> None:
         super().__init__(message, next_action=next_action, exit_code=ExitCode.CHECKS_FAILED)
+
+
+class GoinspectError(GoCommandError):
+    """The helper, which is a Go command of ARDE's own, could not be built or could not answer."""
 
 
 class BadPatternError(ProfileProblem):

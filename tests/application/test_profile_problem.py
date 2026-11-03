@@ -2,8 +2,12 @@
 
 import pytest
 
-from arde.adapters.language.go.errors import BadPackageError, BadPatternError, GoCommandError
-from arde.adapters.language.go.goinspect_client import GoinspectError
+from arde.adapters.language.go.errors import (
+    BadPackageError,
+    BadPatternError,
+    GoCommandError,
+    GoinspectError,
+)
 from arde.adapters.language.go.inventory_builder import NoRoutesError, RouteNotUnderstoodError
 from arde.application.ports import ProfileProblem
 from arde.domain.errors import ArdeError

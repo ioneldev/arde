@@ -16,14 +16,13 @@ from arde.adapters.child_process import (
 )
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES
 from arde.adapters.language.go import goinspect_client
-from arde.adapters.language.go.errors import BadPackageError, BadPatternError
+from arde.adapters.language.go.errors import BadPackageError, BadPatternError, GoinspectError
 from arde.adapters.language.go.goinspect_client import (
     GOINSPECT_REPLY_LIMIT,
     GOINSPECT_SOURCE,
     CallMatch,
     DeclarationReply,
     GoinspectClient,
-    GoinspectError,
     SourcePlace,
     UnmatchedPattern,
     WrapperCall,
