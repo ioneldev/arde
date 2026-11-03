@@ -19,7 +19,7 @@ That is the one command. It clones a fresh copy into ARDE's workspace (`~/.arde`
 | `ANTHROPIC_API_KEY` | yes | The Claude API key. Read from the environment only, never written to a file ARDE makes. |
 | `ARDE_HOME` | no | Where workspaces and runs live. Default `~/.arde`. |
 
-Options: `--json` prints only the run report on stdout, `--max-usd N` caps the run's cost (default 10). Exit codes: 0 success, 1 a check failed, 2 bad input, 3 the repo needs a profile fix, 4 the cost cap was hit. Every error names the next action.
+Options: `--json` prints only the run report on stdout, `--max-usd N` caps the run's cost (default 10), and `--skip-judge` skips the blind judge, and the report warns that it did not run. Exit codes: 0 success, 1 a check failed, 2 bad input, 3 the repo needs a profile fix, 4 the cost cap was hit. Every error names the next action.
 
 Run it again after changing the service: it reuses the saved profile and wiki, re-checks only the facts linked to changed code, and rewrites only the sections whose facts changed.
 
