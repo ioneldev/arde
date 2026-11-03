@@ -207,7 +207,7 @@ type functionBodies map[*types.Func]functionBody
 
 type functionBody struct {
 	block *ast.BlockStmt
-	info  *types.Info
+	typedSyntax
 }
 
 func (service loadedService) functionBodies() functionBodies {
@@ -220,7 +220,7 @@ func (service loadedService) functionBodies() functionBodies {
 					continue
 				}
 				if declared, isDeclared := loaded.TypesInfo.Defs[function.Name].(*types.Func); isDeclared {
-					bodies[declared] = functionBody{block: function.Body, info: loaded.TypesInfo}
+					bodies[declared] = functionBody{block: function.Body, typedSyntax: typedSyntax{info: loaded.TypesInfo}}
 				}
 			}
 		}
@@ -248,11 +248,11 @@ func (bodies functionBodies) passesOn(function *types.Func, parameter *types.Var
 
 func (body functionBody) servesThrough(call *ast.CallExpr, parameter *types.Var) bool {
 	selector, isSelector := ast.Unparen(call.Fun).(*ast.SelectorExpr)
-	return isSelector && selector.Sel.Name == "ServeHTTP" && refersTo(body.info, selector.X, parameter)
+	return isSelector && selector.Sel.Name == "ServeHTTP" && body.refersTo(selector.X, parameter)
 }
 
 func (body functionBody) handsOn(call *ast.CallExpr, parameter *types.Var) bool {
 	return isHandlerType(body.info.TypeOf(call)) && slices.ContainsFunc(call.Args, func(argument ast.Expr) bool {
-		return refersTo(body.info, argument, parameter)
+		return body.refersTo(argument, parameter)
 	})
 }

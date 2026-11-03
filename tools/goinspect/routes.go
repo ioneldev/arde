@@ -383,9 +383,9 @@ func (reader routeReader) innerSiteAt(call routeCall) (innerSite, bool) {
 // and a space before it, and the wrapper's method parameter, a space and its path parameter.
 func (reader routeReader) formOf(site routeCall) (wrapperForm, bool) {
 	parameters := wrapperParameters{
-		wrapper:   site.enclosing,
-		positions: reader.wrappers[routeKind][site.enclosing],
-		info:      site.info,
+		wrapper:     site.enclosing,
+		positions:   reader.wrappers[routeKind][site.enclosing],
+		typedSyntax: typedSyntax{info: site.info},
 	}
 	path := ast.Unparen(site.argument("path"))
 	if parameters.isTheOneNamed("path", path) {
@@ -410,12 +410,12 @@ func (reader routeReader) formOf(site routeCall) (wrapperForm, bool) {
 type wrapperParameters struct {
 	wrapper   *types.Func
 	positions map[string]int
-	info      *types.Info
+	typedSyntax
 }
 
 func (parameters wrapperParameters) isTheOneNamed(name string, expression ast.Expr) bool {
 	position, isNamed := parameters.positions[name]
-	return isNamed && refersTo(parameters.info, expression, parameterAt(parameters.wrapper, position))
+	return isNamed && parameters.refersTo(expression, parameterAt(parameters.wrapper, position))
 }
 
 // parameterAt is the parameter an argument at that position is passed to: the last one for the
@@ -432,10 +432,15 @@ func parameterAt(function *types.Func, position int) *types.Var {
 	return parameters.At(position)
 }
 
+// typedSyntax is the syntax of one package with what the type checker says about it.
+type typedSyntax struct {
+	info *types.Info
+}
+
 // refersTo is true for an expression that is the variable itself, in parentheses or not.
-func refersTo(info *types.Info, expression ast.Expr, variable *types.Var) bool {
+func (syntax typedSyntax) refersTo(expression ast.Expr, variable *types.Var) bool {
 	identifier, isIdentifier := ast.Unparen(expression).(*ast.Ident)
-	return isIdentifier && variable != nil && info.Uses[identifier] == variable
+	return isIdentifier && variable != nil && syntax.info.Uses[identifier] == variable
 }
 
 // wrapperCallAt reads a call to a wrapper as one route for each site inside the wrapper, with the

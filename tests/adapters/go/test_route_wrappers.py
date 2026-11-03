@@ -26,7 +26,7 @@ def reading(*patterns: ExtractionPattern) -> RepoProfile:
     return RepoProfile(main_package=".", main_file="main.go", port_env="PORT", patterns=patterns)
 
 
-def keys_of(adapter: GoAdapter, repo: Path, profile: RepoProfile) -> list[str]:
+def keys_of(adapter: GoAdapter, repo: Path, *, profile: RepoProfile) -> list[str]:
     return [route.key for route in adapter.extract_inventory(repo, profile).routes]
 
 
@@ -72,7 +72,7 @@ def test_a_wrapper_that_takes_the_method_gives_each_route_its_method(
         kind="route", call=r"^a\.handle$", args={"method": 0, "path": 1, "handler": 2}
     )
 
-    assert keys_of(adapter, repo, reading(pattern)) == [
+    assert keys_of(adapter, repo, profile=reading(pattern)) == [
         "GET /healthz",
         "POST /orders",
         "DELETE /orders/{id}",
@@ -184,7 +184,7 @@ def test_the_method_a_wrapper_puts_before_its_path_is_the_routes_method(
     repo = a_service(tmp_path, GET_JSON)
     pattern = ExtractionPattern(kind="route", call=r"^a\.getJSON$", args={"path": 0, "handler": 1})
 
-    assert keys_of(adapter, repo, reading(pattern)) == ["GET /items"]
+    assert keys_of(adapter, repo, profile=reading(pattern)) == ["GET /items"]
 
 
 def test_the_method_a_wrapper_registers_wins_over_the_name_of_the_wrapper(
@@ -211,7 +211,7 @@ func parcels(w http.ResponseWriter, r *http.Request) {}
     )
     pattern = ExtractionPattern(kind="route", call=r"\.post$", args={"path": 0, "handler": 1})
 
-    assert keys_of(adapter, repo, reading(pattern)) == ["GET /items"]
+    assert keys_of(adapter, repo, profile=reading(pattern)) == ["GET /items"]
 
 
 MOUNT_API = """package main
