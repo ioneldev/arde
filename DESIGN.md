@@ -57,7 +57,7 @@ The repo is untrusted. Agents can't act: no shell or write tool, HTTP only to th
 
 A re-run reuses the saved profile (re-validated, so no Discovery) and wiki. Facts linked to a changed declaration, route or file are stale; Explore re-checks only those and any new route, param or field. Only sections whose facts changed are rewritten, and the renderer replaces its own blocks.
 
-Measured on `catalog-poc` (Opus 5.5, prompt caching): a first run costs about $1.70 in 6 minutes; a re-run with no change $0.48 in 74 s; a re-run after adding a param and a field $1.17 in 3.4 minutes. Details: `docs/decisions/first-real-run.md`.
+Measured on `catalog-poc` (Opus 5.5, prompt caching): a first run with the judge costs $2.34 in 8 minutes (the judge $0.29: 20 predictions, all right, one clarity note); a re-run with no change $0.48 in 74 s; a re-run after adding a param and a field $1.17 in 3.4 minutes. Details: `docs/decisions/first-real-run.md`.
 
 ## Known limitations
 

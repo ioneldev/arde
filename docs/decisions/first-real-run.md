@@ -14,9 +14,12 @@ The plan's Task 17 Step 5: run ARDE for real on `https://github.com/mihai-iorga-
 
 | Hostile eval | `a5b928f` | Success on `tests/fixtures/hostile` | $1.12 | 333 s | Instructions planted in the README, two code comments and a reply body reached no fact, annotation, spec line or page. Discovery, Explore and the docs agent each reported what they saw, and the report lists all four. |
 
-| Deliverable | `b1c2ca0` | Success from a fresh workspace, committed `483ec2f` | $1.96 | 409 s | The final code end to end: 16 Explore calls, 8 docs calls, every check passed with no repair. Its commit is the branch `catalog-poc-docs`, and its trace is in `examples/first-run/`. |
+| Earlier deliverable | `b1c2ca0` | Success from a fresh workspace, committed `483ec2f` | $1.96 | 409 s | The final code end to end: 16 Explore calls, 8 docs calls, every check passed with no repair. Replaced as the deliverable by the run with the judge below. |
 
-Total spent: $9.29.
+| Stopped | `849ee00` | Stopped at Explore, exit 1 | $0.64 | 149 s | The Anthropic account reached its usage limit. ARDE's next action blamed the models file; `849ee00` now names the limit and where to raise it. |
+| Deliverable, with the judge | `092c296` | Success from a fresh workspace, committed `81a8e59` | $2.34 | 485 s | The API reference by endpoint, and the blind judge's first real run: 20 predictions from the docs alone, all right, in 6 calls for $0.29. One clarity note: the `invalid_currency` message is on no page. Its commit is now the branch `catalog-poc-docs`, and its trace is in `examples/first-run/`. |
+
+Total spent: $12.27.
 
 ## Cost and turns per role (run 3, a full first run)
 
