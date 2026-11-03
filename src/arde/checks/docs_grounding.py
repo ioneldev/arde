@@ -22,7 +22,12 @@ from urllib.parse import unquote
 import yaml
 
 from arde.application.checks_runner import CheckContext
-from arde.checks.markdown_text import CodeBlock, code_blocks, link_destinations
+from arde.checks.markdown_text import (
+    CodeBlock,
+    code_blocks,
+    constructs_never_written,
+    link_destinations,
+)
 from arde.domain.base import one_line
 from arde.domain.findings import Finding
 
@@ -72,8 +77,11 @@ class DocsGrounding:
         if not pages:
             return []
         repo = _read_repo(ctx.input_repo)
-        names = _KnownNames.found_in(repo.everything, *(probe.body for probe in ctx.wiki.probes))
-        commands = _known_commands(ctx, written=repo.command_sources)
+        repo_and_probes = "\n".join((repo.everything, *(probe.body for probe in ctx.wiki.probes)))
+        names = _KnownNames.found_in(repo_and_probes)
+        commands = _known_commands(
+            ctx, written=repo.command_sources, repo_and_probes=repo_and_probes
+        )
         links = _Links(names=names, output_repo=ctx.output_repo)
         found = [
             finding
@@ -95,15 +103,32 @@ def _check_page(page: _Page, *, links: "_Links", commands: "_KnownCommands") -> 
     if page.text is None:
         yield _unreadable(page)
         return
+    yield from (
+        _construct_never_written(page.path, name) for name in constructs_never_written(page.text)
+    )
     yield from _ungrounded_names(page.path, page.text, links=links)
     yield from _ungrounded_commands(page.path, page.text, commands=commands)
 
 
-def _known_commands(ctx: CheckContext, *, written: str) -> "_KnownCommands":
+def _construct_never_written(page: str, construct: str) -> Finding:
+    return Finding(
+        check=CHECK,
+        owner="docs",
+        subject=f"{page}: {construct}",
+        message=(
+            f"{page} holds {construct}. ARDE's docs never use this construct, and the commands "
+            "in it cannot be checked."
+        ),
+        next_action=("Write the section again with code in a plain fenced block, then run again."),
+    )
+
+
+def _known_commands(ctx: CheckContext, *, written: str, repo_and_probes: str) -> "_KnownCommands":
     return _KnownCommands(
         make_targets=frozenset(ctx.inventory.make_targets),
         written=_one_line_of(written),
         owners=frozenset(_one_line_of(command) for command in ctx.profile.extra_test_commands),
+        repo_and_probes=repo_and_probes,
     )
 
 
@@ -338,6 +363,8 @@ class _KnownCommands:
     written: str
     # The commands the repo's owner added to the profile, which no model can set.
     owners: frozenset[str]
+    # Every file's path and text and every probe body, where each value of a data block must be.
+    repo_and_probes: str
 
     def holds(self, command: str) -> bool:
         return (
@@ -354,7 +381,7 @@ class _KnownCommands:
 
 
 def _ungrounded_commands(page: str, text: str, *, commands: _KnownCommands) -> Iterator[Finding]:
-    for command in _commands(text):
+    for command in _commands(text, repo_and_probes=commands.repo_and_probes):
         if not commands.holds(command):
             shown = one_line(command, SHOWN_LIMIT)
             yield Finding(
@@ -373,13 +400,13 @@ def _ungrounded_commands(page: str, text: str, *, commands: _KnownCommands) -> I
             )
 
 
-def _commands(text: str) -> Iterator[str]:
+def _commands(text: str, *, repo_and_probes: str) -> Iterator[str]:
     """Every line of every code block that is not data, with its prompt and extra spaces gone.
 
     A line of output or a comment is read too, because a reader can copy it as well.
     """
     for block in code_blocks(text):
-        if _is_data(block):
+        if _is_data(block, repo_and_probes=repo_and_probes):
             continue
         for line in _joined(block.lines):
             command = " ".join(line.strip().removeprefix(_PROMPT).split())
@@ -387,21 +414,42 @@ def _commands(text: str) -> Iterator[str]:
                 yield command
 
 
-# Data counts only when it parses as its language says. A plain line is a whole document to a
-# YAML parser, so YAML must be a mapping, and JSON an object or an array.
-def _is_data(block: CodeBlock) -> bool:
-    text = "\n".join(block.lines)
+# Data counts only when it parses as its language says, and when the repo or a probe body holds
+# each of its text values, because a value can carry a command as well as a line can. A plain line
+# is a whole document to a YAML parser, so YAML must be a mapping, and JSON an object or an array.
+def _is_data(block: CodeBlock, *, repo_and_probes: str) -> bool:
     try:
-        if block.language == "json":
-            return isinstance(json.loads(text), dict | list)
-        if block.language in ("yaml", "yml"):
-            return isinstance(yaml.safe_load(text), dict)
-        if block.language == "toml":
-            tomllib.loads(text)
-            return True
+        parsed = _parsed(block)
+        values = list(_text_values(parsed))
     except (ValueError, RecursionError, yaml.YAMLError):
         return False
-    return False
+    return parsed is not None and all(value in repo_and_probes for value in values)
+
+
+def _parsed(block: CodeBlock) -> object:
+    """The block's data, or None when its language is no data this check reads or it is not data."""
+    text = "\n".join(block.lines)
+    if block.language == "json":
+        data = json.loads(text)
+        return data if isinstance(data, dict | list) else None
+    if block.language in ("yaml", "yml"):
+        data = yaml.safe_load(text)
+        return data if isinstance(data, dict) else None
+    if block.language == "toml":
+        return tomllib.loads(text)
+    return None
+
+
+# The keys are left out: they name fields, and a value is what a reader could copy and run.
+def _text_values(data: object) -> Iterator[str]:
+    if isinstance(data, str):
+        yield data
+    elif isinstance(data, dict):
+        for value in data.values():
+            yield from _text_values(value)
+    elif isinstance(data, list):
+        for item in data:
+            yield from _text_values(item)
 
 
 # A line that ends in a backslash goes on in the next one, as a shell reads it.
