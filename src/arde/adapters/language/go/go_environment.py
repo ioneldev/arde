@@ -46,8 +46,10 @@ PROBE_ONLY_VARIABLES = ("XDG_CONFIG_HOME", "GOENV")
 # folder could otherwise start a program found on PATH, or download one.
 PROBE_FIXED_VARIABLES = {"GOTOOLCHAIN": "local"}
 
-# Every command is told to read no file: HOME is allowed, and the file can hold a GOFLAGS.
-FIXED_VARIABLES = {"GOENV": "off"}
+# Every command is told to read no file: HOME is allowed, and the file can hold a GOFLAGS. And
+# goinspect, which loads packages through go/packages, is told to run no gopackagesdriver it finds
+# on PATH: that program would decide what the routes and fingerprints are.
+FIXED_VARIABLES = {"GOENV": "off", "GOPACKAGESDRIVER": "off"}
 
 # Used unless the user exports another value, because otherwise a go.mod picks a program to start
 # or to download. A repo that needs a newer Go stops with Go's own clear error.

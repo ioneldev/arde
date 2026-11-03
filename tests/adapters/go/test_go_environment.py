@@ -135,6 +135,7 @@ def test_an_exported_goprivate_reaches_a_command_with_the_generic_variables(
         "GONOPROXY": "corp.example/*",
         "GONOSUMDB": "corp.example/*",
         "GOENV": "off",
+        "GOPACKAGESDRIVER": "off",
         "GOWORK": "off",
         "GOTOOLCHAIN": "local",
     }
@@ -161,6 +162,18 @@ def test_the_go_env_file_is_switched_off_for_every_command_whatever_the_parent_s
     assert read_go_environment(repo)["GOENV"] == "off"
 
 
+# goinspect loads packages through go/packages, which runs any gopackagesdriver it finds on PATH
+# unless this says not to, and that program would then decide what the routes are.
+def test_no_packages_driver_runs_for_any_command_whatever_the_parent_says(
+    clean_environment: pytest.MonkeyPatch,
+    repo: Path,
+) -> None:
+    stand_in(clean_environment)
+    clean_environment.setenv("GOPACKAGESDRIVER", "/somewhere/driver")
+
+    assert read_go_environment(repo)["GOPACKAGESDRIVER"] == "off"
+
+
 def test_nothing_is_invented_for_a_variable_that_is_not_set(
     clean_environment: pytest.MonkeyPatch,
     repo: Path,
@@ -170,6 +183,7 @@ def test_nothing_is_invented_for_a_variable_that_is_not_set(
     assert read_go_environment(repo) == {
         "PATH": "/usr/bin",
         "GOENV": "off",
+        "GOPACKAGESDRIVER": "off",
         "GOWORK": "off",
         "GOTOOLCHAIN": "local",
     }

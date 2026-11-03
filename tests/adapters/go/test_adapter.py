@@ -709,6 +709,26 @@ def test_a_relative_path_entry_cannot_run_a_go_the_repo_planted(
     assert not ran.exists()
 
 
+# The stub answers as a driver that declines, so goinspect would go on with go list and succeed.
+def test_a_packages_driver_first_on_path_never_runs(
+    adapter: GoAdapter, shop: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran = tmp_path / "driver-ran"
+    driver = tmp_path / "bin" / "gopackagesdriver"
+    driver.parent.mkdir()
+    driver.write_text(
+        f"#!/bin/sh\ntouch {ran}\ncat > /dev/null\necho '{{\"NotHandled\": true}}'\n",
+        encoding="utf-8",
+    )
+    driver.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{driver.parent}{os.pathsep}{os.environ['PATH']}")
+
+    routes = adapter.extract_inventory(shop, shop_profile()).routes
+    hashes_of(adapter, shop, routes=routes)
+
+    assert not ran.exists()
+
+
 def test_a_toolchain_named_in_go_mod_is_not_started(
     adapter: GoAdapter, shop: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
