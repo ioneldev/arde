@@ -1,9 +1,10 @@
 """A run: one fixed sequence of steps, from a resolved source to a commit in the workspace clone.
 
 Each step is a small function, so _document reads as the flow. Agents work only inside the steps
-that need them. A red baseline stops the run before any paid call, any finding stops it before
-the commit, and the profile, wiki, manifest, sections and snapshot are saved only once every check
-has passed, so a failed run leaves the last good run's state as it was.
+that need them. A red baseline stops the run before any paid call. A finding goes back to the
+agent that owns it for a round of repair, and a finding left after the last round stops the run
+before the commit. The profile, wiki, manifest, sections and snapshot are saved only once every
+check has passed, so a failed run leaves the last good run's state as it was.
 """
 
 import hashlib
@@ -66,6 +67,7 @@ from arde.application.profile_validation import (
     refuse_an_oversized,
     validate_profile,
 )
+from arde.application.repair import AgentOwner, run_with_repairs
 from arde.application.run_warnings import baseline_warnings, inventory_warnings
 from arde.application.section_store import save_sections
 from arde.application.wiki_store import load_wiki, save_wiki
@@ -78,11 +80,11 @@ from arde.checks.spec_inventory import SpecMatchesInventory
 from arde.checks.spec_valid import SpecValid
 from arde.domain.base import Frozen, one_line, printable_name, visible_text
 from arde.domain.errors import ArdeError
-from arde.domain.facts import Wiki
+from arde.domain.facts import Topic, Wiki
 from arde.domain.findings import Finding
 from arde.domain.inventory import Inventory
 from arde.domain.profile import DiscoveredProfile, RepoProfile
-from arde.domain.report import ExitCode, RunReport
+from arde.domain.report import ExitCode, RepairRound, RunReport
 
 # The branch a URL run commits its result on, followed by the run's id.
 BRANCH_PREFIX = "arde/run-"
@@ -191,6 +193,7 @@ class _Run:
     deps: RunDeps
     started_s: float = field(default_factory=time.monotonic)
     warnings: list[str] = field(default_factory=list)
+    repair_rounds: list[RepairRound] = field(default_factory=list)
 
     @property
     def shared(self) -> PipelineDeps:
@@ -214,14 +217,23 @@ class _Run:
 
     def warn(self, lines: Iterable[str]) -> None:
         """Keeps each line for the report and traces it."""
-        for line in lines:
-            shown = _shown(line, WARNING_LIMIT)
-            self.warnings.append(shown)
+        for shown in self._keep_new(lines):
             self.tracer.event("warning", role="pipeline", summary=shown)
 
     def keep(self, lines: Iterable[str]) -> None:
         """Keeps each line for the report. The agent that found it has traced it already."""
-        self.warnings.extend(_shown(line, WARNING_LIMIT) for line in lines)
+        self._keep_new(lines)
+
+    # A repair runs a step again, which notes again much of what it noted the first time.
+    def _keep_new(self, lines: Iterable[str]) -> list[str]:
+        """Keeps each line the report does not hold yet, and returns those."""
+        kept: list[str] = []
+        for line in lines:
+            shown = _shown(line, WARNING_LIMIT)
+            if shown not in self.warnings:
+                self.warnings.append(shown)
+                kept.append(shown)
+        return kept
 
     @contextmanager
     def step(self, name: str) -> Iterator[None]:
@@ -257,16 +269,25 @@ class _Docs:
 
 
 @dataclass(frozen=True)
-class _Checked:
-    """What the checks read, apart from the services they start."""
+class _Basis:
+    """What the run read before any agent wrote, which no repair changes."""
 
     input_repo: Path
-    output_repo: Path
     profile: RepoProfile
-    inventory: Inventory
+    reading: _Reading
+    last: _LastRun
+
+
+@dataclass(frozen=True)
+class _Output:
+    """An output copy written from one wiki, and what the run wrote into it."""
+
+    repo: Path
     wiki: Wiki
-    render: RenderOutcome
+    rendered: RenderOutcome
     spec_path: Path
+    docs: _Docs
+    changed_paths: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -302,36 +323,14 @@ def _document(run: _Run) -> _Documented:
     chosen = _choose_profile(input_repo, run)
     profile = chosen.profile
     reading = _read_inventory(input_repo, profile=profile, run=run)
-    last = _last_run(run)
-    changes = _changes_since_last_run(
-        input_repo, profile=profile, reading=reading, last=last, run=run
-    )
-    explored = _explore(
-        input_repo, profile=profile, reading=reading, last=last, changes=changes, run=run
-    )
-    wiki = explored.wiki
-    output_repo = _copy_output(input_repo, run)
-    rendered = _render(output_repo, profile=profile, reading=reading, wiki=wiki, last=last, run=run)
-    spec_path = _generate_spec(output_repo, profile=profile, run=run)
-    docs = _write_docs(output_repo, reading=reading, wiki=wiki, last=last, run=run)
-    # Measured before the checks start a service in the output copy, which may write files there.
-    changed_paths = paths_that_differ(input_repo, output_repo)
-    _check(
-        _Checked(
-            input_repo=input_repo,
-            output_repo=output_repo,
-            profile=profile,
-            inventory=reading.inventory,
-            wiki=wiki,
-            render=rendered,
-            spec_path=spec_path,
-        ),
-        last=last,
-        run=run,
-    )
-    commit = _commit(output_repo, changed_paths=changed_paths, run=run)
-    _save(chosen, wiki=wiki, rendered=rendered, docs=docs, output_repo=output_repo, run=run)
-    return _Documented(output_repo=output_repo, changed_paths=changed_paths, commit=commit)
+    basis = _Basis(input_repo=input_repo, profile=profile, reading=reading, last=_last_run(run))
+    changes = _changes_since_last_run(basis, run)
+    explored = _explore(basis, wiki=basis.last.wiki, changes=changes, run=run)
+    written = _write_output(basis, wiki=explored.wiki, run=run)
+    output = _verify(basis, output=written, run=run)
+    commit = _commit(output.repo, changed_paths=output.changed_paths, run=run)
+    _save(chosen, output=output, run=run)
+    return _Documented(output_repo=output.repo, changed_paths=output.changed_paths, commit=commit)
 
 
 # The steps
@@ -409,20 +408,18 @@ def _last_run(run: _Run) -> _LastRun:
     return _LastRun(wiki=load_wiki(run.store), manifest=load_manifest(run.store))
 
 
-def _changes_since_last_run(
-    input_repo: Path, *, profile: RepoProfile, reading: _Reading, last: _LastRun, run: _Run
-) -> RunChanges:
+def _changes_since_last_run(basis: _Basis, run: _Run) -> RunChanges:
     with run.step("changes"):
-        if not (run.store.has_snapshot() and last.wiki.facts):
+        if not (run.store.has_snapshot() and basis.last.wiki.facts):
             return NO_CHANGES
         comparison = SnapshotComparison(
             snapshot=run.store.snapshot_dir,
-            repo=input_repo,
-            profile=profile,
-            inventory=reading.inventory,
-            hashes=reading.hashes,
-            wiki=last.wiki,
-            manifest=last.manifest,
+            repo=basis.input_repo,
+            profile=basis.profile,
+            inventory=basis.reading.inventory,
+            hashes=basis.reading.hashes,
+            wiki=basis.last.wiki,
+            manifest=basis.last.manifest,
         )
         changes = changes_since_snapshot(comparison, run.adapter)
         assert changes.report is not None
@@ -437,26 +434,27 @@ def _changes_since_last_run(
 
 
 def _explore(
-    input_repo: Path,
+    basis: _Basis,
     *,
-    profile: RepoProfile,
-    reading: _Reading,
-    last: _LastRun,
+    wiki: Wiki,
     changes: RunChanges,
     run: _Run,
+    repair_findings: Sequence[Finding] = (),
+    attempt: int = 0,
 ) -> ExploreResult:
     with run.step("explore"):
-        log = run.run_dir / "service-explore.log"
-        with _running_service(input_repo, profile=profile, log=log, run=run) as service:
+        log = _service_log(run, "explore", attempt=attempt)
+        with _running_service(basis.input_repo, profile=basis.profile, log=log, run=run) as service:
             result = explore(
                 ExploreRequest(
-                    repo=input_repo,
-                    profile=profile,
-                    inventory=reading.inventory,
-                    wiki=last.wiki,
+                    repo=basis.input_repo,
+                    profile=basis.profile,
+                    inventory=basis.reading.inventory,
+                    wiki=wiki,
                     service=service,
                     stale_ids=changes.stale_ids,
                     change_report=changes.report,
+                    repair_findings=tuple(repair_findings),
                 ),
                 run.shared,
             )
@@ -469,29 +467,67 @@ def _explore(
     return result
 
 
+def _write_output(
+    basis: _Basis,
+    *,
+    wiki: Wiki,
+    run: _Run,
+    repair_findings: Sequence[Finding] = (),
+    repaired_topics: frozenset[Topic] = frozenset(),
+) -> _Output:
+    """A new output copy of the input, with the annotations, spec and docs written from the wiki."""
+    output_repo = _copy_output(basis.input_repo, run)
+    rendered = _render(output_repo, basis=basis, wiki=wiki, run=run)
+    spec_path = _generate_spec(output_repo, profile=basis.profile, run=run)
+    docs = _write_docs(
+        DocsRequest(
+            repo=output_repo,
+            wiki=wiki,
+            inventory=basis.reading.inventory,
+            stale_topics=changed_topics(basis.last.wiki, wiki) | repaired_topics,
+            repair_findings=tuple(repair_findings),
+        ),
+        run,
+    )
+    return _Output(
+        repo=output_repo,
+        wiki=wiki,
+        rendered=rendered,
+        spec_path=spec_path,
+        docs=docs,
+        # Measured before the checks start a service in the copy, which may write files there.
+        changed_paths=paths_that_differ(basis.input_repo, output_repo),
+    )
+
+
 def _copy_output(input_repo: Path, run: _Run) -> Path:
     with run.step("copy_output"):
         output_repo = run.store.output_copy(run.run_dir)
+        _remove_the_last_attempt(output_repo)
         _copy_tree(input_repo, output_repo, what="the input copy to the output copy")
         return output_repo
 
 
-def _render(
-    output_repo: Path,
-    *,
-    profile: RepoProfile,
-    reading: _Reading,
-    wiki: Wiki,
-    last: _LastRun,
-    run: _Run,
-) -> RenderOutcome:
+# A repair writes the output again on a new copy of the input. The render puts each annotation at
+# a line the inventory read from the input, which an annotated copy has moved, and a file the last
+# checks' service or tests wrote into the copy must not be committed.
+def _remove_the_last_attempt(output_repo: Path) -> None:
+    if not output_repo.exists():
+        return
+    try:
+        shutil.rmtree(output_repo)
+    except OSError as error:
+        raise CopyFailed("the input copy over the last attempt's output copy", error) from error
+
+
+def _render(output_repo: Path, *, basis: _Basis, wiki: Wiki, run: _Run) -> RenderOutcome:
     with run.step("render"):
         request = RenderRequest(
             repo=output_repo,
             wiki=wiki,
-            inventory=reading.inventory,
-            manifest=last.manifest,
-            main_file=profile.main_file,
+            inventory=basis.reading.inventory,
+            manifest=basis.last.manifest,
+            main_file=basis.profile.main_file,
             title=api_title(run.request.source),
         )
         return run.adapter.render_annotations(request)
@@ -502,19 +538,11 @@ def _generate_spec(output_repo: Path, *, profile: RepoProfile, run: _Run) -> Pat
         return run.adapter.generate_spec(output_repo, profile)
 
 
-def _write_docs(
-    output_repo: Path, *, reading: _Reading, wiki: Wiki, last: _LastRun, run: _Run
-) -> _Docs:
+def _write_docs(request: DocsRequest, run: _Run) -> _Docs:
     with run.step("docs"):
         if run.store.has_snapshot():
-            _restore_last_pages(output_repo, run)
-        request = DocsRequest(
-            repo=output_repo,
-            wiki=wiki,
-            inventory=reading.inventory,
-            stale_topics=changed_topics(last.wiki, wiki),
-        )
-        docs = _Docs(result=write_docs(request, run.shared), readme=add_readme_link(output_repo))
+            _restore_last_pages(request.repo, run)
+        docs = _Docs(result=write_docs(request, run.shared), readme=add_readme_link(request.repo))
     run.keep(docs.result.warnings)
     run.warn(docs.readme.warnings)
     return docs
@@ -527,37 +555,108 @@ def _restore_last_pages(output_repo: Path, run: _Run) -> None:
         raise CopyFailed("the last run's pages into the output copy", error) from error
 
 
-def _check(checked: _Checked, *, last: _LastRun, run: _Run) -> None:
+def _verify(basis: _Basis, *, output: _Output, run: _Run) -> _Output:
+    """The output once every check passes on it, after the rounds of repair the loop allows."""
+    verification = _Verification(basis=basis, run=run, wiki=output.wiki, output=output)
+    left = run_with_repairs(verification, tracer=run.tracer)
+    if left:
+        raise ChecksFailed(left)
+    return verification.output
+
+
+@dataclass
+class _Verification:
+    """The checks, and each agent run again on what they found. It is the loop's VerifyStep.
+
+    Round n follows the n-th check: its repairs and the check after it are attempt n.
+    """
+
+    basis: _Basis
+    run: _Run
+    # The latest wiki, which an explore repair replaces before the docs repair writes from it.
+    wiki: Wiki
+    output: _Output
+    # The topics of the facts explore changed in a repair, whose sections docs writes again.
+    repaired_topics: frozenset[Topic] = frozenset()
+    # What the last check found, which the round after it repairs.
+    found: list[Finding] = field(default_factory=list)
+    checks_run: int = 0
+
+    def check(self) -> list[Finding]:
+        self.found = _check(self.basis, output=self.output, attempt=self.checks_run, run=self.run)
+        self.checks_run += 1
+        return self.found
+
+    def repair(self, *, owner: AgentOwner, findings: Sequence[Finding]) -> None:
+        self._note_the_round()
+        if owner == "explore":
+            self._explore_again(findings)
+        else:
+            self._write_again(findings)
+
+    # A round starts with its first repair, and repairs everything the check before it found.
+    def _note_the_round(self) -> None:
+        if len(self.run.repair_rounds) < self.checks_run:
+            self.run.repair_rounds.append(
+                RepairRound(number=self.checks_run, findings=tuple(self.found))
+            )
+
+    # The wiki is this run's, checked against the code as it is now, so none of its facts is stale.
+    def _explore_again(self, findings: Sequence[Finding]) -> None:
+        explored = _explore(
+            self.basis,
+            wiki=self.wiki,
+            changes=NO_CHANGES,
+            run=self.run,
+            repair_findings=findings,
+            attempt=self.checks_run,
+        )
+        self.repaired_topics |= changed_topics(self.wiki, explored.wiki)
+        self.wiki = explored.wiki
+
+    # The docs repair ends every round, after explore's when there is one, so it writes the whole
+    # output again: the annotations and spec from the latest wiki, and the pages with the findings.
+    def _write_again(self, findings: Sequence[Finding]) -> None:
+        self.output = _write_output(
+            self.basis,
+            wiki=self.wiki,
+            run=self.run,
+            repair_findings=findings,
+            repaired_topics=self.repaired_topics,
+        )
+
+
+# Both services start afresh for each attempt and stop when its checks end, so the two that the
+# behaviour check compares have answered the same requests, and none runs during a repair.
+def _check(basis: _Basis, *, output: _Output, attempt: int, run: _Run) -> list[Finding]:
     with run.step("checks"), ExitStack() as services:
         before = services.enter_context(
             _running_service(
-                checked.input_repo,
-                profile=checked.profile,
-                log=run.run_dir / "service-before.log",
+                basis.input_repo,
+                profile=basis.profile,
+                log=_service_log(run, "before", attempt=attempt),
                 run=run,
             )
         )
         after = services.enter_context(
             _running_service(
-                checked.output_repo,
-                profile=checked.profile,
-                log=run.run_dir / "service-after.log",
+                output.repo,
+                profile=basis.profile,
+                log=_service_log(run, "after", attempt=attempt),
                 run=run,
             )
         )
         context = CheckContext(
-            input_repo=checked.input_repo,
-            output_repo=checked.output_repo,
-            profile=checked.profile,
-            inventory=checked.inventory,
-            wiki=checked.wiki,
-            render=checked.render.result,
-            spec_path=checked.spec_path,
+            input_repo=basis.input_repo,
+            output_repo=output.repo,
+            profile=basis.profile,
+            inventory=basis.reading.inventory,
+            wiki=output.wiki,
+            render=output.rendered.result,
+            spec_path=output.spec_path,
             services=ServicePair(before=before, after=after),
         )
-        findings = run_checks(_the_checks(last.manifest, run), context)
-    if findings:
-        raise ChecksFailed(findings)
+        return run_checks(_the_checks(basis.last.manifest, run), context)
 
 
 def _the_checks(manifest: RenderManifest, run: _Run) -> list[Check]:
@@ -608,25 +707,17 @@ def _commit(output_repo: Path, *, changed_paths: tuple[str, ...], run: _Run) -> 
         return _Commit(branch=branch, commit=commit)
 
 
-def _save(
-    chosen: _ChosenProfile,
-    *,
-    wiki: Wiki,
-    rendered: RenderOutcome,
-    docs: _Docs,
-    output_repo: Path,
-    run: _Run,
-) -> None:
+def _save(chosen: _ChosenProfile, *, output: _Output, run: _Run) -> None:
     with run.step("save"):
         store = run.store
         if chosen.discovered is not None:
             save_profile(store, chosen.discovered)
-        save_wiki(store, wiki)
-        save_manifest(store, rendered.manifest)
-        save_sections(store, docs.result.sections)
+        save_wiki(store, output.wiki)
+        save_manifest(store, output.rendered.manifest)
+        save_sections(store, output.docs.result.sections)
         # A copy, because the output copy is where the user reads a local run's result.
         snapshot = run.run_dir / "snapshot"
-        _copy_tree(output_repo, snapshot, what="the output copy to the snapshot")
+        _copy_tree(output.repo, snapshot, what="the output copy to the snapshot")
         store.save_snapshot(snapshot)
 
 
@@ -641,6 +732,12 @@ def _running_service(
         config = ServiceConfig(binary=binary, cwd=repo, port_env=profile.port_env, log=log)
         with run.shared.service_runner.running(config) as service:
             yield service
+
+
+# A runner replaces the log it is given, so each attempt's services log to files of their own.
+def _service_log(run: _Run, service: str, *, attempt: int) -> Path:
+    suffix = f"-repair-{attempt}" if attempt else ""
+    return run.run_dir / f"service-{service}{suffix}.log"
 
 
 def _copy_tree(source: Path, dest: Path, *, what: str) -> None:
@@ -798,7 +895,14 @@ def _report(
             "result_dir": result_dir,
             "branch": branch,
             "commit": commit,
+            "repair_rounds": tuple(_shown_round(repair) for repair in run.repair_rounds),
         }
+    )
+
+
+def _shown_round(repair: RepairRound) -> RepairRound:
+    return repair.model_copy(
+        update={"findings": tuple(_shown_finding(finding) for finding in repair.findings)}
     )
 
 

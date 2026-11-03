@@ -9,7 +9,7 @@ from typing import TextIO
 
 from arde.application.ports import Tracer
 from arde.domain.base import visible_text
-from arde.domain.report import ExitCode, RunReport
+from arde.domain.report import ExitCode, RepairRound, RunReport
 
 PREFIX = "arde:"
 # What the cli exits with when the run was interrupted, as a shell does for SIGINT.
@@ -81,6 +81,7 @@ def _summary(report: RunReport) -> list[str]:
                 f"  - [{finding.check}, {finding.owner}] {finding.subject}: {finding.message}"
             )
             lines.append(f"    next: {finding.next_action}")
+    lines.extend(_repair_round_line(repair) for repair in report.repair_rounds)
     if report.warnings:
         lines.append(f"  warnings ({len(report.warnings)}):")
         lines.extend(f"  - {warning}" for warning in report.warnings)
@@ -93,3 +94,8 @@ def _summary(report: RunReport) -> list[str]:
         )
         lines.append(f"  run folder: {report.run_dir}")
     return lines
+
+
+def _repair_round_line(repair: RepairRound) -> str:
+    owners = " and ".join(dict.fromkeys(finding.owner for finding in repair.findings))
+    return f"  repair round {repair.number}: {len(repair.findings)} findings went back to {owners}"
