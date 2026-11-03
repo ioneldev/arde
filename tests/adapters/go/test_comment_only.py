@@ -180,10 +180,11 @@ EDITS_ARDE_MAKES = {
     ],
     "web/server.go": [
         (
-            "type item struct {\n\tsku        string\n\ttitle      string\n\tpriceCents int64\n}",
+            "type item struct {\n\tsku        string\n\ttitle      string\n\tpriceCents int64\n"
+            "\ttraits     any\n}",
             "// item is one line of the price list.\ntype item struct {\n"
             '\tsku        string `binding:"optional"`\n\ttitle      string\n'
-            '\tpriceCents int64  `oneOf:"450,1200"`\n}',
+            '\tpriceCents int64  `oneOf:"450,1200"`\n\ttraits     any\n}',
         ),
         (
             "func (s *server) find(",

@@ -30,8 +30,19 @@ type Quote struct {
 	ChargeCents int64  `json:"charge_cents"`
 	Note        string `json:"note,omitempty"`
 	Details     any    `json:"details"`
+	Traits      any    `json:"traits"`
 	Internal    string `json:"-"`
 	cacheKey    string
+}
+
+// LeafTraits describe loose tea, sold by weight.
+type LeafTraits struct {
+	Grams int `json:"grams"`
+}
+
+// CupTraits describe a mug, sold by the piece.
+type CupTraits struct {
+	Millilitres int `json:"millilitres"`
 }
 
 func respond(w http.ResponseWriter, status int, body any) {
