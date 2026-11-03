@@ -8,12 +8,20 @@ import time
 from pathlib import Path
 
 
+# A zombie is dead and only waits to be collected, so it does not count.
+def _is_alive(state: str) -> bool:
+    return not state.startswith("Z")
+
+
+# ps exits 1 and prints nothing for a process that does not exist. Anything on stderr means it could
+# not look, and that must not read as "gone" in a test that wants a process to have stopped.
 def is_running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+    listing = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False
+    )
+    assert not listing.stderr, listing.stderr
+    state = listing.stdout.strip()
+    return bool(state) and _is_alive(state)
 
 
 def wait_until_gone(pid: int) -> bool:
@@ -30,15 +38,17 @@ def kill_leftover(folder: Path, name: str = "grandchild.pid") -> None:
             os.kill(int(pid_file.read_text()), signal.SIGKILL)
 
 
-# A zombie is dead and only waits to be collected, so it does not count.
 def live_group_members(group: int) -> list[int]:
     listing = subprocess.run(
-        ["ps", "-axo", "pid=,pgid=,stat="], capture_output=True, text=True, check=True
+        ["ps", "-A", "-o", "pid=", "-o", "pgid=", "-o", "stat="],
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     members: list[int] = []
     for line in listing.splitlines():
         pid, pgid, state = line.split(None, 2)
-        if int(pgid) == group and not state.startswith("Z"):
+        if int(pgid) == group and _is_alive(state):
             members.append(int(pid))
     return members
 
