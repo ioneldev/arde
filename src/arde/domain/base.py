@@ -32,6 +32,15 @@ def printable_name(name: str) -> str:
     return json.dumps(name[:_SHOWN_NAME_LENGTH])[1:-1][:_SHOWN_NAME_LENGTH]
 
 
+# The end of a long path names the file or folder that failed, and its start only the folders above
+# the repo, so this keeps the end. A path is at most a few kilobytes, so the whole is escaped.
+def printable_end_of_path(path: str) -> str:
+    escaped = json.dumps(path)[1:-1]
+    if len(escaped) <= _SHOWN_NAME_LENGTH:
+        return escaped
+    return "..." + escaped[-_SHOWN_NAME_LENGTH:]
+
+
 # The characters no reader can see as themselves: every code point of the Unicode categories Cc
 # (controls), Cf (format characters, such as the direction controls, the zero-width space and the
 # byte order mark), Zl and Zp (the line and paragraph separators), as the Unicode database of this
