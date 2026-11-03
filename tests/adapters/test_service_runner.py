@@ -745,17 +745,13 @@ def test_a_daemon_that_outlives_the_stop_is_reported_with_its_port(
     assert "lsof" in refused.value.next_action
 
 
-@pytest.mark.usefixtures("quick_port_release")
-def test_a_service_that_exits_leaving_a_daemon_on_its_port_does_not_claim_the_port_never_opened(
-    monkeypatch: pytest.MonkeyPatch,
-    runner: ServiceRunner,
-    started: list[subprocess.Popen[bytes]],
-    tmp_path: Path,
+# The first probe comes before the holder of the port is up and is refused, as it would be in life.
+def refuse_the_first_probe(
+    monkeypatch: pytest.MonkeyPatch, started: list[subprocess.Popen[bytes]]
 ) -> None:
     real_connect = socket.create_connection
     probes: list[int] = []
 
-    # The first probe comes before the daemon is up and is refused, as it would be in life.
     def refused_at_first(*args: object, **kwargs: object) -> socket.socket:
         if not probes:
             probes.append(1)
@@ -764,6 +760,16 @@ def test_a_service_that_exits_leaving_a_daemon_on_its_port_does_not_claim_the_po
         return real_connect(*args, **kwargs)  # type: ignore[call-overload, no-any-return]
 
     monkeypatch.setattr(socket, "create_connection", refused_at_first)
+
+
+@pytest.mark.usefixtures("quick_port_release")
+def test_a_service_that_exits_leaving_a_daemon_on_its_port_does_not_claim_the_port_never_opened(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: ServiceRunner,
+    started: list[subprocess.Popen[bytes]],
+    tmp_path: Path,
+) -> None:
+    refuse_the_first_probe(monkeypatch, started)
     body = starts_a_child(CHILD_THAT_HOLDS_THE_PORT, own_session=True) + "sys.exit(0)"
     config = config_for(stand_in(tmp_path, body), tmp_path)
 
@@ -777,6 +783,45 @@ def test_a_service_that_exits_leaving_a_daemon_on_its_port_does_not_claim_the_po
     assert "still accepts connections" in str(failed.value)
     assert "before it opened" not in str(failed.value)
     assert any("lsof" in note for note in failed.value.__notes__)
+
+
+# ARDE sees that something holds the port and not who started it, so the message says no more.
+@pytest.mark.usefixtures("quick_port_release")
+def test_a_child_in_the_services_own_group_is_not_said_to_be_outside_it(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: ServiceRunner,
+    started: list[subprocess.Popen[bytes]],
+    tmp_path: Path,
+) -> None:
+    refuse_the_first_probe(monkeypatch, started)
+    body = starts_a_child(CHILD_THAT_HOLDS_THE_PORT) + "sys.exit(0)"
+    config = config_for(stand_in(tmp_path, body), tmp_path)
+
+    with pytest.raises(ServiceStartError) as failed, runner.running(config):
+        pytest.fail("the body must not run for a service that is gone")
+
+    assert "still accepts connections" in str(failed.value)
+    assert "Something is holding port" in str(failed.value)
+    assert "outside its process group" not in str(failed.value)
+    assert wait_until_gone(int((tmp_path / "child.pid").read_text()))
+
+
+@pytest.mark.usefixtures("quick_port_release")
+def test_a_port_another_process_took_is_not_said_to_be_held_by_the_service(
+    runner: ServiceRunner, started: list[subprocess.Popen[bytes]], tmp_path: Path
+) -> None:
+    other_process = starts_a_child(CHILD_THAT_HOLDS_THE_PORT, own_session=True)
+    config = config_for(stand_in(tmp_path, other_process + EXITS_WHEN_ITS_PORT_IS_TAKEN), tmp_path)
+
+    try:
+        with pytest.raises(ServiceDiedError) as died, runner.running(config):
+            (tmp_path / "go.txt").write_text("go")
+            started[0].wait(timeout=30)
+    finally:
+        kill_leftover(tmp_path, "child.pid")
+
+    assert any("something is holding it" in note for note in died.value.__notes__)
+    assert not any("it started" in note for note in died.value.__notes__)
 
 
 # Only a refusal or a timeout means nothing listens. Any other failure means no test took place.

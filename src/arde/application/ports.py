@@ -274,7 +274,7 @@ class ServiceDiedError(ServiceError):
 
 
 class ServiceStopError(ServiceError):
-    """Something of the service is still running after the stop, or still holds its port."""
+    """The service would not stop, or something still holds its port after the stop."""
 
 
 class ServiceRunner(Protocol):

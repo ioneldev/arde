@@ -206,8 +206,8 @@ def _exited_before_listening(started: _Started, *, exit_code: int) -> ServiceSta
     if _seems_to_accept_connections(port):
         return ServiceStartError(
             f"The service exited with code {exit_code}, but port {port} still accepts "
-            "connections. Something it started outside its process group is running, so ARDE "
-            f"cannot tell whether that is the service.\n{_log_tail(config.log)}",
+            f"connections. Something is holding port {port}, so ARDE cannot tell whether that is "
+            f"the service.\n{_log_tail(config.log)}",
             next_action=(
                 f"Find what listens on {LOOPBACK}:{port}, for example with `lsof -i :{port}`, "
                 f"stop it, and read {config.log} to see why the service stopped, then run again."
@@ -310,7 +310,7 @@ def _stop(started: _Started) -> None:
     if not _port_is_released(started.port):
         raise ServiceStopError(
             f"Port {started.port} still accepts connections after the service was stopped, so "
-            "something it started outside its process group is still running.",
+            "something is holding it.",
             next_action=(
                 f"Find what listens on {LOOPBACK}:{started.port}, for example with "
                 f"`lsof -i :{started.port}`, and stop it, then run again."
