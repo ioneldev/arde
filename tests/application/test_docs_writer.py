@@ -112,12 +112,19 @@ INTERNAL = UnreachableFact(
 FACTS: tuple[Fact, ...] = (QUOTE, PURPOSE, ROUNDING, PORT, INTERNAL)
 WIKI = Wiki(facts=FACTS, probes=(PROBE,))
 # In the order write_docs runs them, which is the order of SECTION_FILES.
-WRITTEN_TOPICS: tuple[Topic, ...] = ("overview", "business-rules", "errors", "configuration")
+WRITTEN_TOPICS: tuple[Topic, ...] = (
+    "overview",
+    "business-rules",
+    "errors",
+    "configuration",
+    "change-guide",
+)
 OWN_FACT: dict[Topic, str] = {
     "overview": "rule:purpose",
     "business-rules": "rule:rounding",
     "errors": "unreachable:internal",
     "configuration": "rule:port",
+    "change-guide": "rule:rounding",
 }
 
 
@@ -423,13 +430,14 @@ def test_every_section_with_facts_is_written_and_the_api_page_by_code(tmp_path: 
 def test_a_section_records_its_own_facts_with_those_it_used(tmp_path: Path) -> None:
     run = scripted(
         tmp_path,
-        submitting("Purpose.", ["endpoint:quote"]),
-        *section_replies(WRITTEN_TOPICS[1:]),
+        *section_replies(WRITTEN_TOPICS[:1]),
+        submitting("Rounding.", ["endpoint:quote"]),
+        *section_replies(WRITTEN_TOPICS[2:]),
     )
 
     result = write_docs(docs_request(a_repo(tmp_path)), run.deps)
 
-    assert result.sections["overview"] == ("endpoint:quote", "rule:purpose")
+    assert result.sections["business-rules"] == ("endpoint:quote", "rule:rounding")
 
 
 def test_stale_set_limits_rewritten_sections(tmp_path: Path) -> None:
@@ -450,15 +458,16 @@ def test_stale_set_limits_rewritten_sections(tmp_path: Path) -> None:
 def test_section_with_no_facts_removed(tmp_path: Path) -> None:
     repo = a_repo(tmp_path)
     first_run(tmp_path, repo)
-    run = scripted(tmp_path)
+    # The overview and the change guide rest on every fact, so a fact that went rewrites them.
+    run = scripted(tmp_path, *section_replies(("overview", "change-guide")))
     without_port = Wiki(facts=tuple(fact for fact in FACTS if fact is not PORT), probes=(PROBE,))
 
     result = write_docs(docs_request(repo, without_port), run.deps)
 
     assert not (repo / "docs" / "configuration.md").exists()
     assert "configuration" not in result.sections
-    assert result.changed_paths == ("docs/configuration.md",)
-    assert run.llm.requests == []
+    assert "docs/configuration.md" in result.changed_paths
+    assert len(run.llm.requests) == 2
 
 
 @pytest.mark.parametrize("change", ["a fact added", "a fact deleted"])
@@ -472,11 +481,21 @@ def test_a_section_whose_facts_came_or_went_is_rewritten(tmp_path: Path, change:
     first = scripted(tmp_path, *section_replies())
     first_result = write_docs(docs_request(repo, wiki_before), first.deps)
     save_sections(first.deps.store, first_result.sections)
-    run = scripted(tmp_path, submitting("Rounding again.", ["rule:rounding"]))
+    run = scripted(
+        tmp_path,
+        submitting("Overview again.", ["rule:rounding"]),
+        submitting("Rounding again.", ["rule:rounding"]),
+        submitting("Change guide again.", ["rule:rounding"]),
+    )
 
     result = write_docs(docs_request(repo, wiki_after), run.deps)
 
-    assert result.changed_paths == ("docs/business-rules.md",)
+    # The overview and the change guide rest on every fact, so they are rewritten too.
+    assert result.changed_paths == (
+        "docs/business-rules.md",
+        "docs/change-guide.md",
+        "docs/overview.md",
+    )
 
 
 def test_a_section_missing_from_the_repo_is_written_though_not_stale(tmp_path: Path) -> None:
@@ -634,3 +653,18 @@ def test_the_prompt_keeps_code_blocks_to_repo_commands_and_probe_json() -> None:
     assert "one per line, with no comment" in prompt
     assert "Never quote source code in a code block" in prompt
     assert "name its files, functions and types in backticks" in prompt
+
+
+# Measured on the third real run: Explore tagged no fact with the overview or change-guide topic,
+# so a new engineer got neither page. Both summarise the whole service, so they rest on every fact.
+def test_the_overview_and_change_guide_are_written_from_every_fact(tmp_path: Path) -> None:
+    repo = a_repo(tmp_path)
+    no_overview = Wiki(facts=tuple(f for f in FACTS if f is not PURPOSE), probes=(PROBE,))
+    replies = [submitting(f"About {topic}.", ["rule:rounding"]) for topic in WRITTEN_TOPICS]
+    run = scripted(tmp_path, *replies)
+
+    result = write_docs(docs_request(repo, no_overview), run.deps)
+
+    assert (repo / "docs" / "overview.md").exists()
+    assert (repo / "docs" / "change-guide.md").exists()
+    assert set(result.sections["overview"]) == {fact.id for fact in no_overview.facts}

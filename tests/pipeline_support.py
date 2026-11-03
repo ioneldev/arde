@@ -343,7 +343,29 @@ def exploring(*facts: Fact, injections: tuple[str, ...] = ()) -> list[LLMRespons
 
 
 def a_first_run_script() -> list[LLMResponse]:
-    return [submitting_the_profile(), *exploring()]
+    return [submitting_the_profile(), *exploring(), *summarising(THINGS_FACT.id)]
+
+
+# The overview and the change guide rest on every fact, so every first run writes them: the
+# overview first and the change guide last, in the order of the docs' sections.
+def an_overview(fact_id: str) -> LLMResponse:
+    return a_section("What the service is.", fact_id)
+
+
+def a_change_guide(fact_id: str) -> LLMResponse:
+    return a_section("How to change it safely.", fact_id)
+
+
+def summarising(fact_id: str) -> list[LLMResponse]:
+    return [an_overview(fact_id), a_change_guide(fact_id)]
+
+
+def a_section(markdown: str, fact_id: str) -> LLMResponse:
+    return calling(
+        tool_call(
+            "submit_section", markdown=markdown, used_fact_ids=[fact_id], suspected_injections=[]
+        )
+    )
 
 
 @dataclass

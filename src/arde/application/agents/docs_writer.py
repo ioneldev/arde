@@ -52,6 +52,9 @@ SECTION_TITLES: dict[Topic, str] = {
 }
 # The API reference is rendered by code alone, so a new param is one new row and nothing else.
 NARRATIVE_TOPICS: tuple[Topic, ...] = tuple(topic for topic in SECTION_FILES if topic != "api")
+# These summarise the whole service, so they rest on every fact rather than on facts Explore
+# happened to tag with their topic.
+WHOLE_SERVICE_TOPICS: frozenset[Topic] = frozenset({"overview", "change-guide"})
 ERROR_TABLE_PLACEHOLDER = "{{table:error-codes}}"
 # The first line of every page ARDE writes. A file without it is someone else's, never replaced.
 GENERATED_MARKER = "<!-- ARDE wrote this page from checked facts, and its next run replaces it. -->"
@@ -288,7 +291,7 @@ def _actions(request: DocsRequest, recorded: dict[Topic, tuple[str, ...]]) -> di
     wiki_ids = {fact.id for fact in request.wiki.facts}
     actions: dict[Topic, _Action] = {}
     for topic in NARRATIVE_TOPICS:
-        own_ids = {fact.id for fact in request.wiki.by_topic(topic)}
+        own_ids = _own_fact_ids(topic, request.wiki)
         if not own_ids:
             actions[topic] = "remove"
             continue
@@ -313,8 +316,13 @@ def _topics_to(actions: dict[Topic, _Action], action: _Action) -> list[Topic]:
 # A section rests on its own facts whether or not the agent listed them all, so a change to any of
 # them makes it stale.
 def _facts_behind(result: SectionResult, wiki: Wiki) -> tuple[str, ...]:
-    own_ids = {fact.id for fact in wiki.by_topic(result.topic)}
+    own_ids = _own_fact_ids(result.topic, wiki)
     return tuple(sorted(own_ids.union(result.used_fact_ids)))
+
+
+def _own_fact_ids(topic: Topic, wiki: Wiki) -> set[str]:
+    facts = wiki.facts if topic in WHOLE_SERVICE_TOPICS else wiki.by_topic(topic)
+    return {fact.id for fact in facts}
 
 
 # The agent

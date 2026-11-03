@@ -15,11 +15,14 @@ from pipeline_support import (
     THINGS_ROUTE,
     FakeAdapter,
     Rig,
+    a_change_guide,
     a_check_result,
     a_first_run_script,
     an_inventory,
+    an_overview,
     exploring,
     submitting_the_profile,
+    summarising,
 )
 from scripted_model import USAGE, calling, tool_call
 
@@ -76,7 +79,13 @@ def test_a_first_run_documents_the_repo_and_passes_every_check(tmp_path: Path) -
     output = Path(report.run_dir) / "output"
     assert ANNOTATION in (output / "main.go").read_text()
     assert (output / "docs" / "api.md").is_file()
-    assert report.changed_paths == ("docs/api.md", "docs/openapi.json", "main.go")
+    assert report.changed_paths == (
+        "docs/api.md",
+        "docs/change-guide.md",
+        "docs/openapi.json",
+        "docs/overview.md",
+        "main.go",
+    )
 
 
 def test_the_steps_run_in_order(tmp_path: Path) -> None:
@@ -336,7 +345,7 @@ def test_suspected_injections_reach_the_warnings(tmp_path: Path) -> None:
             "submit_profile", **PROFILE, suspected_injections=[{"file": "README.md", "line": 4}]
         )
     )
-    script = [discovery, *exploring(injections=("main.go:2",))]
+    script = [discovery, *exploring(injections=("main.go:2",)), *summarising(THINGS_FACT.id)]
 
     report = run(a_rig(tmp_path, script))
 
@@ -578,8 +587,10 @@ def a_documented_repo(tmp_path: Path) -> Rig:
     script = [
         submitting_the_profile(),
         *exploring(THINGS_FACT, ORDER_RULE, PORT_RULE),
+        an_overview("rule.order"),
         writing_a_section("Things come back in the order they were added.", "rule.order"),
         writing_a_section("Set THINGS_PORT to choose the port.", "rule.port"),
+        a_change_guide("rule.order"),
     ]
     rig = a_rig(tmp_path, script)
     assert run(rig).status == "success"

@@ -84,8 +84,10 @@ def a_first_run_on_the_shop() -> list[LLMResponse]:
     return [
         submitting_the_shop_profile(),
         *exploring_the_shop(*SHOP_FACTS, probes=(TEA, NOTHING, BAD_PIECES, LISTING)),
+        writing_a_section("What the shop is.", NO_DISCOUNT.id),
         writing_a_section(NO_DISCOUNT_SECTION, NO_DISCOUNT.id),
         writing_a_section(PORT_SECTION, PORT_RULE.id),
+        writing_a_section("How to change the shop safely.", NO_DISCOUNT.id),
     ]
 
 
