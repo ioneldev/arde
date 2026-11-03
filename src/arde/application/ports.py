@@ -230,6 +230,24 @@ class RenderOutcome(Frozen):
     manifest: RenderManifest
 
 
+# Evidence. Anyone can write anything in a comment or a string literal, planted instructions
+# included, so a quote is evidence only where it holds code.
+
+# "not source" is a file whose syntax the adapter does not read, such as a README.
+QuoteContent = Literal["code", "comment", "string literal", "not source"]
+
+
+class SourceQuote(Frozen):
+    """Where a quote appears in one file of the repo."""
+
+    # From the repo root. Its name says which syntax the file is written in.
+    file: str
+    # The file's text, with each CRLF line ending read as LF.
+    source: str
+    # Each place the quote appears, as start and end offsets into source.
+    places: tuple[tuple[int, int], ...]
+
+
 class LanguageAdapter(Protocol):
     """Everything ARDE knows about one language. Each method holds an idiom of that language.
 
@@ -303,6 +321,15 @@ class LanguageAdapter(Protocol):
 
         The YAML form is written beside it, and nothing else in the repo changes. A tool that
         cannot read the annotations raises an ArdeError that quotes the end of what it printed.
+        """
+        ...
+
+    def quote_content(self, quote: SourceQuote) -> QuoteContent:
+        """What the quote holds, read with the file's syntax.
+
+        It is code when any of its places has something outside every comment and string literal,
+        else a comment or a string literal, and "not source" in a file whose syntax the adapter
+        does not read. It reads only the text it is given, so it opens no file and needs no gate.
         """
         ...
 

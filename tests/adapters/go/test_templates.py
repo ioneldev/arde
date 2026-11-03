@@ -144,6 +144,25 @@ def test_a_required_path_param_reads_true() -> None:
     assert line.startswith("// @Param sku path string true ")
 
 
+def test_a_form_param_reads_as_swag_names_form_data() -> None:
+    line = param_line(a_param(name="note", location="form", declared_type="string"))
+
+    assert line.startswith("// @Param note formData string false ")
+
+
+def test_a_header_param_reads_header() -> None:
+    line = param_line(a_param(name="X-Request-Id", location="header", declared_type="string"))
+
+    assert line.startswith("// @Param X-Request-Id header string false ")
+
+
+@pytest.mark.parametrize("declared_type", ["bool", "number"])
+def test_a_bool_or_number_param_type_reads_as_it_is(declared_type: str) -> None:
+    line = param_line(a_param(declared_type=declared_type, minimum=None, maximum=None))
+
+    assert line.startswith(f"// @Param pieces query {declared_type} false ")
+
+
 @pytest.mark.parametrize("name", ["maximum(5)", "a(b", "a)b"])
 def test_a_param_name_swag_would_read_as_an_attribute_stops_the_render(name: str) -> None:
     with pytest.raises(RenderError, match="parenthesis"):

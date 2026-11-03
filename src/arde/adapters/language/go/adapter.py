@@ -17,15 +17,18 @@ from arde.adapters.language.go.goinspect_client import (
 )
 from arde.adapters.language.go.inventory_builder import SourceReading, build_inventory
 from arde.adapters.language.go.makefile import make_targets_of
+from arde.adapters.language.go.quotes import quote_content
 from arde.adapters.language.go.renderer import render
 from arde.adapters.language.go.swag import build_swag, run_swag
 from arde.adapters.repo_links import require_no_link_leaves
 from arde.application.ports import (
     CheckResult,
     LanguageAdapter,
+    QuoteContent,
     RenderOutcome,
     RenderRequest,
     RouteHashes,
+    SourceQuote,
     UnhashedReason,
 )
 from arde.domain.inventory import INLINE_HANDLER, Inventory, Route
@@ -141,6 +144,9 @@ class GoAdapter(LanguageAdapter):
     def generate_spec(self, repo: Path, profile: RepoProfile) -> Path:
         require_no_link_leaves(repo)
         return run_swag(repo, profile, swag=self._swag)
+
+    def quote_content(self, quote: SourceQuote) -> QuoteContent:
+        return quote_content(quote)
 
 
 # The return type is the static proof that GoAdapter satisfies the port: mypy fails here when

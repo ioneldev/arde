@@ -71,8 +71,8 @@ class FactBase(Frozen):
 
 class ParamFact(Frozen):
     name: ParamName
-    location: Literal["path", "query"]
-    declared_type: Literal["int", "string"]
+    location: Literal["path", "query", "header", "form"]
+    declared_type: Literal["int", "number", "string", "bool"]
     required: bool
     description: NonBlankLine
     minimum: int | None

@@ -18,6 +18,9 @@ API_VERSION = "0.0.0"
 ROUTER_METHODS = frozenset({"GET", "PUT", "POST", "DELETE", "OPTIONS", "HEAD", "PATCH"})
 _ROUTER_PATH = re.compile(r"/[A-Za-z0-9_./\-{}()+:$]*")
 
+# swag names a form field's place formData. Every other place reads as the fact names it.
+_SWAG_LOCATIONS = {"form": "formData"}
+
 # swag finds a param's attributes, such as default(1), by searching the whole line for a name and
 # a parenthesis, the description included. A space before each parenthesis there keeps the
 # description from adding one, and a parenthesis in the name cannot be moved at all.
@@ -63,11 +66,12 @@ def param_line(param: ParamFact) -> str:
             "an attribute of the param.",
             next_action="Rename the param in the code, or remove it from the wiki, then run again.",
         )
+    location = _SWAG_LOCATIONS.get(param.location, param.location)
     required = "true" if param.required else "false"
     description = _between_quotes(param.description)
     attributes = " ".join(_attributes(param))
     return _comment(
-        f'@Param {param.name} {param.location} {param.declared_type} {required} "{description}" '
+        f'@Param {param.name} {location} {param.declared_type} {required} "{description}" '
         f"{attributes}"
     )
 
