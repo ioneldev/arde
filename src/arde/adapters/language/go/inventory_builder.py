@@ -271,7 +271,7 @@ def _route_from(site: RouteSite) -> Route:
     pattern = site.literals.get("path")
     if pattern is None:
         raise RouteNotUnderstoodError(site, _unknown_path(site), next_action=READ_A_CONSTANT_PATH)
-    method, path = _split_pattern(pattern, callee=site.call)
+    method, path = _split_pattern(pattern, callee=site.callee)
     if not path.startswith("/"):
         raise RouteNotUnderstoodError(
             site,

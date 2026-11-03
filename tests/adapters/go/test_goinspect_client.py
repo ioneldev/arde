@@ -136,7 +136,7 @@ def test_declarations_are_read_with_their_fields(stand_in: StandIn, folder: Path
 
 def test_matches_hand_the_patterns_over_as_a_file(stand_in: StandIn, folder: Path) -> None:
     stand_in.replies_with(
-        '{"matches": [{"kind": "env", "call": "os.Getenv", "file": "m.go", "line": 4,'
+        '{"matches": [{"kind": "env", "callee": "os.Getenv", "file": "m.go", "line": 4,'
         ' "args": {"name": "\\"PORT\\""}, "literals": {"name": "PORT"}}],'
         ' "unmatched_patterns": [{"kind": "param", "call": "^q$"}]}'
     )
@@ -147,7 +147,7 @@ def test_matches_hand_the_patterns_over_as_a_file(stand_in: StandIn, folder: Pat
     assert reply.matches == (
         CallMatch(
             kind="env",
-            call="os.Getenv",
+            callee="os.Getenv",
             file="m.go",
             line=4,
             args={"name": '"PORT"'},
@@ -164,7 +164,7 @@ def test_matches_hand_the_patterns_over_as_a_file(stand_in: StandIn, folder: Pat
 
 def test_a_match_reply_with_no_literals_object_is_refused(stand_in: StandIn, folder: Path) -> None:
     stand_in.replies_with(
-        '{"matches": [{"kind": "env", "call": "os.Getenv", "file": "m.go", "line": 4,'
+        '{"matches": [{"kind": "env", "callee": "os.Getenv", "file": "m.go", "line": 4,'
         ' "args": {"name": "name"}}], "unmatched_patterns": []}'
     )
     pattern = ExtractionPattern(kind="env", call=r"^os\.Getenv$", args={"name": 0})
@@ -595,7 +595,7 @@ ROUTES_REPLY = {
     "sites": [
         {
             "kind": "route",
-            "call": "mux.Handle",
+            "callee": "mux.Handle",
             "file": "web/router.go",
             "line": 9,
             "args": {"path": 'prefix + "/x"', "handler": "h.list"},

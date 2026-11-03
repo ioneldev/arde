@@ -262,7 +262,7 @@ func (reader routeReader) matchAt(call serviceCall, positions map[string]int) ca
 	source := reader.service.printerSource()
 	return callMatch{
 		Kind:     routeKind,
-		Call:     call.callee,
+		Callee:   call.callee,
 		File:     call.place.File,
 		Line:     call.place.Line,
 		Args:     source.argumentTexts(call.syntax, positions),

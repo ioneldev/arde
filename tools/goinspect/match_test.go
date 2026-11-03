@@ -47,11 +47,11 @@ func (h *handlers) detail(c *gin.Context) {
 `
 
 type matchedCall struct {
-	Kind string            `json:"kind"`
-	Call string            `json:"call"`
-	File string            `json:"file"`
-	Line int               `json:"line"`
-	Args map[string]string `json:"args"`
+	Kind   string            `json:"kind"`
+	Callee string            `json:"callee"`
+	File   string            `json:"file"`
+	Line   int               `json:"line"`
+	Args   map[string]string `json:"args"`
 }
 
 func matchesIn(t *testing.T, files map[string]string, patterns string) []matchedCall {
@@ -86,11 +86,11 @@ func TestMatchStdlibStyle(t *testing.T) {
 	got := matchesIn(t, map[string]string{"main.go": stdlibStyleService}, stdlibPatterns)
 
 	assertMatches(t, got, []matchedCall{
-		{Kind: "route", Call: "mux.HandleFunc", File: "main.go", Line: 4,
+		{Kind: "route", Callee: "mux.HandleFunc", File: "main.go", Line: 4,
 			Args: map[string]string{"path": `"GET /widgets/{id}"`, "handler": "h.detail"}},
-		{Kind: "param", Call: "r.PathValue", File: "main.go", Line: 8,
+		{Kind: "param", Callee: "r.PathValue", File: "main.go", Line: 8,
 			Args: map[string]string{"name": `"id"`}},
-		{Kind: "error", Call: "writeError", File: "main.go", Line: 10,
+		{Kind: "error", Callee: "writeError", File: "main.go", Line: 10,
 			Args: map[string]string{"status": "http.StatusBadRequest", "code": `"missing_id"`}},
 	})
 }
@@ -99,11 +99,11 @@ func TestMatchGinStyle(t *testing.T) {
 	got := matchesIn(t, map[string]string{"main.go": ginStyleService}, ginPatterns)
 
 	assertMatches(t, got, []matchedCall{
-		{Kind: "route", Call: "r.GET", File: "main.go", Line: 4,
+		{Kind: "route", Callee: "r.GET", File: "main.go", Line: 4,
 			Args: map[string]string{"path": `"/widgets/:id"`, "handler": "h.detail"}},
-		{Kind: "param", Call: "c.Query", File: "main.go", Line: 8,
+		{Kind: "param", Callee: "c.Query", File: "main.go", Line: 8,
 			Args: map[string]string{"name": `"colour"`}},
-		{Kind: "error", Call: "respondError", File: "main.go", Line: 9,
+		{Kind: "error", Callee: "respondError", File: "main.go", Line: 9,
 			Args: map[string]string{"status": "400", "code": `"missing_colour"`}},
 	})
 }
@@ -173,7 +173,7 @@ func TestMatchLeavesOutAnArgumentTheCallDoesNotHave(t *testing.T) {
 	got := matchesIn(t, map[string]string{"main.go": "package p\n\nfunc f() { writeError(w, 400) }\n"}, stdlibPatterns)
 
 	assertMatches(t, got, []matchedCall{
-		{Kind: "error", Call: "writeError", File: "main.go", Line: 3,
+		{Kind: "error", Callee: "writeError", File: "main.go", Line: 3,
 			Args: map[string]string{"status": "400"}},
 	})
 }
@@ -207,7 +207,7 @@ func TestMatchPrintsAMultiLineCallAtItsFirstLine(t *testing.T) {
 	got := matchesIn(t, map[string]string{"main.go": source}, stdlibPatterns)
 
 	assertMatches(t, got, []matchedCall{
-		{Kind: "route", Call: "mux.HandleFunc", File: "main.go", Line: 4,
+		{Kind: "route", Callee: "mux.HandleFunc", File: "main.go", Line: 4,
 			Args: map[string]string{"path": `"GET /a"`, "handler": "h.a"}},
 	})
 }
@@ -489,8 +489,8 @@ func TestMatchNamesTheCalleeTheWayItIsMeantNotTheWayItIsLaidOut(t *testing.T) {
 			t.Errorf("%s: want 1 match, got %v", name, got)
 			continue
 		}
-		if got[0].Call != test.wantCall || !reflect.DeepEqual(got[0].Args, test.wantArgs) {
-			t.Errorf("%s: got call %q args %v, want call %q args %v", name, got[0].Call, got[0].Args, test.wantCall, test.wantArgs)
+		if got[0].Callee != test.wantCall || !reflect.DeepEqual(got[0].Args, test.wantArgs) {
+			t.Errorf("%s: got call %q args %v, want call %q args %v", name, got[0].Callee, got[0].Args, test.wantCall, test.wantArgs)
 		}
 	}
 }
@@ -500,7 +500,7 @@ func TestMatchDoesNotTreatAnInvokedFunctionLiteralAsACalleeNamedAfterItsBody(t *
 
 	got := matchesIn(t, map[string]string{"main.go": source}, `[{"kind":"route","call":"HandleFunc","args":{}}]`)
 
-	if len(got) != 1 || got[0].Call != "x.HandleFunc" {
+	if len(got) != 1 || got[0].Callee != "x.HandleFunc" {
 		t.Fatalf("want the one call of x.HandleFunc, got %v", got)
 	}
 }

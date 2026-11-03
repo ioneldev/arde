@@ -52,7 +52,7 @@ def call(kind: str, callee: str, *, line: int = 1, **args: str) -> CallMatch:
     }
     literals = {name: str(value) for name, value in args.items() if isinstance(value, Lit)}
     return CallMatch(
-        kind=kind, call=callee, file="main.go", line=line, args=texts, literals=literals
+        kind=kind, callee=callee, file="main.go", line=line, args=texts, literals=literals
     )
 
 
@@ -306,7 +306,7 @@ def test_a_route_with_no_handler_argument_stops_the_run_because_the_pattern_is_w
 def test_a_route_keeps_where_it_is_registered_and_what_resolved_its_handler() -> None:
     site = RouteSite(
         kind="route",
-        call="mux.HandleFunc",
+        callee="mux.HandleFunc",
         file="web/router.go",
         line=12,
         args={"path": '"GET /x"', "handler": "h.list"},
@@ -911,7 +911,9 @@ def test_the_argument_shown_in_a_dropped_line_is_on_one_clean_line() -> None:
 )
 def test_a_file_name_in_a_dropped_line_is_printed_safely(file: str, printed: str) -> None:
     inventory = with_one_route(
-        CallMatch(kind="env", call="os.Getenv", file=file, line=9, args={"name": "x"}, literals={})
+        CallMatch(
+            kind="env", callee="os.Getenv", file=file, line=9, args={"name": "x"}, literals={}
+        )
     )
 
     [line] = inventory.dropped
@@ -922,7 +924,7 @@ def test_a_file_name_in_a_dropped_line_is_printed_safely(file: str, printed: str
 def test_a_very_long_file_name_cannot_overrun_a_dropped_line() -> None:
     inventory = with_one_route(
         CallMatch(
-            kind="env", call="os.Getenv", file="x" * 5000, line=9, args={"name": "x"}, literals={}
+            kind="env", callee="os.Getenv", file="x" * 5000, line=9, args={"name": "x"}, literals={}
         )
     )
 
@@ -935,7 +937,7 @@ def test_dropped_lines_are_sorted_by_file_and_line_and_listed_once() -> None:
         call("env", "os.Getenv", line=4, name="a"),
         call("env", "os.Getenv", line=4, name="a"),
         CallMatch(
-            kind="env", call="os.Getenv", file="a.go", line=100, args={"name": "c"}, literals={}
+            kind="env", callee="os.Getenv", file="a.go", line=100, args={"name": "c"}, literals={}
         ),
     )
 

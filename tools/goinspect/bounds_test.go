@@ -174,10 +174,10 @@ func TestAChainPastTheCapKeepsItsLastNameSoAPatternOnTheEndStillMatches(t *testi
 		t.Fatalf("every link must still match, got %d of %d", len(found), links)
 	}
 	// Calls are found from the outside in, so the first is the longest chain and the last the shortest.
-	if got, want := found[0].Call, tooLongToPrint+".b"; got != want {
+	if got, want := found[0].Callee, tooLongToPrint+".b"; got != want {
 		t.Fatalf("the longest chain reads %.40q, want %q", got, want)
 	}
-	if got, want := found[links-1].Call, "a.b"; got != want {
+	if got, want := found[links-1].Callee, "a.b"; got != want {
 		t.Fatalf("the shortest chain reads %.40q, want %q", got, want)
 	}
 }
@@ -209,7 +209,7 @@ func assertCallees(t *testing.T, found []matchedCall, want ...string) {
 	t.Helper()
 	got := make(map[string]bool, len(found))
 	for _, match := range found {
-		got[match.Call] = true
+		got[match.Callee] = true
 	}
 	for _, callee := range want {
 		if !got[callee] {

@@ -44,11 +44,11 @@ type callPattern struct {
 }
 
 type callMatch struct {
-	Kind string            `json:"kind"`
-	Call string            `json:"call"`
-	File string            `json:"file"`
-	Line int               `json:"line"`
-	Args map[string]string `json:"args"`
+	Kind   string            `json:"kind"`
+	Callee string            `json:"callee"`
+	File   string            `json:"file"`
+	Line   int               `json:"line"`
+	Args   map[string]string `json:"args"`
 	// Literals holds the value of each argument that is one string literal, decoded as the
 	// compiler decodes it. An argument that is anything else is in Args only.
 	Literals map[string]string `json:"literals"`
@@ -97,7 +97,7 @@ func patternsWithNoMatch(patterns []callPattern, matches []callMatch) []patternN
 	unmatched := []patternName{}
 	for _, pattern := range patterns {
 		matched := slices.ContainsFunc(matches, func(match callMatch) bool {
-			return pattern.call.MatchString(match.Call)
+			return pattern.call.MatchString(match.Callee)
 		})
 		if !matched {
 			unmatched = append(unmatched, patternName{Kind: pattern.kind, Call: pattern.call.String()})
@@ -233,9 +233,9 @@ func (matcher fileMatcher) matchesOf(call *ast.CallExpr) []callMatch {
 	for _, pattern := range matcher.patterns {
 		if pattern.call.MatchString(callee) {
 			matches = append(matches, callMatch{
-				Kind: pattern.kind,
-				Call: callee,
-				File: matcher.path,
+				Kind:   pattern.kind,
+				Callee: callee,
+				File:   matcher.path,
 				// The call's own parenthesis, because a chained call starts on the line of the chain.
 				Line:     matcher.source.lineOf(call.Lparen),
 				Args:     matcher.source.argumentTexts(call, pattern.argumentPositions),

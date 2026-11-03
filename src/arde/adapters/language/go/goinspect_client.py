@@ -74,7 +74,7 @@ class DeclarationsReply(Frozen):
 
 class CallMatch(Frozen):
     kind: str
-    call: str
+    callee: str
     file: str
     line: int
     # The text of each argument as written.

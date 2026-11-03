@@ -15,7 +15,7 @@ const noPatterns = "[]"
 
 type siteOutput struct {
 	Kind        string            `json:"kind"`
-	Call        string            `json:"call"`
+	Callee      string            `json:"callee"`
 	File        string            `json:"file"`
 	Line        int               `json:"line"`
 	Args        map[string]string `json:"args"`
@@ -1021,7 +1021,7 @@ func main() {
 	if got, want := sitePaths(sites), []string{"/backwards"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
-	if sites[0].Kind != "route" || sites[0].Call != "register" || *sites[0].HandlerID != "example.com/depot.parcels" {
+	if sites[0].Kind != "route" || sites[0].Callee != "register" || *sites[0].HandlerID != "example.com/depot.parcels" {
 		t.Fatalf("got %+v", sites[0])
 	}
 }
