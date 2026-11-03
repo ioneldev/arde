@@ -10,7 +10,7 @@ import json
 import re
 from functools import cache, partial
 from importlib.resources import files
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
@@ -138,6 +138,23 @@ class DocsFileNotOurs(ArdeError):
         )
 
 
+class ReadmeLink(Frozen):
+    added: bool
+    warnings: tuple[str, ...]
+
+
+class DocsPathIsALink(ArdeError):
+    def __init__(self, path: str) -> None:
+        super().__init__(
+            f"{path} is a link, and ARDE reads and writes no page through a link.",
+            next_action=(
+                "Replace the link with the folder or file it stands for in your repo, or remove "
+                "it, then run again."
+            ),
+            exit_code=ExitCode.BAD_USAGE,
+        )
+
+
 class DocsWriteFailed(ArdeError):
     def __init__(self, error: OSError) -> None:
         super().__init__(
@@ -162,8 +179,10 @@ _SUBMIT_SECTION = ToolDef(
 def write_docs(request: DocsRequest, deps: PipelineDeps) -> DocsResult:
     """Writes the API reference, each narrative section that needs it, and removes empty ones.
 
-    A page someone else wrote is never replaced or removed: the run stops before any model call.
+    A page someone else wrote is never replaced or removed, and none is read or written through a
+    link: either stops the run before any model call.
     """
+    _refuse_links_to_pages(request.repo)
     recorded = load_sections(deps.store)
     actions = _actions(request, recorded)
     to_write = _topics_to(actions, "write")
@@ -206,29 +225,39 @@ def write_section(request: SectionRequest, deps: PipelineDeps) -> SectionResult:
     )
 
 
-def add_readme_link(repo: Path) -> bool:
+def add_readme_link(repo: Path) -> ReadmeLink:
     """Adds one line linking the docs to the end of the repo's README.md, and says if it did.
 
     The README stays as written otherwise, its line endings included, and a README that already
     links the docs is left alone. A repo with no README.md gets none: ARDE adds a link to a page
-    a person wrote, and does not write that page.
+    a person wrote, and does not write that page. A README.md that is a link gets none either,
+    and a warning, because writing through it would edit whatever file it leads to.
     """
     try:
         readme = _readme(repo)
         if readme is None:
-            return False
+            return ReadmeLink(added=False, warnings=())
+        if readme.is_symlink():
+            return ReadmeLink(added=False, warnings=(_readme_is_a_link(readme),))
         content = readme.read_bytes()
         if _README_LINK_TARGET in content:
-            return False
+            return ReadmeLink(added=False, warnings=())
         readme.write_bytes(_with_readme_link(content))
     except OSError as error:
         raise DocsWriteFailed(error) from error
-    return True
+    return ReadmeLink(added=True, warnings=())
 
 
 def _readme(repo: Path) -> Path | None:
     named = [path for path in sorted(repo.iterdir()) if path.name.lower() == "readme.md"]
-    return next((path for path in named if path.is_file()), None)
+    return next((path for path in named if path.is_symlink() or path.is_file()), None)
+
+
+def _readme_is_a_link(readme: Path) -> str:
+    return (
+        f"{printable_name(readme.name)} is a link, so ARDE added no link to the docs. Replace the "
+        "link with the file it stands for to get one."
+    )
 
 
 # The link goes after a blank line, ended as the README's own lines are.
@@ -459,8 +488,26 @@ def _page(topic: Topic, body: str) -> str:
     return f"{GENERATED_MARKER}\n\n# {SECTION_TITLES[topic]}\n\n{content}\n"
 
 
+# Checked once before any model call, so a link stops the run before it costs anything.
+# _page_path checks again at each read and write.
+def _refuse_links_to_pages(repo: Path) -> None:
+    for topic in SECTION_FILES:
+        _page_path(repo, topic)
+
+
+# A link inside the repo passes the gate on the copy, and a page written through one, or through
+# a docs folder that is one, would land in whatever file it leads to, source code included.
 def _page_path(repo: Path, topic: Topic) -> Path:
-    return repo / DOCS_FOLDER / SECTION_FILES[topic]
+    path = repo
+    for part in PurePosixPath(_relative(topic)).parts:
+        path = path / part
+        try:
+            is_link = path.is_symlink()
+        except OSError as error:
+            raise DocsWriteFailed(error) from error
+        if is_link:
+            raise DocsPathIsALink(path.relative_to(repo).as_posix())
+    return path
 
 
 def _relative(topic: Topic) -> str:

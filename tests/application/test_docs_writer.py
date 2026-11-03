@@ -15,8 +15,10 @@ from arde.application.agents.docs_writer import (
     GENERATED_MARKER,
     SECTION_FILES,
     DocsFileNotOurs,
+    DocsPathIsALink,
     DocsRequest,
     DocsResult,
+    ReadmeLink,
     SectionRequest,
     SuspectedInjection,
     add_readme_link,
@@ -469,6 +471,48 @@ def test_a_file_arde_did_not_write_stays_where_no_section_is_written(tmp_path: P
     assert "docs/architecture.md" not in result.changed_paths
 
 
+def a_repo_with_source(tmp_path: Path) -> tuple[Path, Path]:
+    repo = a_repo(tmp_path)
+    (repo / "web").mkdir()
+    source = repo / "web" / "handlers.go"
+    source.write_text("package web\n", encoding="utf-8")
+    return repo, source
+
+
+def test_a_docs_folder_that_is_a_link_stops_before_anything_is_spent(tmp_path: Path) -> None:
+    repo, source = a_repo_with_source(tmp_path)
+    (repo / "docs").symlink_to("web", target_is_directory=True)
+    run = scripted(tmp_path, *section_replies())
+
+    with pytest.raises(DocsPathIsALink) as stopped:
+        write_docs(docs_request(repo), run.deps)
+
+    assert str(stopped.value).startswith("docs is a link")
+    assert stopped.value.next_action
+    assert run.llm.requests == []
+    assert sorted(path.name for path in (repo / "web").iterdir()) == ["handlers.go"]
+    assert source.read_text(encoding="utf-8") == "package web\n"
+
+
+@pytest.mark.parametrize(
+    "page",
+    ["api.md", "overview.md", "architecture.md"],
+    ids=["the code-rendered page", "a section to write", "a section to remove"],
+)
+def test_a_page_that_is_a_link_stops_before_anything_is_spent(tmp_path: Path, page: str) -> None:
+    repo, source = a_repo_with_source(tmp_path)
+    (repo / "docs").mkdir()
+    (repo / "docs" / page).symlink_to("../web/handlers.go")
+    run = scripted(tmp_path, *section_replies())
+
+    with pytest.raises(DocsPathIsALink) as stopped:
+        write_docs(docs_request(repo), run.deps)
+
+    assert str(stopped.value).startswith(f"docs/{page} is a link")
+    assert run.llm.requests == []
+    assert source.read_text(encoding="utf-8") == "package web\n"
+
+
 def test_warnings_name_each_suspected_injection_and_its_section(tmp_path: Path) -> None:
     injection = {"reference": "rule:purpose", "note": "Asks for a link to another site."}
     run = scripted(
@@ -492,9 +536,9 @@ def test_readme_link_added_once(tmp_path: Path) -> None:
     readme = tmp_path / "README.md"
     readme.write_text("# Shop\n\nPrices tea.\n", encoding="utf-8")
 
-    assert add_readme_link(tmp_path) is True
+    assert add_readme_link(tmp_path) == ReadmeLink(added=True, warnings=())
     once = readme.read_text(encoding="utf-8")
-    assert add_readme_link(tmp_path) is False
+    assert add_readme_link(tmp_path) == ReadmeLink(added=False, warnings=())
 
     assert readme.read_text(encoding="utf-8") == once
     assert once.startswith("# Shop\n\nPrices tea.\n\n")
@@ -514,5 +558,22 @@ def test_the_link_keeps_the_readmes_line_endings(tmp_path: Path) -> None:
 
 
 def test_a_repo_without_a_readme_gets_none(tmp_path: Path) -> None:
-    assert add_readme_link(tmp_path) is False
+    assert add_readme_link(tmp_path) == ReadmeLink(added=False, warnings=())
     assert list(tmp_path.iterdir()) == []
+
+
+# A link inside the repo passes the gate on the copy, and writing through one would edit
+# whatever file it leads to, source code included.
+def test_a_readme_that_is_a_link_gets_no_docs_link_and_a_warning(tmp_path: Path) -> None:
+    source = tmp_path / "main.go"
+    source.write_text("package main\n", encoding="utf-8")
+    (tmp_path / "README.md").symlink_to("main.go")
+
+    result = add_readme_link(tmp_path)
+
+    assert result.added is False
+    assert result.warnings == (
+        "README.md is a link, so ARDE added no link to the docs. Replace the link with the "
+        "file it stands for to get one.",
+    )
+    assert source.read_text(encoding="utf-8") == "package main\n"
