@@ -1,9 +1,11 @@
 """What a quote from a repo file holds: code, a comment, or the text of a string literal.
 
-Go source and the module files are read with Go's lexical rules, and a Makefile with make's
-comments. Any other file is not source this adapter reads. The lexer errs towards free text: a
-comment or a literal that never ends runs to the end of the file, so planted text can never pass
-for code by leaving its comment open.
+Go source and the module files are read with Go's lexical rules, and a Makefile with its comments
+and quoted strings. Any other file is not source this adapter reads, and Go source counts only in
+a file the service is built from, so code planted in test data, a vendored copy, a file the build
+leaves out or another program is no evidence about the service. The lexer errs towards free text:
+a comment or a literal that never ends runs to the end of its line or of the file, so planted text
+can never pass for code by leaving it open.
 """
 
 import re
@@ -20,17 +22,22 @@ _GO_FREE_TEXT = re.compile(
     re.DOTALL,
 )
 # A # outside a recipe starts a comment, and inside one it starts the shell's. Either way, what
-# follows is free text, so every # is read as the start of a comment.
-_MAKE_FREE_TEXT = re.compile(r"(?P<comment>#[^\n]*)")
+# follows is free text, so every # is read as the start of a comment. A quoted string on any line is
+# free text too, as the argument of echo is: make passes a recipe's quotes to the shell, and a
+# value's quotes are part of the value.
+_MAKE_FREE_TEXT = re.compile(r"(?P<comment>#[^\n]*)|(?P<literal>\"[^\"\n]*\"?|'[^'\n]*'?)")
 
 _GO_FILES = frozenset({"go.mod", "go.work"})
 _MAKE_SUFFIX = ".mk"
 
 
 def quote_content(quote: SourceQuote) -> QuoteContent:
-    lexer = _lexer_for(quote.file)
+    file = _as_listed(quote.file)
+    lexer = _lexer_for(file)
     if lexer is None:
         return "not source"
+    if file.endswith(".go") and file not in quote.build_files:
+        return "outside the build"
     free_text = _free_text_spans(quote.source, lexer)
     readings = [_reading(quote.source, place, free_text) for place in quote.places]
     if "code" in readings:
@@ -38,8 +45,13 @@ def quote_content(quote: SourceQuote) -> QuoteContent:
     return "string literal" if "string literal" in readings else "comment"
 
 
+# The declarations name a file from the repo root with forward slashes and no leading "./".
+def _as_listed(file: str) -> str:
+    return PurePosixPath(file.replace("\\", "/")).as_posix()
+
+
 def _lexer_for(file: str) -> re.Pattern[str] | None:
-    name = PurePosixPath(file.replace("\\", "/")).name
+    name = PurePosixPath(file).name
     if name.endswith(".go") or name in _GO_FILES:
         return _GO_FREE_TEXT
     if name in MAKEFILE_NAMES or name.endswith(_MAKE_SUFFIX):

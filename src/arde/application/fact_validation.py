@@ -24,6 +24,7 @@ from arde.application.fact_names import (
     ANY_METHOD,
     PARAM_TEXT,
     FactNames,
+    build_files,
     can_hold,
     fact_routes,
     field_is_writable,
@@ -143,6 +144,7 @@ class _Check:
     names: FactNames
     # The error codes an unreachable fact exempts once the batch is applied.
     unreachable: frozenset[str]
+    build_files: frozenset[str]
     sources: dict[str, str | None] = field(default_factory=dict)
 
     @classmethod
@@ -156,7 +158,12 @@ class _Check:
         unreachable = frozenset(
             fact.error_code for fact in after.values() if isinstance(fact, UnreachableFact)
         )
-        return cls(ctx=ctx, names=FactNames.of(ctx.inventory), unreachable=unreachable)
+        return cls(
+            ctx=ctx,
+            names=FactNames.of(ctx.inventory),
+            unreachable=unreachable,
+            build_files=build_files(ctx.inventory),
+        )
 
     def problems_of(self, fact: Fact) -> Iterator[str]:
         yield from self._evidence_problems(fact)
@@ -198,7 +205,7 @@ class _Check:
                 "line numbers"
             )
         content = self.ctx.language.quote_content(
-            SourceQuote(file=quote.file, source=source, places=places)
+            SourceQuote(file=quote.file, source=source, places=places, build_files=self.build_files)
         )
         match content:
             case "comment":
@@ -215,6 +222,11 @@ class _Check:
                 return (
                     f"quotes {file}, which is not source code ARDE reads, so it is not evidence: "
                     "quote source code, or cite a probe"
+                )
+            case "outside the build":
+                return (
+                    f"quotes {file}, which is not part of the service's build, so it is not "
+                    "evidence about the service: quote a file the declarations list names"
                 )
         return None
 
