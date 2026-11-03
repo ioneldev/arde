@@ -337,11 +337,28 @@ def _wanted_pairs(request: RenderRequest) -> dict[tuple[str, str, str], list[str
     for fact in request.wiki.facts:
         if isinstance(fact, PolymorphicFact):
             response = _response_field_of(fact, request.inventory)
-            wanted[_field_key(response)].append(one_of_pair(fact.variants))
+            variants = [_with_package(variant, request.inventory) for variant in fact.variants]
+            wanted[_field_key(response)].append(one_of_pair(variants))
     for response in request.inventory.response_fields:
         if response.may_be_absent:
             wanted[_field_key(response)].append(OPTIONAL_PAIR)
     return wanted
+
+
+# swag finds a type by its package's name, and looks a bare one up in the package of the file
+# that holds the tag, which is the wrong one when the variant is declared elsewhere.
+def _with_package(variant: str, inventory: Inventory) -> str:
+    name = variant.replace("*", "")
+    if "." in name:
+        return name
+    packages = {reply.package for reply in inventory.response_fields if reply.struct == name}
+    if len(packages) != 1:
+        raise RenderError(
+            f"The variant {printable_name(name)} names a struct in {len(packages)} packages, so "
+            "the tag cannot say which one.",
+            next_action="Name the variant with its package, such as pkg.Type, then run again.",
+        )
+    return f"{packages.pop()}.{name}"
 
 
 def _field_key(response: ResponseField) -> tuple[str, str, str]:

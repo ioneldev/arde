@@ -401,6 +401,17 @@ def test_oneof_tag_added_to_polymorphic_field(renderer: Renderer, shop: Path) ->
     assert 'json:"traits" oneOf:"web.LeafTraits,web.CupTraits"`' in text
 
 
+# swag finds a type by its package's name, so a variant named bare would be looked up in the
+# package of the file that holds the tag. Measured on the first real run: the variants lived in
+# another package, and swag stopped.
+def test_a_variant_named_bare_is_written_with_its_package(renderer: Renderer, shop: Path) -> None:
+    bare = TRAITS.model_copy(update={"variants": ("LeafTraits", "*CupTraits")})
+
+    renderer.render(shop, LISTING, QUOTING, PIECES_COMMENT, bare)
+
+    assert 'oneOf:"web.LeafTraits,web.CupTraits"`' in text_of(shop, "web/payloads.go")
+
+
 def test_binding_optional_added_to_omitempty_fields_only(renderer: Renderer, shop: Path) -> None:
     renderer.render(shop, *SHOP_FACTS)
 
