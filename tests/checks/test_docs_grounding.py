@@ -210,6 +210,8 @@ def test_an_unknown_host_before_a_port_is_flagged(tmp_path: Path) -> None:
         "Dockerfile",
         "build/api.dockerfile",
         ".github/workflows/ci.yml",
+        "Makefile",
+        "build/rules.mk",
     ],
 )
 def test_a_command_from_the_readme_a_dockerfile_or_a_ci_file_is_grounded(

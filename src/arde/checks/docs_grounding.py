@@ -4,9 +4,9 @@ Repo text reaches the docs through the agents, so a line planted in a comment or
 to put a link or a command in front of a reader. Every URL, link, e-mail address and host a page
 names must appear in the repo's text or in a probe body, and a relative link must reach a file.
 Every line of a code block that is not data must be a make target of the repo, be written in its
-README, a Dockerfile or a CI file, or be a command the owner added to the profile: a comment in
-code is repo text too, and no place a person runs commands from, and a command Discovery reports
-is a model's output. Whatever cannot be read is a finding, never passed over.
+README, a Dockerfile, a CI file or a Makefile, or be a command the owner added to the profile: a
+comment in code is repo text too, and no place a person runs commands from, and a command
+Discovery reports is a model's output. Whatever cannot be read is a finding, never passed over.
 """
 
 import html
@@ -139,7 +139,7 @@ def _known_commands(ctx: CheckContext, *, written: str, repo_and_probes: str) ->
 class _RepoText:
     # Every file's path and text, for names to be found in.
     everything: str
-    # The README, Dockerfile and CI files, which a person reads for the commands to run.
+    # The README, Dockerfile, CI files and Makefiles, which a person reads for the commands to run.
     command_sources: str
 
 
@@ -165,6 +165,9 @@ def _is_command_source(relative: str) -> bool:
         or name.endswith(".dockerfile")
         or name in _CI_FILES
         or relative.startswith(_CI_FOLDERS)
+        # A recipe line is a command a person wrote for others to run, such as go test ./...
+        or name in ("makefile", "gnumakefile")
+        or name.endswith(".mk")
     )
 
 
@@ -359,7 +362,7 @@ def _unknown_link(page: str, destination: str) -> Finding:
 @dataclass(frozen=True)
 class _KnownCommands:
     make_targets: frozenset[str]
-    # The README, Dockerfile and CI files as one line, with every run of spaces made one.
+    # The README, Dockerfile, CI files and Makefiles as one line, every run of spaces made one.
     written: str
     # The commands the repo's owner added to the profile, which no model can set.
     owners: frozenset[str]
@@ -390,8 +393,8 @@ def _ungrounded_commands(page: str, text: str, *, commands: _KnownCommands) -> I
                 subject=f"{page}: {shown}",
                 message=(
                     f"{page} gives the command {shown}, which is not a make target of the repo, "
-                    "is not written in its README, a Dockerfile or a CI file, and is not one the "
-                    "owner added to the profile."
+                    "is not written in its README, a Dockerfile, a CI file or a Makefile, and is "
+                    "not one the owner added to the profile."
                 ),
                 next_action=(
                     "Remove the line, or give a command from those places as it is written "
