@@ -129,7 +129,18 @@ def _known_commands(ctx: CheckContext, *, written: str, repo_and_probes: str) ->
         written=_one_line_of(written),
         owners=frozenset(_one_line_of(command) for command in ctx.profile.extra_test_commands),
         repo_and_probes=repo_and_probes,
+        probe_values=frozenset(
+            value for probe in ctx.wiki.probes for value in _decoded_text_values(probe.body)
+        ),
     )
+
+
+# A probe body that is no JSON holds no values here: its text is in repo_and_probes as written.
+def _decoded_text_values(body: str) -> frozenset[str]:
+    try:
+        return frozenset(_text_values(json.loads(body)))
+    except (ValueError, RecursionError):
+        return frozenset()
 
 
 # The repo's text. A file that cannot be read as text is passed over here: it grounds nothing.
@@ -366,8 +377,14 @@ class _KnownCommands:
     written: str
     # The commands the repo's owner added to the profile, which no model can set.
     owners: frozenset[str]
-    # Every file's path and text and every probe body, where each value of a data block must be.
+    # Every file's path and text and every probe body, where a value of a data block may be.
     repo_and_probes: str
+    # Every text value of every probe body that is JSON, as its escapes decode, which is how a
+    # block of data that shows the body holds them.
+    probe_values: frozenset[str]
+
+    def grounds_value(self, value: str) -> bool:
+        return value in self.probe_values or value in self.repo_and_probes
 
     def holds(self, command: str) -> bool:
         return (
@@ -384,7 +401,7 @@ class _KnownCommands:
 
 
 def _ungrounded_commands(page: str, text: str, *, commands: _KnownCommands) -> Iterator[Finding]:
-    for command in _commands(text, repo_and_probes=commands.repo_and_probes):
+    for command in _commands(text, commands=commands):
         if not commands.holds(command):
             shown = one_line(command, SHOWN_LIMIT)
             yield Finding(
@@ -403,13 +420,13 @@ def _ungrounded_commands(page: str, text: str, *, commands: _KnownCommands) -> I
             )
 
 
-def _commands(text: str, *, repo_and_probes: str) -> Iterator[str]:
+def _commands(text: str, *, commands: _KnownCommands) -> Iterator[str]:
     """Every line of every code block that is not data, with its prompt and extra spaces gone.
 
     A line of output or a comment is read too, because a reader can copy it as well.
     """
     for block in code_blocks(text):
-        if _is_data(block, repo_and_probes=repo_and_probes):
+        if _is_data(block, commands=commands):
             continue
         for line in _joined(block.lines):
             command = " ".join(line.strip().removeprefix(_PROMPT).split())
@@ -418,15 +435,16 @@ def _commands(text: str, *, repo_and_probes: str) -> Iterator[str]:
 
 
 # Data counts only when it parses as its language says, and when the repo or a probe body holds
-# each of its text values, because a value can carry a command as well as a line can. A plain line
-# is a whole document to a YAML parser, so YAML must be a mapping, and JSON an object or an array.
-def _is_data(block: CodeBlock, *, repo_and_probes: str) -> bool:
+# each of its text values, as written or, in a JSON body, as its escapes decode, because a value
+# can carry a command as well as a line can. A plain line is a whole document to a YAML parser, so
+# YAML must be a mapping, and JSON an object or an array.
+def _is_data(block: CodeBlock, *, commands: _KnownCommands) -> bool:
     try:
         parsed = _parsed(block)
         values = list(_text_values(parsed))
     except (ValueError, RecursionError, yaml.YAMLError):
         return False
-    return parsed is not None and all(value in repo_and_probes for value in values)
+    return parsed is not None and all(commands.grounds_value(value) for value in values)
 
 
 def _parsed(block: CodeBlock) -> object:

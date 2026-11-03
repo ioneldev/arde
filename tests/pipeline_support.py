@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from json_shape_support import shape_or_unknown
 from recording_tracer import RecordingTracer
 from scripted_model import calling, tool_call
 
@@ -30,6 +31,7 @@ from arde.application.ports import (
     CheckResult,
     EditCheckRequest,
     HttpRequest,
+    JsonShape,
     LLMResponse,
     QuoteContent,
     RenderManifest,
@@ -215,6 +217,9 @@ class FakeAdapter:
 
     def http_status(self, written: str) -> int | None:
         return int(written) if written.isdigit() else None
+
+    def json_shape(self, declared_type: str) -> JsonShape:
+        return shape_or_unknown(declared_type)
 
     def tool_versions(self) -> dict[str, str]:
         return {"compiler": "1.2.3", "helper": "sha256:abc"}

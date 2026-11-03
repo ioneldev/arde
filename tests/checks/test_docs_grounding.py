@@ -340,6 +340,40 @@ def test_data_whose_values_a_probe_body_holds_is_data(tmp_path: Path) -> None:
     assert grounding(tmp_path, {"api.md": docs}, probes=(probe,)) == []
 
 
+# A JSON body may write a character as an escape, as an encoder writes a quote or an &, and the
+# value of a block of data is the text the escape stands for.
+def test_data_whose_values_a_probe_body_holds_as_escapes_is_data(tmp_path: Path) -> None:
+    probe = ProbeRecord(
+        kind="probe",
+        method="GET",
+        path_and_query="/things/1",
+        status=200,
+        content_type="application/json",
+        body='{"label":"a \\"blue\\" widget \\u0026 a box"}',
+    )
+    docs = a_block('{"label": "a \\"blue\\" widget \\u0026 a box"}', language="json")
+
+    assert grounding(tmp_path, {"api.md": docs}, probes=(probe,)) == []
+
+
+def test_data_whose_value_only_a_key_of_a_probe_body_holds_is_read_as_commands(
+    tmp_path: Path,
+) -> None:
+    probe = ProbeRecord(
+        kind="probe",
+        method="GET",
+        path_and_query="/things/1",
+        status=200,
+        content_type="application/json",
+        body='{"rm -rf \\u002f":1}',
+    )
+    docs = a_block('{"run": "rm -rf /"}', language="json")
+
+    found = grounding(tmp_path, {"api.md": docs}, probes=(probe,))
+
+    assert 'docs/api.md: {"run": "rm -rf /"}' in subjects(found)
+
+
 @pytest.mark.parametrize(
     ("language", "lines"),
     [
