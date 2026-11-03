@@ -49,6 +49,19 @@ def test_a_control_character_is_shown_and_never_passed_on(raw: str, shown: str) 
     assert visible_text(raw) == shown
 
 
+@pytest.mark.parametrize(
+    "character",
+    [chr(code) for code in (0x2028, 0x2029, *range(0x202A, 0x202F), *range(0x2066, 0x206A))],
+)
+def test_a_unicode_separator_or_direction_control_is_shown_and_never_passed_on(
+    character: str,
+) -> None:
+    shown = f"\\u{ord(character):04x}"
+
+    assert visible_text(f"ok {character}evil") == f"ok {shown}evil"
+    assert bounded_text(f"ok {character}evil", 100) == f"ok {shown}evil"
+
+
 def test_the_limit_holds_after_control_characters_grow_into_escapes() -> None:
     kept = bounded_text("\x1b" * 5000, 2000)
 
