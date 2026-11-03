@@ -6,6 +6,7 @@ type item struct {
 	sku        string
 	title      string
 	priceCents int64
+	traits     any
 }
 
 type server struct {
@@ -15,8 +16,8 @@ type server struct {
 // NewHandler returns the shop's routes over a fixed in-memory price list.
 func NewHandler() http.Handler {
 	s := &server{items: []item{
-		{sku: "tea-100", title: "Tea, 100 g", priceCents: 450},
-		{sku: "mug-blue", title: "Blue mug", priceCents: 1200},
+		{sku: "tea-100", title: "Tea, 100 g", priceCents: 450, traits: LeafTraits{Grams: 100}},
+		{sku: "mug-blue", title: "Blue mug", priceCents: 1200, traits: CupTraits{Millilitres: 350}},
 	}}
 	app := router{mux: http.NewServeMux()}
 	app.handle("GET /{$}", s.listing)

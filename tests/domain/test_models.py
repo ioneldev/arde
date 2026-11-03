@@ -326,6 +326,38 @@ def test_a_rejected_name_says_what_to_use_instead(field: str, value: str, instru
         RENDERED_FIELDS[field](value)
 
 
+# A param's choices and default are written inside an attribute's parentheses, as in default(1),
+# where a parenthesis would end the value or open another attribute and a comma splits choices.
+ATTRIBUTE_VALUES: dict[str, Callable[[str], object]] = {
+    "param enum value": lambda value: a_param(enum=("ok", value)),
+    "param default": lambda value: a_param(default=value),
+}
+
+
+@pytest.mark.parametrize("value", ["1) maximum(5", "(1", "1)", "a,b", ""])
+@pytest.mark.parametrize("build", ATTRIBUTE_VALUES.values(), ids=ATTRIBUTE_VALUES.keys())
+def test_an_attribute_value_refuses_a_parenthesis_a_comma_or_nothing(
+    build: Callable[[str], object], value: str
+) -> None:
+    with pytest.raises(ValidationError, match="no parenthesis and no comma"):
+        build(value)
+
+
+@pytest.mark.parametrize("value", ["RON", "page size", "-1", "a.b"])
+@pytest.mark.parametrize("build", ATTRIBUTE_VALUES.values(), ids=ATTRIBUTE_VALUES.keys())
+def test_an_attribute_value_without_them_is_accepted(
+    build: Callable[[str], object], value: str
+) -> None:
+    build(value)
+
+
+# The description goes between quotes that must hold something, or the annotation is refused.
+@pytest.mark.parametrize("description", ["", " "])
+def test_a_param_description_cannot_be_blank(description: str) -> None:
+    with pytest.raises(ValidationError, match="at least one visible character"):
+        a_param(description=description)
+
+
 def test_a_stored_wiki_edited_to_hold_a_line_break_is_rejected_on_load() -> None:
     stored = a_wiki().model_dump(mode="json")
     stored["facts"][1]["description"] = "Display name\n//go:debug httpmuxgo121=1"

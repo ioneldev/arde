@@ -38,5 +38,6 @@ func (s *server) quote(w http.ResponseWriter, r *http.Request) {
 		Pieces:      pieces,
 		ChargeCents: pricing.Charge(entry.priceCents, pieces),
 		Details:     map[string]string{"vat": "included"},
+		Traits:      entry.traits,
 	})
 }

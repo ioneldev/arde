@@ -10,9 +10,9 @@ from pydantic import AfterValidator, BaseModel, Field
 
 from arde.application.models_config import RoleConfig
 from arde.application.probe_log import ProbeLog
-from arde.domain.base import CodeIdentifier, Frozen
+from arde.domain.base import CodeIdentifier, Frozen, MainFile, SingleLine
 from arde.domain.errors import ArdeError
-from arde.domain.facts import ProbeRecord
+from arde.domain.facts import ProbeRecord, Wiki
 from arde.domain.inventory import Inventory, Route
 from arde.domain.profile import RepoProfile
 from arde.domain.report import ExitCode
@@ -184,6 +184,52 @@ class RouteHashes(Frozen):
     unhashed: dict[str, UnhashedReason]
 
 
+# Rendering. A later run renders the same repo again, so the render says what it wrote, for that
+# run to replace, and what it changed, for the checks to tell its lines from anyone else's.
+
+
+class RenderManifest(Frozen):
+    """The comment lines ARDE wrote, by file from the repo root, without their indentation.
+
+    The pipeline keeps it between runs, because a comment written above a field carries no mark
+    that tells it from one a person wrote.
+    """
+
+    lines: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+
+
+class RenderRequest(Frozen):
+    repo: Path
+    wiki: Wiki
+    inventory: Inventory
+    # What the last run wrote, which this one removes before it writes.
+    manifest: RenderManifest
+    # The file that holds the service's entry point, where the API's own annotations go.
+    main_file: MainFile
+    title: SingleLine
+
+
+class RenderResult(Frozen):
+    """What the render changed, measured on each file by comparing it before and after.
+
+    Lines are compared with their spacing collapsed, so a line that only moved or was realigned
+    counts as unchanged.
+    """
+
+    # By file, every comment line the file gained.
+    added_lines: dict[str, tuple[str, ...]]
+    # By file, every line of code the file gained. ARDE changes code only by setting its own tags
+    # on fields, so each is a field's line with its new tag.
+    tag_changes: dict[str, tuple[str, ...]]
+    changed_files: tuple[str, ...]
+
+
+class RenderOutcome(Frozen):
+    result: RenderResult
+    # What this run wrote, for the next run to remove.
+    manifest: RenderManifest
+
+
 class LanguageAdapter(Protocol):
     """Everything ARDE knows about one language. Each method holds an idiom of that language.
 
@@ -230,6 +276,16 @@ class LanguageAdapter(Protocol):
         """A hash per route, by Route.key, and the reason for each route that has none.
 
         The caller counts a route with no hash as changed.
+        """
+        ...
+
+    def render_annotations(self, request: RenderRequest) -> RenderOutcome:
+        """Writes into the repo the annotations and tags that the wiki and the inventory call for.
+
+        It first removes what the last run wrote, so rendering the same facts again changes
+        nothing, and an annotation whose fact is gone goes with it. A route whose handler has no
+        single function to carry an annotation gets none. Only ordinary comment lines and the
+        language's allowed tags are added.
         """
         ...
 

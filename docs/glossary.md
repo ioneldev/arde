@@ -14,6 +14,8 @@ Terms as ARDE uses them.
 
 **Inventory**: The routes, params, error codes, response fields, env vars and make targets that code extracts from the source using the profile's patterns. It is computed on every run and never stored, so an agent cannot invent an item that is not in it. A call that matched a pattern but gave nothing is listed in its `dropped` lines: an argument was missing, empty or not a string literal, the call lies outside `main_package`, or it registers a route in a file this build leaves out. So a missing item can be told from a call that was never found.
 
+**Manifest**: The comment lines ARDE wrote into the repo on the last run, by file. A comment above a field carries no mark that tells it from a person's, so the next render removes the lines the manifest lists before it writes again.
+
 **Profile**: What discovery learns about how to build, run and read one repo: the main package, the port variable, the main file for `swag`, and the patterns that find routes, params and error codes. It is stored, reused, and re-validated on every run.
 
 **Snapshot**: The tree as it stood after the last successful run, including the agent's edits. The next run compares the new copy against it.

@@ -126,7 +126,7 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
             path="/",
             handler="s.listing",
             file="web/server.go",
-            line=22,
+            line=23,
             handler_id="(*example.com/shop/web.server).listing",
             handler_file="web/handlers.go",
             handler_line=12,
@@ -140,7 +140,7 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
             path="/items/{sku}",
             handler="s.quote",
             file="web/server.go",
-            line=23,
+            line=24,
             handler_id="(*example.com/shop/web.server).quote",
             handler_file="web/handlers.go",
             handler_line=20,
@@ -157,15 +157,18 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
     assert inventory.dropped == ()
     assert inventory.unmatched_patterns == ()
     assert inventory.response_fields == (
+        field("CupTraits", "Millilitres", json_name="millilitres", declared_type="int"),
         field("ItemView", "PriceCents", json_name="price_cents", declared_type="int64"),
         field("ItemView", "SKU", json_name="sku", declared_type="string"),
         field("ItemView", "Title", json_name="title", declared_type="string"),
+        field("LeafTraits", "Grams", json_name="grams", declared_type="int"),
         field("Listing", "Items", json_name="items", declared_type="[]ItemView"),
         field("Quote", "ChargeCents", json_name="charge_cents", declared_type="int64"),
         field("Quote", "Details", json_name="details", declared_type="any"),
         field("Quote", "Note", json_name="note", declared_type="string", may_be_absent=True),
         field("Quote", "Pieces", json_name="pieces", declared_type="int"),
         field("Quote", "SKU", json_name="sku", declared_type="string"),
+        field("Quote", "Traits", json_name="traits", declared_type="any"),
         field("Stamp", "IssuedBy", json_name="issued_by", declared_type="string"),
         field("problem", "Code", json_name="code", declared_type="string", file="web/failures.go"),
     )

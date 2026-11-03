@@ -153,6 +153,23 @@ ParamName = Annotated[
     ),
 ]
 
+# Text written between quotes that must hold something, such as a parameter's description.
+NonBlankLine = Annotated[
+    SingleLine,
+    _matching(r".*\S.*", "a description with at least one visible character"),
+]
+
+# A value written inside the parentheses of an annotation's attribute, such as a default or one
+# of a list of choices. A parenthesis would end it early or open another attribute, and a comma
+# would split one choice into two. No escape exists for either, so such a value is refused.
+AttributeValue = Annotated[
+    SingleLine,
+    _matching(
+        r"[^(),]+",
+        "a value with no parenthesis and no comma: leave out a default or a choice that needs one",
+    ),
+]
+
 
 # A backslash counts as a separator: the host decides what the path means, and code that joins
 # this text to a root must not need to know which host it is on.

@@ -14,3 +14,6 @@ CHECK_OUTPUT_LIMIT = OutputLimit(max_bytes=1024 * 1024, when_longer="keep_tail")
 # Every line a test prints becomes an event of a few hundred bytes, whether it passed or not, so
 # this stream runs far past the text a reader gets from it. A cut one is refused by the caller.
 TEST_EVENTS_LIMIT = OutputLimit(max_bytes=64 * 1024 * 1024, when_longer="keep_tail")
+
+# gofmt prints the whole file it lays out, and half of one is of no use.
+GOFMT_OUTPUT_LIMIT = OutputLimit(max_bytes=64 * 1024 * 1024, when_longer="fail")
