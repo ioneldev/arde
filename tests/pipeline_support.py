@@ -213,6 +213,9 @@ class FakeAdapter:
     def quote_content(self, quote: SourceQuote) -> QuoteContent:
         return "code"
 
+    def http_status(self, written: str) -> int | None:
+        return int(written) if written.isdigit() else None
+
     def tool_versions(self) -> dict[str, str]:
         return {"compiler": "1.2.3", "helper": "sha256:abc"}
 

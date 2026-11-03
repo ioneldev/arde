@@ -384,6 +384,12 @@ class LanguageAdapter(Protocol):
         """
         ...
 
+    def http_status(self, written: str) -> int | None:
+        """The HTTP status an error code's status stands for, given as the inventory holds it,
+        the text the source writes. None when that text alone does not say, as with a variable.
+        """
+        ...
+
     def tool_versions(self) -> dict[str, str]:
         """The version of each tool the adapter runs, by name, for the trace to record."""
         ...

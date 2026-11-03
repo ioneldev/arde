@@ -42,7 +42,7 @@ Every fact needs evidence, of two kinds.
 - A code quote: a file path from the repository root, and text copied from that file. Code checks that the text is in the file, and reads a run of spaces, tabs and line breaks as one space. A quote counts only if it holds code. A quote that is only a comment, or only the text inside one string literal, is refused, because anyone can write anything there. Quote the code that does the thing, with a comment beside it if that helps. Documentation and configuration files are not code.
 - A probe citation: the method, and the path with its query, of a probe you made in this run, exactly as you sent it. Code copies the recorded response into the wiki, so never retype a response.
 
-Each response status of an endpoint fact must be returned by a probe the fact cites, or be backed by code the fact quotes. An error code listed in a response needs a cited probe that returned that status with the code in its body, or an unreachable fact for the code. An unreachable fact needs a code quote that shows why no request reaches the code.
+Each response status of an endpoint fact must be returned by a probe the fact cites. A code quote backs no status. An error status no request can reach, such as a 500, is backed instead when the response lists an error code that the inventory gives that same status. An error code listed in a response needs a cited probe that returned that status with the code in its body, or an unreachable fact for the code. An unreachable fact needs a code quote that shows why no request reaches the code.
 
 ## Links
 

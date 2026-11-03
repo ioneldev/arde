@@ -43,6 +43,7 @@ from arde.domain.facts import (
     PolymorphicFact,
     ProbeCitation,
     ProbeRecord,
+    ResponseFact,
     UnreachableFact,
     Wiki,
 )
@@ -52,6 +53,7 @@ from arde.domain.inventory import Inventory, ResponseField, Route
 QUOTED_BYTES_LIMIT = 1024 * 1024
 
 GapNote = Annotated[SingleLine, Field(max_length=500)]
+ERROR_STATUS_FLOOR = 400
 
 
 class FactBatch(Frozen):
@@ -355,8 +357,8 @@ class _Check:
                     f"path param named {name}"
                 )
 
+    # A code quote backs no status: one quote anywhere in the fact would back any status at all.
     def _response_problems(self, fact: EndpointFact) -> Iterator[str]:
-        quotes_code = any(isinstance(evidence, CodeQuote) for evidence in fact.evidence)
         cited = [
             record
             for evidence in fact.evidence
@@ -366,11 +368,8 @@ class _Check:
         for response in fact.responses:
             status = response.status
             shown = [record for record in cited if record.status == status]
-            if not shown and not quotes_code:
-                yield (
-                    f"response {status} is shown by no cited probe, and the fact quotes no code: "
-                    f"cite a probe that returned {status}, or quote the code that sends it"
-                )
+            if not shown and not self._sent_with_a_listed_code(response):
+                yield _unbacked_status(status)
             for code in response.error_codes:
                 yield from self._error_code_problems(code, status=status, shown=shown)
             if not self._names_a_reply_struct(response.declared_type, bare_is_known=True):
@@ -379,6 +378,15 @@ class _Check:
                     "the service replies with: name one of the inventory's structs, with its "
                     "package"
                 )
+
+    # A status no request reaches, such as a 500, can be shown by no probe. The code names the
+    # status it sends with each error code, so that status backs a response that lists the code.
+    def _sent_with_a_listed_code(self, response: ResponseFact) -> bool:
+        return response.status >= ERROR_STATUS_FLOOR and any(
+            error.code in response.error_codes
+            and self.ctx.language.http_status(error.status) == response.status
+            for error in self.ctx.inventory.error_codes
+        )
 
     def _error_code_problems(
         self, code: str, *, status: int, shown: list[ProbeRecord]
@@ -438,6 +446,19 @@ class _Check:
                 f"says error code {code} cannot be reached and quotes no code: quote the code "
                 "that shows no request reaches it"
             )
+
+
+def _unbacked_status(status: int) -> str:
+    if status < ERROR_STATUS_FLOOR:
+        return (
+            f"response {status} is returned by no probe the fact cites: call http_probe with a "
+            f"request that gets {status}, then cite that probe"
+        )
+    return (
+        f"response {status} is returned by no probe the fact cites, and lists no error code the "
+        f"code sends with {status}: cite a probe that returned {status}, or list the inventory's "
+        f"error code that the code sends with {status}"
+    )
 
 
 # Bounded by characters that cannot be part of a code, so bad_pieces does not show bad.

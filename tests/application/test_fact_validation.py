@@ -380,20 +380,56 @@ def test_an_altered_status_is_rejected() -> None:
     assert "response 404 lists error code unknown_sku, and no cited probe returned 404" in problems
 
 
-def test_a_status_no_probe_returned_needs_a_code_quote() -> None:
+def test_a_status_no_cited_probe_returned_is_refused() -> None:
     probes_only = an_endpoint(
-        evidence=(cite(TEA),), responses=(a_response(), a_response(status=500))
+        evidence=(cite(TEA),), responses=(a_response(), a_response(status=201))
     )
 
     problems = problems_of(probes_only)
 
-    assert "response 500 is shown by no cited probe, and the fact quotes no code" in problems
+    assert "response 201 is returned by no probe the fact cites: call http_probe" in problems
 
 
-def test_a_status_with_a_code_quote_needs_no_probe() -> None:
-    quoted = an_endpoint(responses=(a_response(), NOT_FOUND, a_response(status=500)))
+# Measured in review: an invented 503 on the health route passed, because one quote of the
+# handler's first line backed every status the fact listed.
+def test_a_code_quote_backs_no_status() -> None:
+    first_line = quote("func (s *server) listing(w http.ResponseWriter, _ *http.Request) {")
+    invented = the_listing(
+        evidence=(first_line, cite(LISTING)),
+        responses=(
+            a_response(declared_type="web.Listing", description="The items"),
+            a_response(
+                status=503,
+                declared_type="web.problem",
+                description="The store is down; retry after the Retry-After header.",
+            ),
+        ),
+    )
 
-    assert problems_of(quoted) == ""
+    problems = problems_of(invented)
+
+    assert "response 503 is returned by no probe the fact cites" in problems
+    assert "response 200" not in problems
+
+
+# A status no request reaches, such as a 500, can be shown by no probe, and the code names the
+# status it sends with each error code.
+def test_an_error_status_the_code_sends_with_a_listed_code_needs_no_probe() -> None:
+    unprobed = an_endpoint(responses=(a_response(), NOT_FOUND, BAD_REQUEST))
+
+    assert problems_of(unprobed, an_unreachable()) == ""
+
+
+def test_a_listed_code_backs_only_the_status_the_code_sends_it_with() -> None:
+    conflict = BAD_REQUEST.model_copy(update={"status": 409})
+    unprobed = an_endpoint(responses=(a_response(), NOT_FOUND, conflict))
+
+    problems = problems_of(unprobed, an_unreachable())
+
+    assert (
+        "response 409 is returned by no probe the fact cites, and lists no error code the code "
+        "sends with 409"
+    ) in problems
 
 
 # Evidence and links

@@ -40,8 +40,9 @@ from arde.domain.findings import Finding
 from arde.domain.report import ExitCode, RunReport
 
 THINGS_CODE = CodeQuote(kind="code", file="main.go", quote="func things() {}")
-# Nothing it cites was probed, so the live contract has no request to start from.
-UNPROBED_THINGS = THINGS_FACT.model_copy(update={"evidence": (THINGS_CODE,)})
+# Nothing it cites was probed, so the live contract has no request to start from. It lists no
+# response, because a code quote backs no status.
+UNPROBED_THINGS = THINGS_FACT.model_copy(update={"evidence": (THINGS_CODE,), "responses": ()})
 UNKNOWN_ADDRESS = "https://unknown.example/rules"
 CODE_FINDING = Finding(
     check="agent_edits", owner="code", subject="main.go", message="m", next_action="n"
