@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from json_shape_support import shape_or_unknown
 from recording_tracer import RecordingTracer
 
 from arde.adapters.llm.fake import FakeLLM
@@ -28,7 +29,7 @@ from arde.application.agents.docs_writer import (
 from arde.application.budget import Budget
 from arde.application.models_config import RoleConfig
 from arde.application.pipeline_deps import PipelineDeps
-from arde.application.ports import LLMResponse, ToolCall
+from arde.application.ports import JsonShape, LLMResponse, ToolCall
 from arde.application.reference_tables import api_reference, error_table
 from arde.application.repair import REPAIR_HEADING
 from arde.application.section_store import save_sections
@@ -138,6 +139,13 @@ class Untouched:
 UNTOUCHED: Any = Untouched()
 
 
+class JsonShapesOnly(Untouched):
+    """The language adapter, of which the docs writer may ask only what a type is in JSON."""
+
+    def json_shape(self, declared_type: str) -> JsonShape:
+        return shape_or_unknown(declared_type)
+
+
 @dataclass
 class Scripted:
     llm: FakeLLM
@@ -149,7 +157,7 @@ def scripted(tmp_path: Path, *replies: LLMResponse, config: RoleConfig = DOCS_CO
     llm = FakeLLM(list(replies))
     tracer = RecordingTracer()
     deps = PipelineDeps(
-        adapter=UNTOUCHED,
+        adapter=JsonShapesOnly(),
         agents=AgentDeps(client=llm, tracer=tracer, budget=Budget(max_usd=10.0)),
         models={"docs": config},
         store=Workspace(tmp_path / "home", "repo"),
@@ -428,7 +436,7 @@ def test_every_section_with_facts_is_written_and_the_api_page_by_code(tmp_path: 
     assert len(run.llm.requests) == len(WRITTEN_TOPICS)
     api_page = (repo / "docs" / "api.md").read_text(encoding="utf-8")
     assert api_page.startswith(f"{GENERATED_MARKER}\n\n# API reference\n\n")
-    assert api_reference(WIKI, EMPTY_INVENTORY) in api_page
+    assert api_reference(WIKI, EMPTY_INVENTORY, json_shape=shape_or_unknown) in api_page
 
 
 def test_a_section_records_its_own_facts_with_those_it_used(tmp_path: Path) -> None:

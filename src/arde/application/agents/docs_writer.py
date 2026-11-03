@@ -204,7 +204,8 @@ def write_docs(request: DocsRequest, deps: PipelineDeps) -> DocsResult:
         )
         for topic in to_write
     ]
-    pages: dict[Topic, str] = {"api": _page("api", api_reference(request.wiki, request.inventory))}
+    reference = api_reference(request.wiki, request.inventory, json_shape=deps.adapter.json_shape)
+    pages: dict[Topic, str] = {"api": _page("api", reference)}
     pages.update({result.topic: result.text for result in results})
     changed = [
         *_write_pages(request.repo, pages),
