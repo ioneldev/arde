@@ -112,6 +112,9 @@ class RouteSite(CallMatch):
     handler_identity: str
     # A hash of the constants the handler holds, such as the 5 in paged(5, h), or "" for none.
     constants_hash: str
+    # The handler is its anchor's name or a method value of it, through conversions only, with no
+    # other root and no constant, so it is the anchor's own code at this path.
+    handler_is_the_anchor_alone: bool
 
 
 class SourcePlace(Frozen):

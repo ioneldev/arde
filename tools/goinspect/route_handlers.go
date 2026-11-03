@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"hash"
 	"io"
 	"slices"
 )
@@ -34,6 +35,9 @@ type handlerReading struct {
 	// constants is a hash of the constants the handler holds, or empty when it holds none or has
 	// no roots, and so no hash for them to join.
 	constants string
+	// namesTheAnchor is true when the handler is the anchor's name or a method value of it, through
+	// conversions only, and the registration hands it nothing else.
+	namesTheAnchor bool
 }
 
 // handlerReader follows a registration's handler through what the type checker knows.
@@ -91,7 +95,33 @@ func (reader handlerReader) read(registered registration) handlerReading {
 	}
 	reading.roots = reader.rootsOf(registered, reading.anchor.function)
 	reading.constants = held.constants
+	reading.namesTheAnchor = reader.namesTheAnchor(registered, reading.anchor.function)
 	return reading
+}
+
+// namesTheAnchor reads listItems, http.HandlerFunc(listItems) and s.items as the anchor's name.
+func (reader handlerReader) namesTheAnchor(registered registration, anchor *types.Func) bool {
+	if len(registered.others) > 0 {
+		return false
+	}
+	named := reader.withoutConversions(registered.handlerExpression())
+	switch named.(type) {
+	case *ast.Ident, *ast.SelectorExpr:
+		function := reader.functionNamedBy(named)
+		return function != nil && functionID(function) == functionID(anchor)
+	}
+	return false
+}
+
+func (reader handlerReader) withoutConversions(expression ast.Expr) ast.Expr {
+	expression = ast.Unparen(expression)
+	for {
+		conversion, isCall := expression.(*ast.CallExpr)
+		if !isCall || len(conversion.Args) != 1 || !reader.info.Types[conversion.Fun].IsType() {
+			return expression
+		}
+		expression = ast.Unparen(conversion.Args[0])
+	}
 }
 
 // rootsOf is every function of the module the registration's parts name, beside the ones given,
@@ -142,39 +172,78 @@ func (reader handlerReader) middlewareVariableBehind(innermost ast.Expr) (ast.Ex
 // heldByAHandler is what a handler holds. Its identity tells handlers apart by that and not by how
 // they are written: each function by its id, each variable by where it is declared and each
 // constant by its value, in order. So listItems and http.HandlerFunc(listItems) read the same, and
-// logged(listItems) and logged(listOrders) do not. The constants alone go into the route's hash,
-// because SSA writes them into the code of the function that holds the registration, which no
-// route's hash covers, so paged(5, h) and paged(9, h) would hash the same.
+// logged(listItems) and logged(listOrders) do not. A method value's receiver counts by its type,
+// so s.items reads the same in two methods whose receivers are two variables named s. A receiver
+// of an interface type still counts by its declaration, because two of them can hold any two
+// values. The constants alone go into the route's hash, because SSA writes them into the code of
+// the function that holds the registration, which no route's hash covers, so paged(5, h) and
+// paged(9, h) would hash the same.
 type heldByAHandler struct {
 	identity  string
 	constants string
 }
 
 func (reader handlerReader) heldBy(parts []ast.Expr) heldByAHandler {
-	identity, constants, holdsAConstant := sha256.New(), sha256.New(), false
+	writer := holdingsWriter{reader: reader, identity: sha256.New(), constants: sha256.New()}
 	for _, part := range parts {
-		ast.Inspect(part, func(node ast.Node) bool {
-			expression, isExpression := node.(ast.Expr)
-			if !isExpression {
-				return true
-			}
-			if value := reader.info.Types[expression].Value; value != nil {
-				fmt.Fprintf(identity, "constant %s\x00", value.ExactString())
-				fmt.Fprintf(constants, "%s\x00", value.ExactString())
-				holdsAConstant = true
-				return false
-			}
-			if identifier, isIdentifier := expression.(*ast.Ident); isIdentifier {
-				io.WriteString(identity, reader.identityOfAName(identifier))
-			}
-			return true
-		})
+		writer.write(part, countingVariables)
 	}
-	held := heldByAHandler{identity: hex.EncodeToString(identity.Sum(nil))}
-	if holdsAConstant {
-		held.constants = hex.EncodeToString(constants.Sum(nil))
+	held := heldByAHandler{identity: hex.EncodeToString(writer.identity.Sum(nil))}
+	if writer.holdsAConstant {
+		held.constants = hex.EncodeToString(writer.constants.Sum(nil))
 	}
 	return held
+}
+
+// holdingsWriter feeds what a handler holds to its identity and its constants as it walks it.
+type holdingsWriter struct {
+	reader         handlerReader
+	identity       hash.Hash
+	constants      hash.Hash
+	holdsAConstant bool
+}
+
+// Whether write counts the variables in an expression. A receiver's are skipped, because the
+// receiver counts by its type.
+const (
+	countingVariables = true
+	skippingVariables = false
+)
+
+func (writer *holdingsWriter) write(expression ast.Expr, countsVariables bool) {
+	ast.Inspect(expression, func(node ast.Node) bool {
+		expression, isExpression := node.(ast.Expr)
+		if !isExpression {
+			return true
+		}
+		if value := writer.reader.info.Types[expression].Value; value != nil {
+			fmt.Fprintf(writer.identity, "constant %s\x00", value.ExactString())
+			fmt.Fprintf(writer.constants, "%s\x00", value.ExactString())
+			writer.holdsAConstant = true
+			return false
+		}
+		if selector, isMethodValue := writer.reader.methodValueOnAConcreteType(expression); isMethodValue {
+			fmt.Fprintf(writer.identity, "receiver %s\x00", writer.reader.info.Selections[selector].Recv())
+			io.WriteString(writer.identity, writer.reader.identityOfAName(selector.Sel))
+			writer.write(selector.X, skippingVariables)
+			return false
+		}
+		if identifier, isIdentifier := expression.(*ast.Ident); isIdentifier {
+			if _, isVariable := writer.reader.info.Uses[identifier].(*types.Var); countsVariables || !isVariable {
+				io.WriteString(writer.identity, writer.reader.identityOfAName(identifier))
+			}
+		}
+		return true
+	})
+}
+
+func (reader handlerReader) methodValueOnAConcreteType(expression ast.Expr) (*ast.SelectorExpr, bool) {
+	selector, isSelector := expression.(*ast.SelectorExpr)
+	if !isSelector {
+		return nil, false
+	}
+	selection := reader.info.Selections[selector]
+	return selector, selection != nil && selection.Kind() == types.MethodVal && !types.IsInterface(selection.Recv())
 }
 
 // identityOfAName leaves out a type and a package, which hold no part of the handler.

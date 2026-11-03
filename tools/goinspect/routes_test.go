@@ -25,8 +25,9 @@ type siteOutput struct {
 	HandlerLine *int              `json:"handler_line"`
 	Roots       []string          `json:"roots"`
 	// HandlerIdentity is what the handler holds, whatever its spelling.
-	HandlerIdentity string `json:"handler_identity"`
-	ConstantsHash   string `json:"constants_hash"`
+	HandlerIdentity         string `json:"handler_identity"`
+	ConstantsHash           string `json:"constants_hash"`
+	HandlerIsTheAnchorAlone bool   `json:"handler_is_the_anchor_alone"`
 }
 
 type placeOutput struct {
@@ -2232,6 +2233,121 @@ func main() {
 	for _, pair := range different {
 		if identity[pair[0]] == identity[pair[1]] {
 			t.Errorf("%s and %s: want two identities", pair[0], pair[1])
+		}
+	}
+}
+
+// The reviewer's g3: one method value registered from two methods, whose receivers are two
+// variables of one type, is one handler.
+func TestRoutesCountsAMethodValuesReceiverByItsType(t *testing.T) {
+	source := `package main
+
+import "net/http"
+
+type server struct{ mux *http.ServeMux }
+
+type mirror struct{ mux *http.ServeMux }
+
+func (s *server) items(w http.ResponseWriter, r *http.Request)  {}
+func (s *server) health(w http.ResponseWriter, r *http.Request) {}
+
+func (m *mirror) items(w http.ResponseWriter, r *http.Request) {}
+
+func (s *server) publicRoutes() {
+	s.mux.HandleFunc("GET /items", s.items)
+	s.mux.HandleFunc("GET /healthz", s.health)
+}
+
+func (s *server) v2Routes() {
+	s.mux.HandleFunc("GET /v2/items", s.items)
+}
+
+func registerHealth(mux *http.ServeMux, s *server) {
+	mux.HandleFunc("GET /readyz", s.health)
+}
+
+func main() {
+	s := &server{mux: http.NewServeMux()}
+	m := &mirror{mux: s.mux}
+	s.publicRoutes()
+	s.v2Routes()
+	registerHealth(s.mux, s)
+	s.mux.HandleFunc("GET /mirror", m.items)
+}
+`
+	identity := map[string]string{}
+	for _, site := range sitesOfSource(t, source) {
+		identity[site.Literals["path"]] = site.HandlerIdentity
+	}
+
+	if identity["GET /items"] != identity["GET /v2/items"] || identity["GET /healthz"] != identity["GET /readyz"] {
+		t.Errorf("want one identity for each method value, got %v", identity)
+	}
+	if identity["GET /items"] == identity["GET /healthz"] || identity["GET /items"] == identity["GET /mirror"] {
+		t.Errorf("want two identities for two methods, got %v", identity)
+	}
+}
+
+// Only a handler that is its anchor alone keeps the anchor beside a different handler that
+// shares it, so the site says which it is.
+func TestRoutesSaysWhetherAHandlerIsItsAnchorAlone(t *testing.T) {
+	source := `package main
+
+import "net/http"
+
+type desk struct{}
+
+func (d *desk) list(w http.ResponseWriter, r *http.Request) {}
+
+func logged(next http.HandlerFunc) http.HandlerFunc { return next }
+
+func paged(size int, next http.Handler) http.Handler { return next }
+
+func timed(next http.Handler) http.Handler { return http.TimeoutHandler(next, 1, "slow") }
+
+type apiFunc func(w http.ResponseWriter, r *http.Request) error
+
+func (f apiFunc) ServeHTTP(w http.ResponseWriter, r *http.Request) { _ = f(w, r) }
+
+func (d *desk) failing(w http.ResponseWriter, r *http.Request) error { return nil }
+
+type items struct{}
+
+func (items) ServeHTTP(w http.ResponseWriter, r *http.Request) {}
+
+func main() {
+	d := &desk{}
+	http.HandleFunc("/bare", parcels)
+	http.Handle("/converted", http.HandlerFunc(parcels))
+	http.Handle("/twice-converted", (http.HandlerFunc)(http.HandlerFunc(parcels)))
+	http.HandleFunc("/method-value", d.list)
+	http.HandleFunc("/logged", logged(parcels))
+	http.Handle("/paged", paged(5, http.HandlerFunc(parcels)))
+	http.Handle("/timed-elsewhere", http.TimeoutHandler(http.HandlerFunc(parcels), 1, "slow"))
+	http.Handle("/api", apiFunc(d.failing))
+	http.Handle("/value", items{})
+}
+` + handlerFuncs
+	alone := map[string]bool{}
+	for _, site := range sitesOfSource(t, source) {
+		alone[site.Literals["path"]] = site.HandlerIsTheAnchorAlone
+	}
+
+	want := map[string]bool{
+		"/bare": true, "/converted": true, "/twice-converted": true, "/method-value": true,
+		"/logged": false, "/paged": false, "/timed-elsewhere": false, "/api": false, "/value": false,
+	}
+	if !reflect.DeepEqual(alone, want) {
+		t.Fatalf("got %v, want %v", alone, want)
+	}
+}
+
+func TestRoutesSaysARouteThroughAWrapperIsNotItsAnchorAlone(t *testing.T) {
+	root := writeModule(t, "example.com/depot", map[string]string{"main.go": aWrapperWithAFixedCompanion})
+
+	for _, site := range routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: getOnA}).Sites {
+		if site.HandlerIsTheAnchorAlone {
+			t.Errorf("%s: want a route shaped by the wrapper's code, got its anchor alone", site.Literals["path"])
 		}
 	}
 }

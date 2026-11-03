@@ -443,6 +443,8 @@ func main() {
 """
 
 
+# notFound alone, at /help and /missing, is notFound's own code, so it keeps the anchor beside the
+# two apps that only fall back on it.
 def test_routes_whose_different_handlers_share_an_anchor_get_none_and_name_each_other(
     adapter: GoAdapter, tmp_path: Path
 ) -> None:
@@ -451,11 +453,12 @@ def test_routes_whose_different_handlers_share_an_anchor_get_none_and_name_each_
     assert {key: route.handler_id for key, route in routes.items()} == {
         "GET /": None,
         "GET /admin/": None,
-        "GET /help": None,
-        "GET /missing": None,
+        "GET /help": "example.com/served.notFound",
+        "GET /missing": "example.com/served.notFound",
     }
     assert routes["GET /"].shares_anchor_with == ("GET /admin/", "GET /help", "GET /missing")
     assert routes["GET /admin/"].shares_anchor_with == ("GET /", "GET /help", "GET /missing")
+    assert routes["GET /help"].shares_anchor_with == ()
 
 
 ONE_HANDLER_TWICE = """package main
@@ -646,3 +649,86 @@ def test_an_edit_to_what_fills_a_middleware_variable_moves_the_route_called_thro
     )
 
     assert moved == {"GET /orders2"}
+
+
+# The reviewer's g1 and g3: one handler at several paths, beside a wrapped use of it, and a method
+# value registered from two methods whose receivers are two variables of one type.
+HONEST_SHARING = """package main
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+)
+
+type server struct{ mux *http.ServeMux }
+
+func (s *server) items(w http.ResponseWriter, r *http.Request)  { fmt.Fprint(w, "items") }
+func (s *server) health(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "ok") }
+
+func (s *server) publicRoutes() {
+	s.mux.HandleFunc("GET /items", s.items)
+	s.mux.HandleFunc("GET /healthz", s.health)
+}
+
+func (s *server) v2Routes() {
+	s.mux.HandleFunc("GET /v2/items", s.items)
+}
+
+func registerHealth(mux *http.ServeMux, s *server) {
+	mux.HandleFunc("GET /readyz", s.health)
+}
+
+func requireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func listItems(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "items") }
+
+func main() {
+	s := &server{mux: http.NewServeMux()}
+	s.publicRoutes()
+	s.v2Routes()
+	registerHealth(s.mux, s)
+	s.mux.HandleFunc("GET /list", listItems)
+	s.mux.HandleFunc("GET /v1/list", listItems)
+	s.mux.Handle("GET /admin/list", requireAuth(http.HandlerFunc(listItems)))
+	http.ListenAndServe(":"+os.Getenv("PORT"), s.mux)
+}
+"""
+
+
+def test_a_handler_alone_keeps_its_anchor_beside_a_wrapped_use_of_it(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    routes = routes_by_key(adapter, a_service(tmp_path, HONEST_SHARING))
+
+    shown = {key: (route.handler_id, route.shares_anchor_with) for key, route in routes.items()}
+    assert {key: shown[key] for key in ("GET /list", "GET /v1/list", "GET /admin/list")} == {
+        "GET /list": ("example.com/served.listItems", ()),
+        "GET /v1/list": ("example.com/served.listItems", ()),
+        "GET /admin/list": (None, ("GET /list", "GET /v1/list")),
+    }
+
+
+def test_a_method_value_registered_from_two_methods_keeps_its_anchor(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    routes = routes_by_key(adapter, a_service(tmp_path, HONEST_SHARING))
+
+    shown = {key: (route.handler_id, route.shares_anchor_with) for key, route in routes.items()}
+    items, health = "(*example.com/served.server).items", "(*example.com/served.server).health"
+    assert {
+        key: shown[key] for key in ("GET /items", "GET /v2/items", "GET /healthz", "GET /readyz")
+    } == {
+        "GET /items": (items, ()),
+        "GET /v2/items": (items, ()),
+        "GET /healthz": (health, ()),
+        "GET /readyz": (health, ()),
+    }

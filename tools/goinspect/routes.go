@@ -74,6 +74,10 @@ type routeSite struct {
 	// ConstantsHash is a hash of the constants the handler holds, which the route's fingerprint
 	// covers, or empty when it holds none.
 	ConstantsHash string `json:"constants_hash"`
+	// HandlerIsTheAnchorAlone is true when the handler is the anchor's name or a method value of
+	// it, through conversions only, with no other root and no constant: the anchor's own code at
+	// this path, which keeps the anchor beside a different handler that shares it.
+	HandlerIsTheAnchorAlone bool `json:"handler_is_the_anchor_alone"`
 }
 
 // wrapperCall is a call inside a function that a pattern of the same kind matches. It hands on what
@@ -676,6 +680,7 @@ func (reader routeReader) siteAt(call routeCall, handler handlerReading) routeSi
 		callMatch: reader.matchAt(call), Roots: []string{}, HandlerIdentity: handler.identity, ConstantsHash: handler.constants,
 	}
 	reader.nameTheAnchor(&site, handler)
+	site.HandlerIsTheAnchorAlone = handler.namesTheAnchor && site.HandlerID != nil && len(site.Roots) == 1 && site.ConstantsHash == ""
 	return site
 }
 

@@ -333,10 +333,12 @@ class _ReadRoute(NamedTuple):
     route: Route
     # What the handler holds, so that two spellings of one handler compare equal.
     identity: str
+    # The handler is the anchor's own code at this path, with nothing around it.
+    is_the_anchor_alone: bool
 
     @classmethod
     def of(cls, site: RouteSite) -> "_ReadRoute":
-        return cls(_route_from(site), site.handler_identity)
+        return cls(_route_from(site), site.handler_identity, site.handler_is_the_anchor_alone)
 
 
 # One handler registered twice under one key is one route, at its first place. Two handlers under
@@ -352,28 +354,29 @@ def _one_row_per_route(read: Iterable[_ReadRoute]) -> list[_ReadRoute]:
 
 
 # One comment block on the shared function would merge every such route into one operation in the
-# spec, so when handlers that differ resolve to one anchor, none of them keeps it. One handler at
-# two paths keeps it. The roots stay, because the hash does not need an anchor.
+# spec, so when handlers that differ resolve to one anchor, only the routes whose handler is the
+# anchor alone keep it: they are the anchor's own code, at several paths. Every other route loses
+# it and names the routes whose handler differs from its own. The roots stay, because the hash does
+# not need an anchor.
 def _without_anchors_shared_by_accident(rows: list[_ReadRoute]) -> tuple[Route, ...]:
     by_anchor: dict[str, list[_ReadRoute]] = {}
     for row in rows:
         if row.route.handler_id is not None:
             by_anchor.setdefault(row.route.handler_id, []).append(row)
     return tuple(
-        _without_its_anchor(row, sharing=by_anchor[row.route.handler_id])
-        if row.route.handler_id is not None
-        and _hold_different_handlers(by_anchor[row.route.handler_id])
-        else row.route
+        row.route
+        if row.route.handler_id is None or _keeps_its_anchor(row, by_anchor[row.route.handler_id])
+        else _without_its_anchor(row, sharing=by_anchor[row.route.handler_id])
         for row in rows
     )
 
 
-def _hold_different_handlers(sharing: list[_ReadRoute]) -> bool:
-    return len({row.identity for row in sharing}) > 1
+def _keeps_its_anchor(row: _ReadRoute, sharing: list[_ReadRoute]) -> bool:
+    return row.is_the_anchor_alone or len({other.identity for other in sharing}) == 1
 
 
 def _without_its_anchor(row: _ReadRoute, *, sharing: list[_ReadRoute]) -> Route:
-    others = sorted({other.route.key for other in sharing if other is not row})
+    others = sorted({other.route.key for other in sharing if other.identity != row.identity})
     return row.route.model_copy(
         update={
             "handler_id": None,

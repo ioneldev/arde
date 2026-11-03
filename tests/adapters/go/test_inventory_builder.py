@@ -70,6 +70,7 @@ def a_site(
         roots=(),
         handler_identity="",
         constants_hash="",
+        handler_is_the_anchor_alone=False,
     )
 
 
@@ -322,6 +323,7 @@ def test_a_route_keeps_where_it_is_registered_and_what_resolved_its_handler() ->
         roots=("(*example.com/depot.desk).list", "example.com/depot.logged"),
         handler_identity="3f",
         constants_hash="a" * 64,
+        handler_is_the_anchor_alone=False,
     )
 
     assert routes_of(site) == (
@@ -408,6 +410,53 @@ def test_one_handler_at_two_paths_keeps_its_anchor() -> None:
     assert [(route.handler_id, route.shares_anchor_with) for route in routes] == [
         ("a.notFound", ()),
         ("a.notFound", ()),
+    ]
+
+
+def handled_by_list_items(
+    path: str, *, holding: str, alone: bool, roots: tuple[str, ...], line: int = 1
+) -> RouteSite:
+    site = resolved_site(path, "a.listItems", line=line, roots=roots)
+    return site.model_copy(
+        update={"handler_identity": holding, "handler_is_the_anchor_alone": alone}
+    )
+
+
+# The reviewer's g1: listItems at two paths, and requireAuth(listItems) at a third.
+def test_a_handler_that_is_its_anchor_alone_keeps_it_beside_a_different_one() -> None:
+    routes = routes_of(
+        handled_by_list_items("GET /items", holding="bare", alone=True, roots=("a.listItems",)),
+        handled_by_list_items(
+            "GET /v1/items", holding="bare", alone=True, roots=("a.listItems",), line=2
+        ),
+        handled_by_list_items(
+            "GET /admin/items",
+            holding="guarded",
+            alone=False,
+            roots=("a.listItems", "a.requireAuth"),
+            line=3,
+        ),
+    )
+
+    assert [(route.key, route.handler_id, route.shares_anchor_with) for route in routes] == [
+        ("GET /admin/items", None, ("GET /items", "GET /v1/items")),
+        ("GET /items", "a.listItems", ()),
+        ("GET /v1/items", "a.listItems", ()),
+    ]
+
+
+def test_a_route_that_loses_its_anchor_names_only_the_routes_whose_handler_differs() -> None:
+    roots = ("a.listItems", "a.requireAuth")
+    routes = routes_of(
+        handled_by_list_items("GET /a", holding="guarded", alone=False, roots=roots),
+        handled_by_list_items("GET /b", holding="guarded", alone=False, roots=roots, line=2),
+        handled_by_list_items("GET /c", holding="logged", alone=False, roots=roots, line=3),
+    )
+
+    assert [(route.key, route.handler_id, route.shares_anchor_with) for route in routes] == [
+        ("GET /a", None, ("GET /c",)),
+        ("GET /b", None, ("GET /c",)),
+        ("GET /c", None, ("GET /a", "GET /b")),
     ]
 
 

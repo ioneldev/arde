@@ -60,9 +60,9 @@ class Route(Frozen):
     # A hash of the constants the handler expression holds, such as the 5 in paged(5, h), or empty
     # when it holds none. The fingerprint covers it, because no root's code holds those constants.
     constants_hash: HashText = ""
-    # The other routes whose different handlers resolve to the function that would be this
-    # route's anchor. One comment block would merge their operations in the spec, so none of
-    # them has a handler_id.
+    # The routes whose handlers differ from this one's and resolve to the function that would be
+    # its anchor. One comment block would merge their operations in the spec, so this route has no
+    # handler_id. Only a route whose handler is the anchor alone keeps it beside them.
     shares_anchor_with: tuple[RouteKeyText, ...] = ()
 
     @property
