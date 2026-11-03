@@ -3,7 +3,7 @@
 Where the work breaks a project rule or convention on purpose, and what that costs. The source of truth is the [Deviations section of the design](superpowers/specs/2026-11-01-arde-design.md#deviations). This page is a summary.
 
 - **One-implementation interface.** `LanguageAdapter` has only `GoAdapter`. It was asked for, and it gives fast tests through a fake. The cost is an abstraction with one real use.
-- **Large interface.** `LanguageAdapter` ends with twelve methods, more than interface segregation prefers. Ten exist today, and the other two arrive with the edit checks, each with its implementation. It can split once a second language shows the right seams.
+- **Large interface.** `LanguageAdapter` has fourteen methods, more than interface segregation prefers. Each has an implementation. It can split once a second language shows the right seams.
 - **Library in the domain.** Domain models use Pydantic. This avoids two parallel type systems, and the cost is a dependency in the inner layer.
 - **Two languages.** The Go helper adds a language and a top-level tools directory, because the AST and call-graph libraries exist only in Go.
 - **Pre-release tool.** `swag` v2.0.0-rc6 is the only option found that can describe the polymorphic `Specs` field. It is pinned.
@@ -13,5 +13,6 @@ Where the work breaks a project rule or convention on purpose, and what that cos
 - **Paid evals.** The classifier eval costs a small amount and runs on demand, because agent behaviour cannot be covered by fast unit tests alone.
 - **A fifth `goinspect` command.** The phase spec first listed four. `routes` lists every `net/http` registration through the type checker, because a regex on callee text cannot tell a missed spelling from no route. The cost is that `extract_inventory` now needs a repo that compiles, which the pipeline's baseline checks prove first.
 - **Three positional arguments in two Go functions.** The rule is two. `run(args, stdout, stderr)` in `goinspect` is the usual shape of a testable Go `main`, and `parseWithoutComments` has the signature `packages.Config` asks for. A struct around either would hide a shape every Go reader knows, and the cost is two exceptions to a rule the rest of the code holds.
+- **The docs agent sees findings on a repair.** The design gives it the wiki's facts alone. On a repair its first message also lists the findings the checks raised, so it can correct a page. A finding can quote a page or a reply and name a `file:line` place, though it holds no source code. The cost is a wider view than "facts only".
 
 New deviations go here as the work introduces them, with the reason and the cost.
