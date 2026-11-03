@@ -575,3 +575,74 @@ def test_an_edit_to_a_constant_the_handler_holds_moves_its_route(
     moved = moved_by(adapter, repo, old="paged(5,", new="paged(9,")
 
     assert moved == {"GET /orders"}
+
+
+# The reviewer's c1 and c2: middleware that takes its settings first, and the same held in a local
+# variable.
+CURRIED = """package main
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+)
+
+func requireRole(role string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("X-Role") != role {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func listItems(w http.ResponseWriter, r *http.Request)  { fmt.Fprint(w, "items") }
+func listOrders(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "orders") }
+
+func main() {
+	mux := http.NewServeMux()
+	admin := requireRole("admin")
+	mux.Handle("GET /items", requireRole("admin")(http.HandlerFunc(listItems)))
+	mux.Handle("GET /orders", requireRole("admin")(http.HandlerFunc(listOrders)))
+	mux.Handle("GET /orders2", admin(http.HandlerFunc(listOrders)))
+	http.ListenAndServe(":"+os.Getenv("PORT"), mux)
+}
+"""
+
+
+def test_middleware_a_function_makes_anchors_each_route_at_its_own_handler(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    routes = routes_by_key(adapter, a_service(tmp_path, CURRIED))
+
+    role = "example.com/served.requireRole"
+    assert {key: (route.handler_id, route.roots) for key, route in routes.items()} == {
+        "GET /items": ("example.com/served.listItems", ("example.com/served.listItems", role)),
+        "GET /orders": ("example.com/served.listOrders", ("example.com/served.listOrders", role)),
+        "GET /orders2": (None, ("example.com/served.listOrders", role)),
+    }
+
+
+def test_an_edit_to_middleware_a_function_makes_moves_every_route_it_wraps(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(tmp_path, CURRIED)
+
+    moved = moved_by(adapter, repo, old='"forbidden"', new='"denied"')
+
+    assert moved == {"GET /items", "GET /orders", "GET /orders2"}
+
+
+def test_an_edit_to_what_fills_a_middleware_variable_moves_the_route_called_through_it(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(tmp_path, CURRIED)
+
+    moved = moved_by(
+        adapter, repo, old='admin := requireRole("admin")', new='admin := requireRole("root")'
+    )
+
+    assert moved == {"GET /orders2"}

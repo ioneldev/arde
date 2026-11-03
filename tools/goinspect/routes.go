@@ -59,8 +59,9 @@ type routeRequest struct {
 
 // routeSite is one call that registers a route. Literals holds the path it registers when the
 // compiler knows it, and Args the path and the handler as written. A handler with an anchor reads
-// as the anchor's name. Roots holds the id of every function of the module the handler names, and
-// is empty when there is no anchor.
+// as the anchor's name. Roots holds the id of every function of the module the route's fingerprint
+// covers: the functions the handler names, and the ones a middleware variable it calls was filled
+// with. It is empty when there is no anchor, except for a call through such a variable.
 type routeSite struct {
 	callMatch
 	HandlerID   *string  `json:"handler_id"`
@@ -691,11 +692,13 @@ func (reader routeReader) matchAt(call routeCall) callMatch {
 }
 
 // nameTheAnchor leaves a function with no place in the repo unnamed, because it has no declaration
-// a comment could go on and nothing of the repo's to hash. A route with no anchor has no roots
-// either, because a hash of some of its code would not move for an edit to the rest.
+// a comment could go on and nothing of the repo's to hash, and then the route has no roots either,
+// because a hash of the rest of its code would not move for an edit to the anchor. A handler read
+// with roots and no anchor, as one called through a middleware variable is, keeps its roots.
 func (reader routeReader) nameTheAnchor(site *routeSite, handler handlerReading) {
 	anchor := handler.anchor
 	if anchor.function == nil {
+		site.Roots = reader.idsInTheRepo(handler.roots)
 		return
 	}
 	place, isInTheRepo := reader.service.placeOf(anchor.function.Pos())
@@ -705,11 +708,17 @@ func (reader routeReader) nameTheAnchor(site *routeSite, handler handlerReading)
 	id := functionID(anchor.function)
 	site.Args["handler"] = reader.service.printerSource().textOf(anchor.name)
 	site.HandlerID, site.HandlerFile, site.HandlerLine = &id, &place.File, &place.Line
-	for _, root := range handler.roots {
-		if _, isInTheRepo := reader.service.placeOf(root.Pos()); isInTheRepo {
-			site.Roots = append(site.Roots, functionID(root))
+	site.Roots = reader.idsInTheRepo(handler.roots)
+}
+
+func (reader routeReader) idsInTheRepo(functions []*types.Func) []string {
+	ids := []string{}
+	for _, function := range functions {
+		if _, isInTheRepo := reader.service.placeOf(function.Pos()); isInTheRepo {
+			ids = append(ids, functionID(function))
 		}
 	}
+	return ids
 }
 
 // functionID names one function exactly, across packages. fingerprints finds a root by this text.

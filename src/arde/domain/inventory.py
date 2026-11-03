@@ -54,7 +54,8 @@ class Route(Frozen):
     handler_line: int | None = None
     # Every function of the service the handler expression names, handler_id among them: the
     # factory, the middleware and a function handed over as a value. The fingerprint covers them
-    # all. Empty when no function fits, and kept when the anchor is shared.
+    # all. Empty when no function fits. Kept when the anchor is shared, and present with no anchor
+    # for a handler called through a middleware variable that nothing writes again.
     roots: tuple[FunctionText, ...] = ()
     # A hash of the constants the handler expression holds, such as the 5 in paged(5, h), or empty
     # when it holds none. The fingerprint covers it, because no root's code holds those constants.

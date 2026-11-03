@@ -390,6 +390,8 @@ func main() {
 	local := http.HandlerFunc(parcels)
 	_ = local
 	wrap := logged
+	// Written again, so a call through wrap could reach anything.
+	wrap = logged
 	_ = wrap
 	http.HandleFunc("/x", ` + argument + `)
 }
@@ -2131,6 +2133,69 @@ func main() {
 
 // Two routes that share an anchor share their docs, so the handlers must be told apart by what
 // they hold: the functions they name, the variables they read and the constants they pass.
+// The reviewer's c1 and c2: middleware that takes its settings first, as requireRole("admin")(h),
+// cors(opts)(h) and rateLimit(n)(h) do.
+const curriedMiddleware = `package main
+
+import "net/http"
+
+func requireRole(role string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("X-Role") != role {
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func page(title string) func(http.Handler) http.Handler {
+	return func(http.Handler) http.Handler { return http.NotFoundHandler() }
+}
+
+func listItems(w http.ResponseWriter, r *http.Request) {}
+
+func listOrders(w http.ResponseWriter, r *http.Request) {}
+
+func main() {
+	mux := http.NewServeMux()
+	admin := requireRole("admin")
+	reader := requireRole("reader")
+	reader = requireRole("writer")
+	mux.Handle("GET /items", requireRole("admin")(http.HandlerFunc(listItems)))
+	mux.Handle("GET /page", page("home")(http.HandlerFunc(listItems)))
+	mux.Handle("GET /orders", admin(http.HandlerFunc(listOrders)))
+	mux.Handle("GET /drafts", reader(http.HandlerFunc(listOrders)))
+}
+`
+
+func TestRoutesPeelsMiddlewareThatAFunctionOfTheModuleMakes(t *testing.T) {
+	sites := sitesOfSource(t, curriedMiddleware)
+
+	type reading struct {
+		anchor string
+		roots  []string
+	}
+	got := map[string]reading{}
+	for _, site := range sites {
+		anchor := ""
+		if site.HandlerID != nil {
+			anchor = *site.HandlerID
+		}
+		got[site.Literals["path"]] = reading{anchor: anchor, roots: site.Roots}
+	}
+	want := map[string]reading{
+		"GET /items":  {"example.com/depot.listItems", []string{"example.com/depot.listItems", "example.com/depot.requireRole"}},
+		"GET /page":   {"example.com/depot.page", []string{"example.com/depot.listItems", "example.com/depot.page"}},
+		"GET /orders": {"", []string{"example.com/depot.listOrders", "example.com/depot.requireRole"}},
+		"GET /drafts": {"", []string{}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
 func TestRoutesGivesTwoSpellingsOfOneHandlerOneIdentity(t *testing.T) {
 	source := `package main
 

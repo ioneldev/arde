@@ -86,15 +86,57 @@ func (reader handlerReader) read(registered registration) handlerReading {
 		return reading
 	}
 	reading.anchor = reader.anchorAt(innermost)
-	if reading.anchor.function != nil {
-		named := []*types.Func{reading.anchor.function}
-		for _, part := range registered.parts() {
-			named = append(named, reader.functionsNamedIn(part)...)
-		}
-		reading.roots = sortedByID(slices.Concat(named, reader.methodsHandedToAnInterface(registered)))
-		reading.constants = held.constants
+	if reading.anchor.function == nil {
+		return reader.calledThroughAVariable(reading, registered, innermost)
+	}
+	reading.roots = reader.rootsOf(registered, reading.anchor.function)
+	reading.constants = held.constants
+	return reading
+}
+
+// rootsOf is every function of the module the registration's parts name, beside the ones given,
+// and every method of each module type they hand to an interface.
+func (reader handlerReader) rootsOf(registered registration, given ...*types.Func) []*types.Func {
+	named := slices.Clone(given)
+	for _, part := range registered.parts() {
+		named = append(named, reader.functionsNamedIn(part)...)
+	}
+	return sortedByID(slices.Concat(named, reader.methodsHandedToAnInterface(registered)))
+}
+
+// calledThroughAVariable gives a handler such as admin(h), after admin := requireRole("admin"), the
+// functions named in the call's arguments and in what filled the variable as roots, and the
+// constants of both, because the variable holds what its initialiser made. It gets no anchor: the
+// docs could belong on the middleware or on the handler it wraps, and nothing here says which. A
+// variable written again could hold anything, so its route keeps no roots and no hash.
+func (reader handlerReader) calledThroughAVariable(reading handlerReading, registered registration, innermost ast.Expr) handlerReading {
+	initialiser, isFilledOnce := reader.middlewareVariableBehind(innermost)
+	if !isFilledOnce {
+		return reading
+	}
+	reading.roots = reader.rootsOf(registered, reader.functionsNamedIn(initialiser)...)
+	if len(reading.roots) > 0 {
+		reading.constants = reader.heldBy(append(registered.parts(), initialiser)).constants
 	}
 	return reading
+}
+
+// middlewareVariableBehind is the initialiser of the local variable that the innermost handler
+// calls with one handler to make one, when nothing writes the variable after its declaration.
+func (reader handlerReader) middlewareVariableBehind(innermost ast.Expr) (ast.Expr, bool) {
+	call, isCall := innermost.(*ast.CallExpr)
+	if !isCall || len(reader.handlerPositionsOf(call)) != 1 || !isHandlerType(reader.info.TypeOf(call)) {
+		return nil, false
+	}
+	name, isName := ast.Unparen(call.Fun).(*ast.Ident)
+	if !isName {
+		return nil, false
+	}
+	variable, isVariable := reader.info.Uses[name].(*types.Var)
+	if !isVariable || variable.Parent() == nil || variable.Parent() == variable.Pkg().Scope() {
+		return nil, false
+	}
+	return reader.bodies.onlyValueOf(variable)
 }
 
 // heldByAHandler is what a handler holds. Its identity tells handlers apart by that and not by how
@@ -148,10 +190,10 @@ func (reader handlerReader) identityOfAName(identifier *ast.Ident) string {
 	return ""
 }
 
-// alsoRootedAt adds functions to the roots of a handler that has an anchor. One with no anchor has
-// no roots, because a hash of some of its code would not move for an edit to the rest.
+// alsoRootedAt adds functions to the roots of a handler that has some. One with none was read as
+// code no hash can cover, and a hash of the added functions alone would not move for an edit to it.
 func (reading handlerReading) alsoRootedAt(functions []*types.Func) handlerReading {
-	if reading.anchor.function != nil {
+	if len(reading.roots) > 0 {
 		reading.roots = sortedByID(slices.Concat(reading.roots, functions))
 	}
 	return reading
@@ -205,15 +247,29 @@ func (reader handlerReader) wrappedBy(call *ast.CallExpr) (ast.Expr, bool) {
 		return call.Args[0], true
 	}
 	positions := reader.handlerPositionsOf(call)
-	target := serviceCall{syntax: call, info: reader.info}.target()
-	if len(positions) != 1 || target == nil {
+	if len(positions) != 1 {
 		return nil, false
 	}
 	wrapped := call.Args[positions[0]]
+	if maker, isCurried := ast.Unparen(call.Fun).(*ast.CallExpr); isCurried {
+		return wrapped, reader.makesMiddleware(maker, positions[0])
+	}
+	target := serviceCall{syntax: call, info: reader.info}.target()
+	if target == nil {
+		return nil, false
+	}
 	if !reader.service.holds(target) {
 		return wrapped, true
 	}
 	return wrapped, reader.bodies.wraps(target, parameterAt(target, positions[0]))
+}
+
+// makesMiddleware is true for a call to a function of the module that returns middleware, such as
+// requireRole("admin") in requireRole("admin")(h): a function that wraps the handler it is given
+// at that position.
+func (reader handlerReader) makesMiddleware(maker *ast.CallExpr, position int) bool {
+	target := serviceCall{syntax: maker, info: reader.info}.target()
+	return target != nil && reader.service.holds(target) && reader.bodies.returnsAWrapper(target, position)
 }
 
 func (reader handlerReader) handlerPositionsOf(call *ast.CallExpr) []int {
@@ -556,7 +612,68 @@ func (service loadedService) functionBodies() functionBodies {
 // these ways reads the same, so the route's docs go on the handler inside.
 func (bodies functionBodies) wraps(function *types.Func, parameter *types.Var) bool {
 	body, isDeclared := bodies[function]
-	if !isDeclared || parameter == nil {
+	return isDeclared && bodies.servesThrough(body, parameter)
+}
+
+// returnsAWrapper is true when the function returns a function literal, or a function of the
+// module, that wraps the handler it is given at that position. Only the function's own returns
+// count: a return inside a literal belongs to that literal.
+func (bodies functionBodies) returnsAWrapper(function *types.Func, position int) bool {
+	body, isDeclared := bodies[function]
+	if !isDeclared {
+		return false
+	}
+	found := false
+	ast.Inspect(body.block, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.ReturnStmt:
+			found = found || slices.ContainsFunc(node.Results, func(result ast.Expr) bool {
+				return bodies.isAWrapperAt(body, result, position)
+			})
+		}
+		return !found
+	})
+	return found
+}
+
+func (bodies functionBodies) isAWrapperAt(body functionBody, returned ast.Expr, position int) bool {
+	switch returned := ast.Unparen(returned).(type) {
+	case *ast.FuncLit:
+		literal := functionBody{block: returned.Body, typedSyntax: body.typedSyntax}
+		return bodies.servesThrough(literal, body.parameterOfALiteralAt(returned, position))
+	case *ast.Ident, *ast.SelectorExpr:
+		named, isFunction := body.info.Uses[nameOf(returned)].(*types.Func)
+		return isFunction && bodies.wraps(named.Origin(), parameterAt(named, position))
+	}
+	return false
+}
+
+// nameOf is the identifier a name or a qualified name ends in.
+func nameOf(name ast.Expr) *ast.Ident {
+	if selector, isSelector := name.(*ast.SelectorExpr); isSelector {
+		return selector.Sel
+	}
+	identifier, _ := name.(*ast.Ident)
+	return identifier
+}
+
+// parameterOfALiteralAt is nil past the end and for a parameter with no name, which no body can use.
+func (syntax typedSyntax) parameterOfALiteralAt(literal *ast.FuncLit, position int) *types.Var {
+	names := []*ast.Ident{}
+	for _, field := range literal.Type.Params.List {
+		names = append(names, field.Names...)
+	}
+	if position >= len(names) {
+		return nil
+	}
+	parameter, _ := syntax.info.Defs[names[position]].(*types.Var)
+	return parameter
+}
+
+func (bodies functionBodies) servesThrough(body functionBody, parameter *types.Var) bool {
+	if parameter == nil {
 		return false
 	}
 	found := false
@@ -630,6 +747,10 @@ func (bodies functionBodies) firstWriteTo(function *types.Func, variables []*typ
 	if !isDeclared {
 		return token.NoPos, false
 	}
+	return body.firstWriteTo(variables)
+}
+
+func (body functionBody) firstWriteTo(variables []*types.Var) (token.Pos, bool) {
 	written := token.NoPos
 	ast.Inspect(body.block, func(node ast.Node) bool {
 		if !written.IsValid() && body.writesTo(node, variables) {
@@ -673,4 +794,66 @@ func (body functionBody) takesTheAddressFor(selector *ast.SelectorExpr, variable
 	_, hasAPointerReceiver := selection.Obj().(*types.Func).Signature().Recv().Type().(*types.Pointer)
 	_, isAPointer := selection.Recv().(*types.Pointer)
 	return hasAPointerReceiver && !isAPointer && body.refersToAny([]ast.Expr{selector.X}, variables)
+}
+
+// onlyValueOf is what a local variable is declared with, when nothing writes it after that, so it
+// holds that value wherever it is read.
+func (bodies functionBodies) onlyValueOf(variable *types.Var) (ast.Expr, bool) {
+	for _, body := range bodies {
+		if body.block.Pos() <= variable.Pos() && variable.Pos() < body.block.End() {
+			initialiser := body.initialiserOf(variable)
+			_, isWritten := body.firstWriteTo([]*types.Var{variable})
+			return initialiser, initialiser != nil && !isWritten
+		}
+	}
+	return nil, false
+}
+
+// initialiserOf reads a short declaration and a var declaration with a value, and nothing else: a
+// parameter, a range variable and a var declared without a value have no initialiser.
+func (body functionBody) initialiserOf(variable *types.Var) ast.Expr {
+	var initialiser ast.Expr
+	ast.Inspect(body.block, func(node ast.Node) bool {
+		if initialiser != nil {
+			return false
+		}
+		switch node := node.(type) {
+		case *ast.AssignStmt:
+			if node.Tok == token.DEFINE {
+				initialiser = body.valueGiven(namesGivenValues{names: node.Lhs, values: node.Rhs}, variable)
+			}
+		case *ast.ValueSpec:
+			names := []ast.Expr{}
+			for _, name := range node.Names {
+				names = append(names, name)
+			}
+			initialiser = body.valueGiven(namesGivenValues{names: names, values: node.Values}, variable)
+		}
+		return true
+	})
+	return initialiser
+}
+
+// namesGivenValues is the names a statement declares and the values it gives them.
+type namesGivenValues struct {
+	names  []ast.Expr
+	values []ast.Expr
+}
+
+// valueGiven is the value the declaration gives the variable: its own, or the one call that gives
+// every name a value.
+func (body functionBody) valueGiven(declared namesGivenValues, variable *types.Var) ast.Expr {
+	for index, name := range declared.names {
+		identifier, isIdentifier := name.(*ast.Ident)
+		if !isIdentifier || body.info.Defs[identifier] != variable {
+			continue
+		}
+		switch len(declared.values) {
+		case len(declared.names):
+			return declared.values[index]
+		case 1:
+			return declared.values[0]
+		}
+	}
+	return nil
 }
