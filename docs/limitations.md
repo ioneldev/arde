@@ -100,6 +100,9 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 - **No detection of critical changes** that alter a project's scope or can damage a service while the tests still pass.
 - **No stored knowledge graph.** It was dropped. Only cross-repo questions such as "which services use this contract?" would reopen it.
 
+- **Routes that change data are documented from code alone.** Explore probes with GET and HEAD only, because a request must not change what the service holds, and the port's type allows no other method. A POST, PUT, PATCH, DELETE or OPTIONS route is found, read and given its params and error responses, but its success response can't be backed: a 2xx needs a probe that returned it. Its spec entry has no success status or reply body, and the live checks never call it.
+- **Request bodies are not in the inventory.** Params come from query, path, form and header readers. A JSON body a client sends, read with `json.NewDecoder(r.Body).Decode`, is not extracted, so the spec doesn't describe it.
+
 ## Discovery and the profile
 
 - **The live route check sends one GET per path, with each wildcard filled with `1`.** `validate_profile` flags a route that answers exactly as a path that cannot exist does: the same status, content type and body. A false alarm is a handler that answers that value the way the service answers a missing path, for example with `http.NotFound`. Also flagged are a root catch-all wildcard that answers every path alike, and a mount's own path, such as `ANY /users/`. `/` is not compared. A route on a mux nothing serves is missed when the 404 body quotes the path that was requested. A route that gives no answer within 10 s is not flagged.
