@@ -259,14 +259,19 @@ func isListedFile(path string, policy walkPolicy) bool {
 }
 
 // resolveDirectory follows a symlinked root, which WalkDir would otherwise report as one
-// non-directory entry and so list as empty.
+// non-directory entry and so list as empty. The result is absolute, because go list answers with
+// absolute paths, and a relative root would share no path with them.
 func resolveDirectory(root string) (string, error) {
 	if root == "" {
 		// filepath.EvalSymlinks turns "" into the current directory, so an unset path variable
 		// on the caller's side would report the wrong tree.
 		return "", errors.New("the directory path is empty; pass the directory to read")
 	}
-	resolved, err := filepath.EvalSymlinks(root)
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
 	if err != nil {
 		return "", err
 	}

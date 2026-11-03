@@ -142,3 +142,39 @@ func TestWriteJSONReturnsAnErrorAndWritesNothingForAValueItCannotEncode(t *testi
 		t.Fatalf("the writer must stay empty, got %q", out.String())
 	}
 }
+
+// go list answers with absolute paths, so a relative directory shares no path with them. Every
+// package then reads as outside the tree, which printed an empty report and exited 0. The handler
+// sits in a package of its own, because a load with no folders falls back on the current one.
+func TestARelativeDirectoryReadsTheSameTreeAsAnAbsoluteOne(t *testing.T) {
+	root := writeModule(t, "example.com/depot", map[string]string{
+		"main.go": "package main\n\nimport (\n\t\"net/http\"\n\n\t\"example.com/depot/desk\"\n)\n\n" +
+			"func main() {\n\thttp.HandleFunc(\"/parcels\", desk.Parcels)\n}\n",
+		"desk/desk.go": "package desk\n\nimport \"net/http\"\n\nfunc Parcels(w http.ResponseWriter, r *http.Request) {}\n",
+	})
+	patterns := writePatterns(t, `[{"kind":"route","call":"^http\\.HandleFunc$","args":{"path":0,"handler":1}}]`)
+	roots := writeRoots(t, "example.com/depot/desk.Parcels")
+	commands := map[string]func(dir string) []string{
+		"compare":      func(dir string) []string { return []string{"compare", "--old", dir, "--new", dir} },
+		"declarations": func(dir string) []string { return []string{"declarations", dir} },
+		"fingerprints": func(dir string) []string { return []string{"fingerprints", "--roots", roots, "--main", ".", dir} },
+		"match":        func(dir string) []string { return []string{"match", "--patterns", patterns, dir} },
+		"routes":       func(dir string) []string { return []string{"routes", "--patterns", patterns, "--main", ".", dir} },
+	}
+	for name, argumentsFor := range commands {
+		t.Run(name, func(t *testing.T) {
+			absoluteCode, absolute, _ := runCommand(t, argumentsFor(root)...)
+			if absoluteCode != 0 || (name != "compare" && !strings.Contains(absolute, "Parcels")) {
+				t.Fatalf("the absolute run must read the handler first: exit %d, %s", absoluteCode, absolute)
+			}
+			t.Chdir(root)
+			exitCode, relative, stderr := runCommand(t, argumentsFor(".")...)
+			if exitCode != 0 || stderr != "" {
+				t.Fatalf("exit %d, stderr %q", exitCode, stderr)
+			}
+			if relative != absolute {
+				t.Errorf("from a relative directory:\n%s\nfrom the same directory, absolute:\n%s", relative, absolute)
+			}
+		})
+	}
+}
