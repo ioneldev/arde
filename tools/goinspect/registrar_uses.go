@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/types"
 	"slices"
+	"strings"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -23,19 +24,45 @@ const (
 type registrars struct {
 	isRouteWrapper func(*types.Func) bool
 	carriers       []types.Type
+	// names are the names the registrars go by. Only an interface method of one of them can stand
+	// for a registrar, so a call such as err.Error() costs no lookup at all.
+	names map[string]bool
+	// lookUp is types.LookupFieldOrMethod, the scan's unit of work, which a test counts.
+	lookUp func(carrier types.Type, addressable bool, inPackage *types.Package, name string) (types.Object, []int, bool)
 }
 
 func (reader routeReader) registrars() registrars {
-	return registrars{isRouteWrapper: reader.isRouteWrapper, carriers: carriersOf(reader.service.packages)}
+	return registrars{
+		isRouteWrapper: reader.isRouteWrapper,
+		carriers:       carriersOf(reader.service.packages),
+		names:          reader.registrarNames(),
+		lookUp:         types.LookupFieldOrMethod,
+	}
+}
+
+func (reader routeReader) registrarNames() map[string]bool {
+	names := map[string]bool{}
+	for _, registration := range registrationFunctions {
+		names[registration[strings.LastIndex(registration, ".")+1:]] = true
+	}
+	for wrapper := range reader.wrappers[routeKind] {
+		if reader.isRouteWrapper(wrapper) {
+			names[wrapper.Name()] = true
+		}
+	}
+	return names
 }
 
 // usesOutOfSight finds every use of a registrar that is no direct call, and every use of an
 // interface's method that a registrar's type satisfies. A call ARDE cannot see is a route it cannot
 // list, so each of them stops the run.
 func (reader routeReader) usesOutOfSight() []unreadSite {
-	known := reader.registrars()
+	return reader.registrars().usesOutOfSightIn(reader.service)
+}
+
+func (known registrars) usesOutOfSightIn(service loadedService) []unreadSite {
 	found := []unreadSite{}
-	for _, loaded := range reader.service.packages {
+	for _, loaded := range service.packages {
 		for _, file := range loaded.Syntax {
 			called := directCallees(file, loaded.TypesInfo)
 			ast.Inspect(file, func(node ast.Node) bool {
@@ -48,7 +75,7 @@ func (reader routeReader) usesOutOfSight() []unreadSite {
 					return true
 				}
 				problem := known.problemOfAUse(function, called[identifier])
-				if place, isInTheRepo := reader.service.placeOf(identifier.Pos()); problem != "" && isInTheRepo {
+				if place, isInTheRepo := service.placeOf(identifier.Pos()); problem != "" && isInTheRepo {
 					found = append(found, unreadSite{sourcePlace: place, Problem: problem})
 				}
 				return true
@@ -60,7 +87,7 @@ func (reader routeReader) usesOutOfSight() []unreadSite {
 
 func (known registrars) problemOfAUse(function *types.Func, isCalledDirectly bool) string {
 	switch {
-	case isInterfaceMethod(function) && known.standBehind(function):
+	case isInterfaceMethod(function) && known.names[function.Name()] && known.standBehind(function):
 		return calledThroughAnInterface
 	case known.hold(function) && !isCalledDirectly:
 		return usedAsAValue
@@ -79,7 +106,7 @@ func (known registrars) hold(function *types.Func) bool {
 func (known registrars) standBehind(interfaceMethod *types.Func) bool {
 	declaring, isInterface := interfaceMethod.Signature().Recv().Type().Underlying().(*types.Interface)
 	return isInterface && slices.ContainsFunc(known.carriers, func(carrier types.Type) bool {
-		method, _, _ := types.LookupFieldOrMethod(carrier, false, interfaceMethod.Pkg(), interfaceMethod.Name())
+		method, _, _ := known.lookUp(carrier, false, interfaceMethod.Pkg(), interfaceMethod.Name())
 		function, isFunction := method.(*types.Func)
 		return isFunction && known.hold(function) && (isGeneric(carrier) || types.Implements(carrier, declaring))
 	})
