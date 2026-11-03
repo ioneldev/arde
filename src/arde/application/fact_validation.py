@@ -110,6 +110,16 @@ def repo_file(repo: Path, file: str) -> Path | None:
     return None
 
 
+# A root that cannot be listed has no files, so nothing found there can count.
+def root_files(repo: Path) -> frozenset[str]:
+    """The names of the regular files at the repo root, links followed."""
+    try:
+        with os.scandir(repo) as entries:
+            return frozenset(entry.name for entry in entries if entry.is_file())
+    except OSError:
+        return frozenset()
+
+
 def read_repo_source(repo: Path, file: str) -> str | None:
     path = repo_file(repo, file)
     if path is None:
@@ -145,6 +155,7 @@ class _Check:
     # The error codes an unreachable fact exempts once the batch is applied.
     unreachable: frozenset[str]
     build_files: frozenset[str]
+    root_files: frozenset[str]
     sources: dict[str, str | None] = field(default_factory=dict)
 
     @classmethod
@@ -163,6 +174,7 @@ class _Check:
             names=FactNames.of(ctx.inventory),
             unreachable=unreachable,
             build_files=build_files(ctx.inventory),
+            root_files=root_files(ctx.repo),
         )
 
     def problems_of(self, fact: Fact) -> Iterator[str]:
@@ -205,7 +217,13 @@ class _Check:
                 "line numbers"
             )
         content = self.ctx.language.quote_content(
-            SourceQuote(file=quote.file, source=source, places=places, build_files=self.build_files)
+            SourceQuote(
+                file=quote.file,
+                source=source,
+                places=places,
+                build_files=self.build_files,
+                root_files=self.root_files,
+            )
         )
         match content:
             case "comment":
@@ -226,7 +244,12 @@ class _Check:
             case "outside the build":
                 return (
                     f"quotes {file}, which is not part of the service's build, so it is not "
-                    "evidence about the service: quote a file the declarations list names"
+                    "evidence about the service: quote a file the service is built from"
+                )
+            case "not a path in the repo":
+                return (
+                    f"quotes {file}, which is not a path in the repo as list_files writes it: "
+                    "name the file from the repo root, with / between folders and no ./, // or .."
                 )
         return None
 

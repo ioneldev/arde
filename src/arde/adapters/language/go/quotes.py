@@ -1,15 +1,20 @@
 """What a quote from a repo file holds: code, a comment, or the text of a string literal.
 
-Go source and the module files are read with Go's lexical rules, and a Makefile with its comments
-and quoted strings. Any other file is not source this adapter reads, and Go source counts only in
-a file the service is built from, so code planted in test data, a vendored copy, a file the build
-leaves out or another program is no evidence about the service. The lexer errs towards free text:
-a comment or a literal that never ends runs to the end of its line or of the file, so planted text
-can never pass for code by leaving it open.
+Go source and the module files are read with Go's lexical rules, and the Makefile with its comments
+and quoted strings. Each counts only where it shapes the service: Go source in a file the service
+is built from, the module files at the repo root, and the one Makefile make reads there. Code
+planted in test data, a vendored copy, a file the build leaves out, another program or another
+Makefile is no evidence about the service. Any other file is not source this adapter reads.
+
+Every choice errs towards free text. A Go comment or literal that never ends runs to the end of
+its line or of the file. In the Makefile, a line is free text from its first # or quote to its
+end, through every line a backslash continues it on, with no escape read, so planted text can
+never pass for code by leaving a quote open or escaping one.
 """
 
 import re
 from pathlib import PurePosixPath
+from typing import NamedTuple
 
 from arde.adapters.language.go.makefile import MAKEFILE_NAMES
 from arde.application.ports import QuoteContent, SourceQuote
@@ -21,42 +26,65 @@ _GO_FREE_TEXT = re.compile(
     r'|(?P<literal>"(?:[^"\\\n]|\\.)*"?|`[^`]*`?|\'(?:[^\'\\\n]|\\.)*\'?)',
     re.DOTALL,
 )
-# A # outside a recipe starts a comment, and inside one it starts the shell's. Either way, what
-# follows is free text, so every # is read as the start of a comment. A quoted string on any line is
-# free text too, as the argument of echo is: make passes a recipe's quotes to the shell, and a
-# value's quotes are part of the value.
-_MAKE_FREE_TEXT = re.compile(r"(?P<comment>#[^\n]*)|(?P<literal>\"[^\"\n]*\"?|'[^'\n]*'?)")
+# The rest of a logical line of the Makefile: a backslash before a line break carries it on.
+_REST_OF_LINE = r"(?:\\\n|[^\n])*"
+# A # outside a recipe starts make's comment, and inside one the shell's. A quote either belongs to
+# a value or goes to the shell, as the argument of echo does.
+_MAKE_FREE_TEXT = re.compile(rf"(?P<comment>#{_REST_OF_LINE})|(?P<literal>[\"']{_REST_OF_LINE})")
 
-_GO_FILES = frozenset({"go.mod", "go.work"})
+_MODULE_FILES = frozenset({"go.mod", "go.work"})
 _MAKE_SUFFIX = ".mk"
 
 
+class _Syntax(NamedTuple):
+    lexer: re.Pattern[str]
+    in_the_build: bool
+
+
 def quote_content(quote: SourceQuote) -> QuoteContent:
-    file = _as_listed(quote.file)
-    lexer = _lexer_for(file)
-    if lexer is None:
+    if not _is_listed_form(quote.file):
+        return "not a path in the repo"
+    syntax = _syntax_of(quote)
+    if syntax is None:
         return "not source"
-    if file.endswith(".go") and file not in quote.build_files:
+    if not syntax.in_the_build:
         return "outside the build"
-    free_text = _free_text_spans(quote.source, lexer)
+    free_text = _free_text_spans(quote.source, syntax.lexer)
     readings = [_reading(quote.source, place, free_text) for place in quote.places]
     if "code" in readings:
         return "code"
     return "string literal" if "string literal" in readings else "comment"
 
 
-# The declarations name a file from the repo root with forward slashes and no leading "./".
-def _as_listed(file: str) -> str:
-    return PurePosixPath(file.replace("\\", "/")).as_posix()
+# The form the declarations and the agent's tools write a path in: from the repo root, with / alone
+# between folders. Any other spelling is refused rather than rewritten, so the path checked
+# against the build is the path that was read.
+def _is_listed_form(file: str) -> bool:
+    path = PurePosixPath(file)
+    return (
+        "\\" not in file
+        and file not in ("", ".")
+        and not path.is_absolute()
+        and ".." not in path.parts
+        and path.as_posix() == file
+    )
 
 
-def _lexer_for(file: str) -> re.Pattern[str] | None:
+def _syntax_of(quote: SourceQuote) -> _Syntax | None:
+    file = quote.file
     name = PurePosixPath(file).name
-    if name.endswith(".go") or name in _GO_FILES:
-        return _GO_FREE_TEXT
+    if name.endswith(".go"):
+        return _Syntax(_GO_FREE_TEXT, in_the_build=file in quote.build_files)
+    if name in _MODULE_FILES:
+        return _Syntax(_GO_FREE_TEXT, in_the_build=file == name)
     if name in MAKEFILE_NAMES or name.endswith(_MAKE_SUFFIX):
-        return _MAKE_FREE_TEXT
+        return _Syntax(_MAKE_FREE_TEXT, in_the_build=file == _makefile_make_reads(quote.root_files))
     return None
+
+
+# make reads the first of its names it finds at the root, as make_targets_of does.
+def _makefile_make_reads(root_files: frozenset[str]) -> str | None:
+    return next((name for name in MAKEFILE_NAMES if name in root_files), None)
 
 
 # (start, end, kind) for each comment and literal, in file order.
