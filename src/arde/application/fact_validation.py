@@ -397,7 +397,7 @@ class _Check:
                 "list only error codes of the inventory"
             )
         elif code not in self.unreachable and not any(
-            _holds_code(record.body, code) for record in shown
+            holds_code(record.body, code) for record in shown
         ):
             yield (
                 f"response {status} lists error code {code}, and no cited probe returned "
@@ -462,7 +462,7 @@ def _unbacked_status(status: int) -> str:
 
 
 # Bounded by characters that cannot be part of a code, so bad_pieces does not show bad.
-def _holds_code(body: str, code: str) -> bool:
+def holds_code(body: str, code: str) -> bool:
     return re.search(rf"(?<![\w.-]){re.escape(code)}(?![\w.-])", body) is not None
 
 

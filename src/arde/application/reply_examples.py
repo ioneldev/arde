@@ -65,12 +65,12 @@ def _probes_of(endpoint: EndpointFact, wiki: Wiki) -> Iterator[ProbeRecord]:
     return (
         probe
         for probe in cited_first
-        if probe.method == method and _pattern_matches(pattern, probe.path_and_query)
+        if probe.method == method and pattern_matches(pattern, probe.path_and_query)
     )
 
 
 # A wildcard matches one segment that is not empty, and a trailing one with ... the rest.
-def _pattern_matches(pattern: str, path_and_query: str) -> bool:
+def pattern_matches(pattern: str, path_and_query: str) -> bool:
     wanted = pattern.split("/")
     given = path_and_query.split("?", 1)[0].split("/")
     for index, part in enumerate(wanted):

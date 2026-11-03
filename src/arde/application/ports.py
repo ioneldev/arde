@@ -496,6 +496,10 @@ def _require_path_and_query(text: str) -> str:
     return text
 
 
+RequestMethod = Literal["GET", "HEAD"]
+PathAndQuery = Annotated[str, AfterValidator(_require_path_and_query)]
+
+
 class HttpRequest(Frozen):
     """One request to a running service, which a model may have chosen.
 
@@ -503,8 +507,8 @@ class HttpRequest(Frozen):
     alone, because a request must not change what the service holds.
     """
 
-    method: Literal["GET", "HEAD"]
-    path_and_query: Annotated[str, AfterValidator(_require_path_and_query)]
+    method: RequestMethod
+    path_and_query: PathAndQuery
 
 
 # Lives with the port, not the adapter, because application code catches it.
