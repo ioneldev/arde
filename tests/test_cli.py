@@ -53,7 +53,7 @@ class Stand_ins:
             toolbox=lambda: FakeToolbox(self.service),
         )
 
-    def _language_adapter(self, bin_dir: Path) -> FakeAdapter:
+    def _language_adapter(self, bin_dir: Path, *, cache_dir: Path) -> FakeAdapter:
         self.adapters_built += 1
         return self.adapter
 

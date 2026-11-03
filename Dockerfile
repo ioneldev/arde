@@ -47,15 +47,15 @@ COPY README.md ./
 COPY src ./src
 RUN --mount=type=cache,target=/uv-cache UV_CACHE_DIR=/uv-cache uv sync --frozen --no-dev
 
-# /data is the named volume: ARDE's workspaces and Go's caches, kept between runs. The home folder
-# is not in it, because git and go read settings from there for every repo, and one repo's code
-# could otherwise change how the next one is cloned or built. 1777, as /tmp is, because the user
-# is chosen at run time.
+# /data is the named volume: ARDE's workspaces, kept between runs, each with its own repo's Go
+# caches, which ARDE names for that repo's commands. No cache is shared by every repo, so a Go
+# command given none uses Go's default under the home folder. The home folder is not in the volume,
+# because git and go read settings from there for every repo, and one repo's code could otherwise
+# change how the next one is cloned or built. 1777, as /tmp is, because the user is chosen at run
+# time.
 RUN mkdir -p /data /home/arde && chmod 1777 /data /home/arde
 ENV PATH=/app/.venv/bin:$PATH \
     ARDE_HOME=/data \
-    GOCACHE=/data/gocache \
-    GOPATH=/data/gopath \
     HOME=/home/arde \
     ARDE_GOINSPECT=/usr/local/bin/goinspect \
     ARDE_SWAG=/usr/local/bin/swag \

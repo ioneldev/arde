@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from end_to_end_support import a_repo_of
+from end_to_end_support import a_repo_of, commit_all
 from shop_support import SHOP
 
 from arde.domain.report import ExitCode, RunReport
@@ -376,6 +376,50 @@ def test_a_build_that_eats_memory_is_killed_and_arde_says_so(
     assert "compile: signal: killed" in ran.report.message
 
 
+# What the container does not isolate
+
+
+# A known limit, kept as a test so that it stays in sight: the container is no boundary between
+# ARDE and the repo's code. No child gets an ANTHROPIC_ variable, but every child runs as ARDE's own
+# user, so a repo's test can read the key from the environment the init process started with, as
+# it could from ARDE's own. The fix is to run the repo's code as another user (DESIGN.md, one more
+# week). When this test fails, the limit has moved, and docs/limitations.md must say so.
+READS_THE_KEY_OF_THE_INIT_PROCESS = """package main
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestTheKeyOfTheInitProcess(t *testing.T) {
+	environ, err := os.ReadFile("/proc/1/environ")
+	if err != nil {
+		t.Fatalf("cannot read /proc/1/environ: %v", err)
+	}
+	for _, entry := range strings.Split(string(environ), "\\x00") {
+		if strings.HasPrefix(entry, "ANTHROPIC_API_KEY=sk-") {
+			t.Fatal("ANTHROPIC_API_KEY is readable in /proc/1/environ")
+		}
+	}
+}
+"""
+
+
+def test_a_repos_test_can_read_the_api_key_from_the_init_process(
+    project: Project, tmp_path: Path
+) -> None:
+    repo = a_repo_of(SHOP, tmp_path / "shop")
+    (repo / "key_test.go").write_text(READS_THE_KEY_OF_THE_INIT_PROCESS, encoding="utf-8")
+    commit_all(repo, "read the key")
+    project.write_override("services:\n  arde:\n    network_mode: none\n")
+
+    ran = project.arde("--repo", "/repo", "--json", REPO_PATH=str(repo))
+
+    assert ran.exit_code == ExitCode.CHECKS_FAILED, ran.stderr[-4000:]
+    assert "ANTHROPIC_API_KEY is readable in /proc/1/environ" in ran.report.message
+
+
 # Whole runs
 
 
@@ -411,6 +455,9 @@ def test_a_scripted_first_run_offline_on_an_empty_volume_succeeds_and_commits(
         entrypoint="git",
     )
     assert {"docs/swagger.json", "docs/api.md"} <= set(committed.stdout.split()), committed.stderr
+    workspace = Path(report.run_dir).parents[1]
+    kept = project.shell(f"ls /data; test -d {workspace}/cache/gocache && echo own cache")
+    assert kept.stdout.split() == ["workspaces", "own", "cache"], kept.stderr
 
 
 # On a Linux host the mounted files keep the host user's id, which can differ from ARDE_UID, and git

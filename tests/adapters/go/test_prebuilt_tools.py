@@ -57,7 +57,7 @@ def test_the_tools_the_variables_name_are_used_and_none_is_built(
     repo = tmp_path / "repo"
     repo.mkdir()
 
-    adapter = go_adapter(unbuildable)
+    adapter = go_adapter(unbuildable, cache_dir=tmp_path / "caches")
     adapter.changed_declarations(repo, repo)
     adapter.generate_spec(repo, shop_profile())
 
@@ -73,7 +73,7 @@ def test_a_variable_that_names_no_file_stops_with_its_name_and_a_next_action(
     monkeypatch.setenv(variable, str(tmp_path / "missing"))
 
     with pytest.raises(ArdeError) as stopped:
-        go_adapter(unbuildable)
+        go_adapter(unbuildable, cache_dir=tmp_path / "caches")
 
     assert variable in str(stopped.value)
     assert str(tmp_path / "missing") in str(stopped.value)
@@ -109,7 +109,7 @@ def test_with_no_tool_named_both_are_built_into_the_folder(
         else:
             monkeypatch.setenv(name, value)
 
-    go_adapter(tmp_path / "bin")
+    go_adapter(tmp_path / "bin", cache_dir=tmp_path / "caches")
 
     assert sorted(path.name for path in build.outputs) == ["goinspect", "swag"]
     assert {path.parent for path in build.outputs} == {(tmp_path / "bin").resolve()}

@@ -14,7 +14,9 @@ from arde.application.ports import LanguageAdapter
 # The language adapter, as the cli wires it.
 @pytest.fixture(scope="session")
 def adapter(tmp_path_factory: pytest.TempPathFactory) -> LanguageAdapter:
-    return go_adapter(tmp_path_factory.mktemp("arde-bin"))
+    return go_adapter(
+        tmp_path_factory.mktemp("arde-bin"), cache_dir=tmp_path_factory.mktemp("go-caches")
+    )
 
 
 @pytest.fixture(scope="session")

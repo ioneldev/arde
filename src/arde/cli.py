@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import Protocol, TextIO
 
 from pydantic import SecretStr
 
@@ -75,12 +75,18 @@ class BadCostCap(ArdeError):
         )
 
 
+class LanguageAdapterFactory(Protocol):
+    """Takes the folder for the tools the adapter builds, which every repo shares, and the folder
+    for the caches of the repo's own commands."""
+
+    def __call__(self, bin_dir: Path, *, cache_dir: Path) -> LanguageAdapter: ...
+
+
 @dataclass(frozen=True)
 class Wiring:
     """What a run is built from. A test replaces a part, such as the model client."""
 
-    # Takes the folder where the adapter keeps the tools it builds.
-    language_adapter: Callable[[Path], LanguageAdapter]
+    language_adapter: LanguageAdapterFactory
     model_client: Callable[[SecretStr, Tracer], LLMClient]
     service_runner: Callable[[], ServiceRunner]
     service_client: Callable[[], ServiceClient]
@@ -209,15 +215,12 @@ def _make_ready(arguments: Arguments, wiring: Wiring) -> _Ready:
     budget = _budget(arguments.max_usd)
     models = load_models()
     home = arde_home()
-    adapter = wiring.language_adapter(home / BIN_FOLDER)
+    # The source first, because the repo it names owns the caches the adapter's commands use.
     source = resolve_source(SourceRequest(repo=arguments.repo, branch=arguments.branch), home)
+    store = Workspace(home, source.repo_id)
+    adapter = wiring.language_adapter(home / BIN_FOLDER, cache_dir=store.cache_dir)
     return _Ready(
-        key=key,
-        budget=budget,
-        models=models,
-        adapter=adapter,
-        source=source,
-        store=Workspace(home, source.repo_id),
+        key=key, budget=budget, models=models, adapter=adapter, source=source, store=store
     )
 
 

@@ -11,6 +11,7 @@ from arde.adapters.language.go import gofmt, toolchain
 from arde.adapters.language.go.directives import files_differ_only_in_ordinary_comments
 from arde.adapters.language.go.discovery_guidance import DISCOVERY_GUIDANCE
 from arde.adapters.language.go.edit_checks import edit_findings
+from arde.adapters.language.go.go_environment import GoCaches
 from arde.adapters.language.go.goinspect_client import (
     GoinspectClient,
     PatternName,
@@ -67,10 +68,12 @@ def patterns_of(profile: RepoProfile) -> tuple[ExtractionPattern, ...]:
 
 class GoAdapter(LanguageAdapter):
     # Keyword-only, because the two paths have one type and a swap would pass every type check.
-    def __init__(self, goinspect: Path, *, swag: Path) -> None:
+    # Without caches of the repo's own, Go commands use the exported ones, or Go's defaults.
+    def __init__(self, goinspect: Path, *, swag: Path, caches: GoCaches | None = None) -> None:
         self._goinspect_binary = goinspect
-        self._goinspect = GoinspectClient(goinspect)
+        self._goinspect = GoinspectClient(goinspect, caches=caches)
         self._swag = swag
+        self._caches = caches
 
     def detects(self, repo: Path) -> bool:
         require_no_link_leaves(repo)
@@ -154,17 +157,17 @@ class GoAdapter(LanguageAdapter):
 
     def run_checks(self, repo: Path, profile: RepoProfile) -> CheckResult:
         require_no_link_leaves(repo)
-        return toolchain.run_checks(repo, profile)
+        return toolchain.run_checks(repo, profile, caches=self._caches)
 
     # A plain method around the context manager, so the gate runs at this call and not at "with".
     def built_service(self, repo: Path, profile: RepoProfile) -> AbstractContextManager[Path]:
         require_no_link_leaves(repo)
-        return toolchain.built_service(repo, profile)
+        return toolchain.built_service(repo, profile, caches=self._caches)
 
     # The gate also keeps swag from writing the spec through a link to a file outside the repo.
     def generate_spec(self, repo: Path, profile: RepoProfile) -> Path:
         require_no_link_leaves(repo)
-        return run_swag(repo, profile, swag=self._swag)
+        return run_swag(repo, profile, swag=self._swag, caches=self._caches)
 
     def format_issues(self, repo: Path) -> set[str]:
         require_no_link_leaves(repo)
@@ -190,11 +193,12 @@ class GoAdapter(LanguageAdapter):
 
 
 # The return type is the static proof that GoAdapter satisfies the port: mypy fails here when
-# the port gains a method that GoAdapter lacks, or when a signature drifts.
-def go_adapter(bin_dir: Path) -> LanguageAdapter:
+# the port gains a method that GoAdapter lacks, or when a signature drifts. The tools are shared by
+# every repo; the caches in cache_dir belong to one repo.
+def go_adapter(bin_dir: Path, *, cache_dir: Path) -> LanguageAdapter:
     goinspect = prebuilt_tool(GOINSPECT_VARIABLE) or build_goinspect(bin_dir)
     swag = prebuilt_tool(SWAG_VARIABLE) or build_swag(bin_dir)
-    return GoAdapter(goinspect, swag=swag)
+    return GoAdapter(goinspect, swag=swag, caches=GoCaches.inside(cache_dir))
 
 
 def _of_the_profile(unmatched: Iterable[PatternName]) -> tuple[PatternName, ...]:

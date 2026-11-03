@@ -7,6 +7,7 @@ own: its caches, its proxy and the settings that keep private module paths priva
 import functools
 import os
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import TypeAdapter, ValidationError
@@ -56,11 +57,34 @@ FIXED_VARIABLES = {"GOENV": "off", "GOPACKAGESDRIVER": "off"}
 DEFAULT_VARIABLES = {"GOTOOLCHAIN": "local"}
 
 
-def go_environment(repo: Path) -> dict[str, str]:
+@dataclass(frozen=True)
+class GoCaches:
+    """The build cache and the module folder of one repo's Go commands.
+
+    In one cache that every repo shares, as one volume holds them in the container, a repo's build
+    or tests could write entries that another repo's commands then read.
+    """
+
+    build: Path
+    path: Path
+
+    @classmethod
+    def inside(cls, folder: Path) -> "GoCaches":
+        return cls(build=folder / "gocache", path=folder / "gopath")
+
+    # GOMODCACHE too, or an exported one would still name a module folder that others share.
+    def variables(self) -> dict[str, str]:
+        modules = self.path / "pkg" / "mod"
+        return {"GOCACHE": str(self.build), "GOPATH": str(self.path), "GOMODCACHE": str(modules)}
+
+
+# With no caches of the repo's own, the exported ones apply, or else Go's defaults.
+def go_environment(repo: Path, caches: GoCaches | None = None) -> dict[str, str]:
     return {
         **child_environment(),
         **DEFAULT_VARIABLES,
         **_without_empty_values(exported(TOOLCHAIN_VARIABLES)),
+        **({} if caches is None else caches.variables()),
         **_without_empty_values(_user_settings()),
         **FIXED_VARIABLES,
         **_workspace(repo),

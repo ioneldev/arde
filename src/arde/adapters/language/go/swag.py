@@ -5,7 +5,7 @@ from pathlib import Path
 from arde.adapters.child_process import ChildCommand, ChildOutcome, describe_os_error, run_child
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text
 from arde.adapters.language.go.errors import GoCommandError
-from arde.adapters.language.go.go_environment import go_environment
+from arde.adapters.language.go.go_environment import GoCaches, go_environment
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
 from arde.adapters.language.go.timeouts import GO_BUILD_TIMEOUT_S, SWAG_TIMEOUT_S
 from arde.domain.profile import RepoProfile
@@ -64,7 +64,9 @@ def _make_the_folder(bin_dir: Path) -> None:
 # because the default also writes a docs.go that imports swag, which the repo does not require,
 # so the repo's own build would fail. Under --requiredByDefault every field is required unless its
 # tags say otherwise, and swag v2 reads omitempty as no such tag.
-def run_swag(repo: Path, profile: RepoProfile, *, swag: Path) -> Path:
+def run_swag(
+    repo: Path, profile: RepoProfile, *, swag: Path, caches: GoCaches | None = None
+) -> Path:
     command = ChildCommand(
         argv=(
             # Resolved here: swag runs in the repo, where a relative path could find a program the
@@ -84,7 +86,7 @@ def run_swag(repo: Path, profile: RepoProfile, *, swag: Path) -> Path:
         timeout_s=SWAG_TIMEOUT_S,
         output=CHECK_OUTPUT_LIMIT,
         # swag runs go list itself, so it needs what every Go command gets.
-        env=go_environment(repo),
+        env=go_environment(repo, caches),
     )
     outcome = run_child(command)
     # The exit code alone decides, because swag warns on a run that went well, such as one whose

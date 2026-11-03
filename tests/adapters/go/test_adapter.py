@@ -97,7 +97,7 @@ def test_the_factory_builds_the_tools_and_hands_back_the_port(
     monkeypatch.delenv(GOINSPECT_VARIABLE, raising=False)
     monkeypatch.delenv(SWAG_VARIABLE, raising=False)
 
-    port = go_adapter(tmp_path / "bin")
+    port = go_adapter(tmp_path / "bin", cache_dir=tmp_path / "caches")
 
     assert isinstance(port, GoAdapter)
     assert (tmp_path / "bin" / "goinspect").is_file()
