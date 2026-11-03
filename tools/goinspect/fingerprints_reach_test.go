@@ -23,7 +23,7 @@ func assertEditMovesAndReaches(t *testing.T, name string, test reachCase) {
 	id := cmp.Or(test.root, shopDetail)
 	root := writeModule(t, "shop", map[string]string{"shop.go": test.source})
 	before := fingerprintsOf(t, root, id)
-	edited := editedSource(t, name, test.source, test.old, test.new)
+	edited := editedSource(t, name, sourceEdit{source: test.source, old: test.old, new: test.new})
 	after := fingerprintsOf(t, writeModule(t, "shop", map[string]string{"shop.go": edited}), id)
 
 	if before.Fingerprints[id] == after.Fingerprints[id] {
@@ -242,7 +242,7 @@ func TestFingerprintStaysTheSameWhenAnUnrelatedInstanceAppears(t *testing.T) {
 	}
 
 	for name, test := range cases {
-		assertEditKeepsTheFingerprint(t, name, test.source, test.old, test.new)
+		assertEditKeepsTheFingerprint(t, name, test)
 	}
 }
 
@@ -254,7 +254,7 @@ func TestFingerprintOfAGenericRootSeesEveryInstanceWhateverTheOrder(t *testing.T
 	source := genericTypes +
 		"func detail[T validator](x T) string { return x.Validate() }\n\n" +
 		"func Run() string { return detail(product{}) + detail(other{}) }\n"
-	edited := editedSource(t, "the second type's method", source, "return \"other\"", "return \"changed\"")
+	edited := editedSource(t, "the second type's method", sourceEdit{source: source, old: "return \"other\"", new: "return \"changed\""})
 
 	unedited := distinctFingerprints(t, source, runs)
 	afterEdit := distinctFingerprints(t, edited, runs)

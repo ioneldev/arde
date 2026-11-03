@@ -82,17 +82,23 @@ func copyOfStorefront(t *testing.T) string {
 	return root
 }
 
+type fileEdit struct {
+	path string
+	old  string
+	new  string
+}
+
 // editFile fails unless the old text occurs exactly once, so an edit that matched nothing cannot
 // make a "nothing changed" test pass for the wrong reason.
-func editFile(t *testing.T, root, relativePath, old, replacement string) {
+func editFile(t *testing.T, root string, edit fileEdit) {
 	t.Helper()
-	path := filepath.Join(root, filepath.FromSlash(relativePath))
+	path := filepath.Join(root, filepath.FromSlash(edit.path))
 	content, err := os.ReadFile(path)
 	assertNoError(t, err)
-	if strings.Count(string(content), old) != 1 {
-		t.Fatalf("%s must hold %q exactly once", relativePath, old)
+	if strings.Count(string(content), edit.old) != 1 {
+		t.Fatalf("%s must hold %q exactly once", edit.path, edit.old)
 	}
-	edited := strings.Replace(string(content), old, replacement, 1)
+	edited := strings.Replace(string(content), edit.old, edit.new, 1)
 	assertNoError(t, os.WriteFile(path, []byte(edited), 0o644))
 }
 
@@ -120,7 +126,7 @@ func TestFingerprintChangesWhenCalleeChanges(t *testing.T) {
 	root := copyOfStorefront(t)
 	before := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
-	editFile(t, root, pricingFile, "+0.5", "+0.4")
+	editFile(t, root, fileEdit{path: pricingFile, old: "+0.5", new: "+0.4"})
 	after := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
 	if got := changedRoots(before, after); !reflect.DeepEqual(got, []string{routeDetail, routeListing}) {
@@ -132,7 +138,7 @@ func TestFingerprintChangesWhenTheRouteItselfChanges(t *testing.T) {
 	root := copyOfStorefront(t)
 	before := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
-	editFile(t, root, handlersFile, `return "ok"`, `return "fine"`)
+	editFile(t, root, fileEdit{path: handlersFile, old: `return "ok"`, new: `return "fine"`})
 	after := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
 	if got := changedRoots(before, after); !reflect.DeepEqual(got, []string{routePing}) {
@@ -144,9 +150,12 @@ func TestFingerprintStableUnderComments(t *testing.T) {
 	root := copyOfStorefront(t)
 	before := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
-	editFile(t, root, handlersFile, "func (h *Handlers) listing() float64 {",
-		"// listing adds two totals.\n\n\nfunc (h *Handlers) listing() float64 { // trailing\n\t/* inside */")
-	editFile(t, root, pricingFile, "return round(amount * rate)", "return round(amount * rate) // rounded")
+	editFile(t, root, fileEdit{
+		path: handlersFile,
+		old:  "func (h *Handlers) listing() float64 {",
+		new:  "// listing adds two totals.\n\n\nfunc (h *Handlers) listing() float64 { // trailing\n\t/* inside */",
+	})
+	editFile(t, root, fileEdit{path: pricingFile, old: "return round(amount * rate)", new: "return round(amount * rate) // rounded"})
 	after := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
 	if got := changedRoots(before, after); len(got) != 0 {
@@ -175,8 +184,11 @@ func TestFingerprintStableWhenCodeMovesDownAFile(t *testing.T) {
 	root := copyOfStorefront(t)
 	before := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
-	editFile(t, root, handlersFile, "type Handlers struct {",
-		"func unrelated() int {\n\n\n\treturn 7\n}\n\ntype Handlers struct {")
+	editFile(t, root, fileEdit{
+		path: handlersFile,
+		old:  "type Handlers struct {",
+		new:  "func unrelated() int {\n\n\n\treturn 7\n}\n\ntype Handlers struct {",
+	})
 	after := storefrontFingerprints(t, root, routeListing, routeDetail, routePing)
 
 	if got := changedRoots(before, after); len(got) != 0 {
@@ -186,8 +198,8 @@ func TestFingerprintStableWhenCodeMovesDownAFile(t *testing.T) {
 
 func TestFingerprintReadsModuleFromGoMod(t *testing.T) {
 	root := copyOfStorefront(t)
-	editFile(t, root, "go.mod", "module storefront", "module acme.example/orders")
-	editFile(t, root, handlersFile, `"storefront/internal/pricing"`, `"acme.example/orders/internal/pricing"`)
+	editFile(t, root, fileEdit{path: "go.mod", old: "module storefront", new: "module acme.example/orders"})
+	editFile(t, root, fileEdit{path: handlersFile, old: `"storefront/internal/pricing"`, new: `"acme.example/orders/internal/pricing"`})
 
 	const movedDetail = "(*acme.example/orders/internal/handlers.Handlers).detail"
 
@@ -434,7 +446,7 @@ func main() {
 `
 	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
 	ids := []string{}
-	for _, site := range routesOf(t, root, ".", noPatterns).Sites {
+	for _, site := range routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns}).Sites {
 		ids = append(ids, *site.HandlerID)
 	}
 

@@ -78,9 +78,10 @@ func findMatches(root, patternsPath string) (matchReport, error) {
 	if err != nil {
 		return matchReport{}, err
 	}
+	search := matchSearch{root: root, patterns: patterns}
 	report := matchReport{Matches: []callMatch{}}
 	for _, path := range files {
-		found, err := matchesInFile(root, path, patterns)
+		found, err := search.inFile(path)
 		if err != nil {
 			return matchReport{}, err
 		}
@@ -172,8 +173,14 @@ func compilePattern(spec patternSpec) (callPattern, error) {
 	return callPattern{kind: spec.Kind, call: call, argumentPositions: spec.Args}, nil
 }
 
-func matchesInFile(root, path string, patterns []callPattern) ([]callMatch, error) {
-	content, err := readGoFile(root, path)
+// matchSearch applies the patterns to the files of one tree.
+type matchSearch struct {
+	root     string
+	patterns []callPattern
+}
+
+func (search matchSearch) inFile(path string) ([]callMatch, error) {
+	content, err := readGoFile(search.root, path)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +190,7 @@ func matchesInFile(root, path string, patterns []callPattern) ([]callMatch, erro
 			"cannot parse %s, which would leave its calls out of the inventory; fix the syntax error and run again: %w",
 			path, err)
 	}
-	matcher := fileMatcher{path: path, source: source, patterns: patterns}
+	matcher := fileMatcher{path: path, source: source, patterns: search.patterns}
 	found := []callMatch{}
 	ast.Inspect(source.syntax, func(node ast.Node) bool {
 		if call, isCall := node.(*ast.CallExpr); isCall {

@@ -209,11 +209,11 @@ func (reader routeReader) routePositionsOf(call serviceCall) []map[string]int {
 // wrapper that hands on a path it was given.
 func (reader routeReader) siteAt(call serviceCall, positions map[string]int) (routeSite, bool) {
 	handlers := handlerReader{info: call.info, service: reader.service}
-	handler := handlers.innermost(argumentAt(call.syntax, positions, "handler"))
+	handler := handlers.innermost(call.argument(positions, "handler"))
 	if handler != nil && handlers.isMount(handler) {
 		return routeSite{}, false
 	}
-	path, pathIsKnown := knownString(call.info, argumentAt(call.syntax, positions, "path"))
+	path, pathIsKnown := knownString(call.info, call.argument(positions, "path"))
 	if _, isInsideAWrapper := reader.wrappers[routeKind][call.enclosing]; isInsideAWrapper && !pathIsKnown {
 		return routeSite{}, false
 	}
@@ -235,7 +235,7 @@ func (reader routeReader) addsToAWrappedPath(call serviceCall) bool {
 		return false
 	}
 	for _, positions := range reader.routePositionsOf(call) {
-		path := argumentAt(call.syntax, positions, "path")
+		path := call.argument(positions, "path")
 		if _, isKnown := knownString(call.info, path); !isKnown && holdsAConstantWithASlash(call.info, path) {
 			return true
 		}
@@ -309,12 +309,12 @@ func (reader routeReader) wrapperCallsOf(call serviceCall) []wrapperCall {
 	return found
 }
 
-func argumentAt(call *ast.CallExpr, positions map[string]int, name string) ast.Expr {
+func (call serviceCall) argument(positions map[string]int, name string) ast.Expr {
 	position, isNamed := positions[name]
-	if !isNamed || position >= len(call.Args) {
+	if !isNamed || position >= len(call.syntax.Args) {
 		return nil
 	}
-	return call.Args[position]
+	return call.syntax.Args[position]
 }
 
 // knownString is the value of a string the compiler knows, a const or a sum of consts included.

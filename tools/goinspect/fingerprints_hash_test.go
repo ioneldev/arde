@@ -16,27 +16,27 @@ func fingerprintOfSource(t *testing.T, source string) string {
 	return hash
 }
 
-func editedSource(t *testing.T, name, source, old, replacement string) string {
+func editedSource(t *testing.T, name string, edit sourceEdit) string {
 	t.Helper()
-	if strings.Count(source, old) != 1 {
-		t.Fatalf("%s: the source must hold %q exactly once", name, old)
+	if strings.Count(edit.source, edit.old) != 1 {
+		t.Fatalf("%s: the source must hold %q exactly once", name, edit.old)
 	}
-	return strings.Replace(source, old, replacement, 1)
+	return strings.Replace(edit.source, edit.old, edit.new, 1)
 }
 
-func assertEditMovesTheFingerprint(t *testing.T, name, source, old, replacement string) {
+func assertEditMovesTheFingerprint(t *testing.T, name string, edit sourceEdit) {
 	t.Helper()
-	edited := editedSource(t, name, source, old, replacement)
-	if fingerprintOfSource(t, source) == fingerprintOfSource(t, edited) {
-		t.Errorf("%s: editing %q to %q left the fingerprint unchanged", name, old, replacement)
+	edited := editedSource(t, name, edit)
+	if fingerprintOfSource(t, edit.source) == fingerprintOfSource(t, edited) {
+		t.Errorf("%s: editing %q to %q left the fingerprint unchanged", name, edit.old, edit.new)
 	}
 }
 
-func assertEditKeepsTheFingerprint(t *testing.T, name, source, old, replacement string) {
+func assertEditKeepsTheFingerprint(t *testing.T, name string, edit sourceEdit) {
 	t.Helper()
-	edited := editedSource(t, name, source, old, replacement)
-	if fingerprintOfSource(t, source) != fingerprintOfSource(t, edited) {
-		t.Errorf("%s: editing %q to %q moved the fingerprint", name, old, replacement)
+	edited := editedSource(t, name, edit)
+	if fingerprintOfSource(t, edit.source) != fingerprintOfSource(t, edited) {
+		t.Errorf("%s: editing %q to %q moved the fingerprint", name, edit.old, edit.new)
 	}
 }
 
@@ -89,7 +89,7 @@ func TestFingerprintChangesWhenAConstantChangesPastWhatTheListingShows(t *testin
 	}
 
 	for name, test := range cases {
-		assertEditMovesTheFingerprint(t, name, test.source, test.old, test.new)
+		assertEditMovesTheFingerprint(t, name, test)
 	}
 }
 
@@ -103,7 +103,7 @@ func TestFingerprintChangesWhenATypeDeclaredInsideTheFunctionChanges(t *testing.
 	}
 
 	for name, test := range cases {
-		assertEditMovesTheFingerprint(t, name, test.source, test.old, test.new)
+		assertEditMovesTheFingerprint(t, name, test)
 	}
 }
 
@@ -119,7 +119,7 @@ func TestFingerprintStaysTheSameForEditsThatChangeNoMeaning(t *testing.T) {
 	}
 
 	for name, test := range cases {
-		assertEditKeepsTheFingerprint(t, name, test.source, test.old, test.new)
+		assertEditKeepsTheFingerprint(t, name, test)
 	}
 }
 
@@ -134,6 +134,9 @@ func TestFingerprintStaysTheSameWhenAFunctionWithALongStringMovesDownAFile(t *te
 		"\tquery := \"SELECT id FROM items WHERE active = 1 AND stock > 0\"\n" +
 		"\treturn response{Name: query, Total: sum(parts...)}\n}\n"
 
-	assertEditKeepsTheFingerprint(t, "unrelated code above", source, "func detail() any {",
-		"func unrelated() int {\n\n\n\treturn 7\n}\n\nfunc detail() any {")
+	assertEditKeepsTheFingerprint(t, "unrelated code above", sourceEdit{
+		source: source,
+		old:    "func detail() any {",
+		new:    "func unrelated() int {\n\n\n\treturn 7\n}\n\nfunc detail() any {",
+	})
 }

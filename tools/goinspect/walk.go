@@ -78,7 +78,7 @@ func listGoFiles(root string, policy walkPolicy) ([]string, error) {
 			return walkErr
 		}
 		if entry.IsDir() {
-			if path != walkRoot && skipsDirectoryAt(path, entry.Name(), policy) {
+			if path != walkRoot && policy.skipsDirectoryAt(path, entry.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -109,7 +109,7 @@ func listGoFiles(root string, policy walkPolicy) ([]string, error) {
 	return files, nil
 }
 
-func skipsDirectoryAt(path, name string, policy walkPolicy) bool {
+func (policy walkPolicy) skipsDirectoryAt(path, name string) bool {
 	return policy.skipsDirectory(name) || (policy.skipsNestedModules && holdsGoMod(path))
 }
 

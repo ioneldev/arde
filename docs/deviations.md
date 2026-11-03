@@ -12,5 +12,6 @@ Where the work breaks a project rule or convention on purpose, and what that cos
 - **Large image.** About 980 MB, because it holds both toolchains. That is the cost of needing nothing else on the host.
 - **Paid evals.** The classifier eval costs a small amount and runs on demand, because agent behaviour cannot be covered by fast unit tests alone.
 - **A fifth `goinspect` command.** The phase spec first listed four. `routes` lists every `net/http` registration through the type checker, because a regex on callee text cannot tell a missed spelling from no route. The cost is that `extract_inventory` now needs a repo that compiles, which the pipeline's baseline checks prove first.
+- **Three positional arguments in two Go functions.** The rule is two. `run(args, stdout, stderr)` in `goinspect` is the usual shape of a testable Go `main`, and `parseWithoutComments` has the signature `packages.Config` asks for. A struct around either would hide a shape every Go reader knows, and the cost is two exceptions to a rule the rest of the code holds.
 
 New deviations go here as the work introduces them, with the reason and the cost.

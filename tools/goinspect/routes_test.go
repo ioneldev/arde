@@ -52,9 +52,15 @@ func writePatterns(t *testing.T, patterns string) string {
 	return path
 }
 
-func routesOf(t *testing.T, root, mainPackage, patterns string) routesOutput {
+type routeQuery struct {
+	root        string
+	mainPackage string
+	patterns    string
+}
+
+func routesOf(t *testing.T, query routeQuery) routesOutput {
 	t.Helper()
-	exitCode, stdout, stderr := runCommand(t, "routes", "--patterns", writePatterns(t, patterns), "--main", mainPackage, root)
+	exitCode, stdout, stderr := runCommand(t, "routes", "--patterns", writePatterns(t, query.patterns), "--main", query.mainPackage, query.root)
 	if exitCode != 0 || stderr != "" {
 		t.Fatalf("exit %d, stderr %q", exitCode, stderr)
 	}
@@ -68,7 +74,7 @@ func routesOf(t *testing.T, root, mainPackage, patterns string) routesOutput {
 func sitesOfSource(t *testing.T, source string) []siteOutput {
 	t.Helper()
 	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
-	return routesOf(t, root, ".", noPatterns).Sites
+	return routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns}).Sites
 }
 
 func sitePaths(sites []siteOutput) []string {
@@ -151,7 +157,7 @@ func main() {
 `
 	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
 
-	if got := routesOf(t, root, ".", noPatterns).Sites; len(got) != 0 {
+	if got := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns}).Sites; len(got) != 0 {
 		t.Fatalf("got %+v, want no site", got)
 	}
 }
@@ -401,7 +407,7 @@ func TestRoutesGivesNoRootToAFunctionOfAnotherModuleInsideTheRepo(t *testing.T) 
 	}
 
 	for name, files := range layouts {
-		site := routesOf(t, writeTree(t, files), ".", noPatterns).Sites[0]
+		site := routesOf(t, routeQuery{root: writeTree(t, files), mainPackage: ".", patterns: noPatterns}).Sites[0]
 
 		if site.HandlerID != nil || site.HandlerFile != nil {
 			t.Errorf("%s: got root %s in %s", name, *site.HandlerID, *site.HandlerFile)
@@ -447,7 +453,7 @@ func serve(w http.ResponseWriter, r *http.Request) {}
 		"audit/audit.go": "package audit\n\nfunc List() {}\n\nfunc list() {}\n",
 	})
 
-	if got := routesOf(t, root, ".", noPatterns).Sites[0].HandlerID; got != nil {
+	if got := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns}).Sites[0].HandlerID; got != nil {
 		t.Fatalf("a local variable has no root, got %s", *got)
 	}
 }
@@ -510,7 +516,7 @@ func main() {
 		"api/show.go": "package api\n\nimport \"net/http\"\n\n// Show answers.\nfunc Show(w http.ResponseWriter, r *http.Request) {}\n",
 	})
 
-	site := routesOf(t, root, ".", noPatterns).Sites[0]
+	site := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns}).Sites[0]
 
 	if site.File != "main.go" || site.Line != 10 {
 		t.Errorf("site at %s:%d", site.File, site.Line)
@@ -551,7 +557,7 @@ func TestRoutesReadsAFileThatUsesCgoAtItsOwnPlace(t *testing.T) {
 		"c.go":    "package main\n\n// int eight(void) { return 8; }\nimport \"C\"\n\nimport \"net/http\"\n\nfunc served(w http.ResponseWriter, r *http.Request) { _ = C.eight() }\n",
 	})
 
-	output := routesOf(t, root, ".", noPatterns)
+	output := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns})
 
 	if len(output.Sites) != 1 {
 		t.Fatalf("got %+v", output.Sites)
@@ -641,7 +647,7 @@ func main() {
 	for name, source := range cases {
 		root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
 
-		stripped := routesOf(t, root, ".", noPatterns).StrippedPrefixes
+		stripped := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns}).StrippedPrefixes
 
 		if len(stripped) != 1 || stripped[0].File != "main.go" {
 			t.Errorf("%s: got %+v", name, stripped)
@@ -710,7 +716,7 @@ func main() {
 	for name, source := range cases {
 		root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
 
-		report := routesOf(t, root, ".", noPatterns)
+		report := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns})
 
 		if len(report.StrippedPrefixes) != 0 {
 			t.Errorf("%s: got %+v", name, report.StrippedPrefixes)
@@ -795,7 +801,7 @@ func main() {
 	for name, source := range cases {
 		root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
 
-		if got := routesOf(t, root, ".", noPatterns).StrippedPrefixes; len(got) != 1 {
+		if got := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns}).StrippedPrefixes; len(got) != 1 {
 			t.Errorf("%s: got %+v", name, got)
 		}
 	}
@@ -815,7 +821,7 @@ func main() {
 `,
 	})
 
-	report := routesOf(t, root, ".", noPatterns)
+	report := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns})
 
 	if len(report.StrippedPrefixes) != 0 || !slices.Equal(sitePaths(report.Sites), []string{"/static/"}) {
 		t.Fatalf("got %+v", report)
@@ -835,7 +841,7 @@ func main() {
 `
 	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
 
-	if got := routesOf(t, root, ".", noPatterns).StrippedPrefixes; len(got) != 0 {
+	if got := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns}).StrippedPrefixes; len(got) != 0 {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -866,7 +872,7 @@ func TestRoutesPassesOverASiteInsideAFunctionARoutePatternMatches(t *testing.T) 
 	root := writeModule(t, "example.com/depot", map[string]string{"main.go": wrapperModule})
 	patterns := `[{"kind":"route","call":"^g\\.post$","args":{"path":0,"handler":1}}]`
 
-	got := sitePaths(routesOf(t, root, ".", patterns).Sites)
+	got := sitePaths(routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns}).Sites)
 
 	if want := []string{"/always", "/known-inside-the-wrapper", "/orders"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -876,7 +882,7 @@ func TestRoutesPassesOverASiteInsideAFunctionARoutePatternMatches(t *testing.T) 
 func TestRoutesKeepsTheSiteInsideAWrapperWhenNoPatternMatchesIt(t *testing.T) {
 	root := writeModule(t, "example.com/depot", map[string]string{"main.go": wrapperModule})
 
-	sites := routesOf(t, root, ".", noPatterns).Sites
+	sites := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns}).Sites
 
 	unread := []string{}
 	for _, site := range sites {
@@ -923,7 +929,7 @@ func main() {
 		root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
 		patterns := `[{"kind":"route","call":"\\.post$","args":{"path":0,"handler":1}}]`
 
-		got := routesOf(t, root, ".", patterns).WrapperPrefixes
+		got := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns}).WrapperPrefixes
 
 		if want := []placeOutput{{File: "main.go", Line: 15}}; !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: got %+v, want %+v", name, got, want)
@@ -950,7 +956,7 @@ func main() {
 		root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
 		patterns := `[{"kind":"route","call":"\\.post$","args":{"path":0,"handler":1}}]`
 
-		if got := routesOf(t, root, ".", patterns).WrapperPrefixes; len(got) != 0 {
+		if got := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns}).WrapperPrefixes; len(got) != 0 {
 			t.Errorf("%s: got %+v", argument, got)
 		}
 	}
@@ -968,7 +974,7 @@ func main() {
 ` + handlerFuncs
 	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
 
-	output := routesOf(t, root, ".", noPatterns)
+	output := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns})
 
 	if len(output.WrapperPrefixes) != 0 || len(output.Sites) != 1 {
 		t.Fatalf("this site stops as a path the compiler does not know, got %+v", output)
@@ -995,7 +1001,7 @@ func main() {
 	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
 	patterns := `[{"kind":"route","call":"^a\\.post$","args":{"path":0,"handler":1}}]`
 
-	got := sitePaths(routesOf(t, root, ".", patterns).Sites)
+	got := sitePaths(routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns}).Sites)
 
 	if want := []string{"/one", "/two"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("a pattern on one receiver must not lose the call on the other, got %v", got)
@@ -1016,7 +1022,7 @@ func main() {
 	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
 	patterns := `[{"kind":"route","call":"^register$","args":{"path":1,"handler":0}}]`
 
-	sites := routesOf(t, root, ".", patterns).Sites
+	sites := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns}).Sites
 
 	if got, want := sitePaths(sites), []string{"/backwards"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -1030,7 +1036,7 @@ func TestRoutesLeavesOutAHandlerPositionPastTheArguments(t *testing.T) {
 	root := writeModule(t, "example.com/depot", map[string]string{"main.go": "package main\n\nimport \"net/http\"\n\nfunc main() {\n\thttp.HandleFunc(\"/x\", parcels)\n}\n" + handlerFuncs})
 	patterns := `[{"kind":"route","call":"^http\\.HandleFunc$","args":{"path":0,"handler":9}}]`
 
-	site := routesOf(t, root, ".", patterns).Sites[0]
+	site := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns}).Sites[0]
 
 	if _, present := site.Args["handler"]; present || site.HandlerID != nil {
 		t.Fatalf("a position past the arguments must read as missing, got %+v", site)
@@ -1056,7 +1062,7 @@ func main() {
 	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
 	patterns := `[{"kind":"env","call":"^os\\.Getenv$","args":{"name":0}},{"kind":"env","call":"^setting$","args":{"name":0}}]`
 
-	got := routesOf(t, root, ".", patterns).WrapperCalls
+	got := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns}).WrapperCalls
 
 	if want := []wrapperCallOutput{{Kind: "env", File: "main.go", Line: 8}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
@@ -1097,7 +1103,7 @@ func main() {
 func TestRoutesReadsOnlyThePackagesTheServiceImports(t *testing.T) {
 	root := writeModule(t, "example.com/depot", twoServices())
 
-	output := routesOf(t, root, "./cmd/tracker", noPatterns)
+	output := routesOf(t, routeQuery{root: root, mainPackage: "./cmd/tracker", patterns: noPatterns})
 
 	if got, want := sitePaths(output.Sites), []string{"/track"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("sites %v, want %v", got, want)
@@ -1116,7 +1122,7 @@ func TestRoutesFollowsAnImportIntoAFolderTheServiceDoesNotName(t *testing.T) {
 		"plugin/plugin.go": "package plugin\n\nimport \"net/http\"\n\nfunc init() {\n\thttp.HandleFunc(\"/added-by-an-import\", http.NotFound)\n}\n",
 	})
 
-	got := sitePaths(routesOf(t, root, "./cmd/api", noPatterns).Sites)
+	got := sitePaths(routesOf(t, routeQuery{root: root, mainPackage: "./cmd/api", patterns: noPatterns}).Sites)
 
 	if want := []string{"/added-by-an-import", "/api"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -1129,7 +1135,7 @@ func TestRoutesReadsAFolderTheGoToolPassesOverWhenTheServiceImportsIt(t *testing
 		"_extra/more.go": "package extra\n\nimport \"net/http\"\n\nfunc init() {\n\thttp.HandleFunc(\"/behind-an-underscore\", http.NotFound)\n}\n",
 	})
 
-	got := sitePaths(routesOf(t, root, ".", noPatterns).Sites)
+	got := sitePaths(routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns}).Sites)
 
 	if want := []string{"/behind-an-underscore"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -1144,7 +1150,7 @@ func TestRoutesLeavesOutAnotherModuleWhoseImportPathStartsTheSame(t *testing.T) 
 		"sub/routes.go": "package sub\n\nimport \"net/http\"\n\nfunc init() {\n\thttp.HandleFunc(\"/another-module\", http.NotFound)\n}\n",
 	})
 
-	output := routesOf(t, root, ".", noPatterns)
+	output := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns})
 
 	if len(output.Sites) != 0 {
 		t.Errorf("got %+v", output.Sites)
@@ -1161,7 +1167,7 @@ func TestRoutesLeavesAFileForAnotherBuildOutOfTheBuildFiles(t *testing.T) {
 		"helper_test.go": "package main\n\nimport \"net/http\"\n\nfunc init() {\n\thttp.HandleFunc(\"/only-in-tests\", http.NotFound)\n}\n",
 	})
 
-	output := routesOf(t, root, ".", noPatterns)
+	output := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns})
 
 	if len(output.Sites) != 0 {
 		t.Errorf("got %+v", output.Sites)
@@ -1297,7 +1303,7 @@ func TestRoutesIsNotStoppedByABrokenPackageOutsideTheService(t *testing.T) {
 	files["cmd/console/oops.go"] = "package main\n\nvar broken int = \"text\"\n"
 	root := writeModule(t, "example.com/depot", files)
 
-	got := sitePaths(routesOf(t, root, "./cmd/tracker", noPatterns).Sites)
+	got := sitePaths(routesOf(t, routeQuery{root: root, mainPackage: "./cmd/tracker", patterns: noPatterns}).Sites)
 
 	if want := []string{"/track"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
