@@ -33,13 +33,17 @@ type handlerReader struct {
 }
 
 // read gives a handler that holds a function written in place neither anchor nor roots: that
-// function has no id to hash and no declaration to carry docs.
+// function has no id to hash and no declaration to carry docs. It can still mount a mux.
 func (reader handlerReader) read(handler ast.Expr) handlerReading {
-	if handler == nil || holdsAFunctionLiteral(handler) {
+	if handler == nil {
 		return handlerReading{}
 	}
 	innermost := reader.innermost(handler)
-	reading := handlerReading{anchor: reader.anchorAt(innermost), isMount: reader.isMount(innermost)}
+	reading := handlerReading{isMount: reader.isMount(innermost)}
+	if holdsAFunctionLiteral(handler) {
+		return reading
+	}
+	reading.anchor = reader.anchorAt(innermost)
 	if reading.anchor.function != nil {
 		reading.roots = reader.functionsNamedIn(handler)
 	}

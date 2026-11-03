@@ -592,8 +592,9 @@ func TestRoutesTreatsAServeMuxHandlerAsAMountAndNotARoute(t *testing.T) {
 		"the default mux":           `http.DefaultServeMux`,
 		"a mux behind a wrapper":    `logged(inner)`,
 		"a mux behind two wrappers": `logged(logged(inner))`,
-		"a mux behind middleware of another module": `http.TimeoutHandler(inner, 1, "late")`,
-		"a mux a factory returns":                   `mounted()`,
+		"a mux behind middleware of another module":                 `http.TimeoutHandler(inner, 1, "late")`,
+		"a mux behind middleware given a function written in place": `guarded(inner, func(r *http.Request) bool { return true })`,
+		"a mux a factory returns":                                   `mounted()`,
 	}
 
 	for name, handler := range cases {
@@ -606,6 +607,14 @@ func logged(next http.Handler) http.Handler {
 }
 
 func mounted() *http.ServeMux { return http.NewServeMux() }
+
+func guarded(next http.Handler, allow func(*http.Request) bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if allow(r) {
+			next.ServeHTTP(w, r)
+		}
+	})
+}
 
 func main() {
 	inner := http.NewServeMux()
