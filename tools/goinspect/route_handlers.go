@@ -3,6 +3,7 @@ package main
 import (
 	"cmp"
 	"go/ast"
+	"go/token"
 	"go/types"
 	"slices"
 )
@@ -255,4 +256,56 @@ func (body functionBody) handsOn(call *ast.CallExpr, parameter *types.Var) bool 
 	return isHandlerType(body.info.TypeOf(call)) && slices.ContainsFunc(call.Args, func(argument ast.Expr) bool {
 		return body.refersTo(argument, parameter)
 	})
+}
+
+// firstWriteTo is where the function's body, its closures included, first writes one of the
+// variables. An increment needs a number, and none of the variables read here can be one.
+func (bodies functionBodies) firstWriteTo(function *types.Func, variables []*types.Var) (token.Pos, bool) {
+	body, isDeclared := bodies[function]
+	if !isDeclared {
+		return token.NoPos, false
+	}
+	written := token.NoPos
+	ast.Inspect(body.block, func(node ast.Node) bool {
+		if !written.IsValid() && body.writesTo(node, variables) {
+			written = node.Pos()
+		}
+		return !written.IsValid()
+	})
+	return written, written.IsValid()
+}
+
+// writesTo reads an assignment, a short declaration that declares a variable again, a range that
+// assigns, an address taken, and a call of a pointer method on a variable that is no pointer,
+// which takes its address too.
+func (body functionBody) writesTo(node ast.Node, variables []*types.Var) bool {
+	switch node := node.(type) {
+	case *ast.AssignStmt:
+		return body.refersToAny(node.Lhs, variables)
+	case *ast.RangeStmt:
+		return node.Tok == token.ASSIGN && body.refersToAny([]ast.Expr{node.Key, node.Value}, variables)
+	case *ast.UnaryExpr:
+		return node.Op == token.AND && body.refersToAny([]ast.Expr{node.X}, variables)
+	case *ast.SelectorExpr:
+		return body.takesTheAddressFor(node, variables)
+	}
+	return false
+}
+
+func (body functionBody) refersToAny(expressions []ast.Expr, variables []*types.Var) bool {
+	return slices.ContainsFunc(expressions, func(expression ast.Expr) bool {
+		return expression != nil && slices.ContainsFunc(variables, func(variable *types.Var) bool {
+			return body.refersTo(expression, variable)
+		})
+	})
+}
+
+func (body functionBody) takesTheAddressFor(selector *ast.SelectorExpr, variables []*types.Var) bool {
+	selection := body.info.Selections[selector]
+	if selection == nil || selection.Kind() != types.MethodVal {
+		return false
+	}
+	_, hasAPointerReceiver := selection.Obj().(*types.Func).Signature().Recv().Type().(*types.Pointer)
+	_, isAPointer := selection.Recv().(*types.Pointer)
+	return hasAPointerReceiver && !isAPointer && body.refersToAny([]ast.Expr{selector.X}, variables)
 }

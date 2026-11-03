@@ -127,6 +127,8 @@ UnreadProblem = Literal[
 
 class UnreadSite(SourcePlace):
     problem: UnreadProblem
+    # Where the function around the site writes a parameter the site registers, when that is why.
+    written_at: SourcePlace | None
 
 
 class RouteReport(Frozen):

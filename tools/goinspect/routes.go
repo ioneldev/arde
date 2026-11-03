@@ -72,10 +72,12 @@ type wrapperCall struct {
 	sourcePlace
 }
 
-// unreadSite is a call whose route cannot be read, and the problem that says why.
+// unreadSite is a call whose route cannot be read, and the problem that says why. WrittenAt is
+// where a wrapper writes a parameter its site registers, when that is why.
 type unreadSite struct {
 	sourcePlace
-	Problem string `json:"problem"`
+	Problem   string       `json:"problem"`
+	WrittenAt *sourcePlace `json:"written_at"`
 }
 
 type routeReport struct {
@@ -290,6 +292,10 @@ func (call routeCall) unreadAs(problem string) callReading {
 	return callReading{unread: []unreadSite{{sourcePlace: call.place, Problem: problem}}}
 }
 
+func (call routeCall) unreadFor(inner innerSite) callReading {
+	return callReading{unread: []unreadSite{{sourcePlace: call.place, Problem: inner.problem, WrittenAt: inner.writtenAt}}}
+}
+
 func (reader routeReader) readCall(call serviceCall) callReading {
 	reading := callReading{}
 	for _, read := range reader.routeCallsOf(call) {
@@ -337,7 +343,7 @@ func (reader routeReader) routePositionsOf(call serviceCall) []map[string]int {
 func (reader routeReader) readAt(call routeCall) callReading {
 	if inner, isInside := reader.innerSiteAt(call); isInside {
 		if inner.problem != "" {
-			return call.unreadAs(inner.problem)
+			return call.unreadFor(inner)
 		}
 		return callReading{}
 	}
@@ -355,10 +361,11 @@ func (reader routeReader) isRouteWrapper(function *types.Func) bool {
 }
 
 // innerSite is a site inside a wrapper whose path is not a constant: the form it registers its
-// path in, or the problem that stops it being read.
+// path in, or the problem that stops it being read, with the place of the write behind it.
 type innerSite struct {
-	form    wrapperForm
-	problem string
+	form      wrapperForm
+	problem   string
+	writtenAt *sourcePlace
 }
 
 // innerSiteAt reads a site inside a wrapper that registers a path it is given. The pattern reads
@@ -376,7 +383,31 @@ func (reader routeReader) innerSiteAt(call routeCall) (innerSite, bool) {
 	if !isRead {
 		return innerSite{problem: buildsItsPath}, true
 	}
+	if written, isWritten := reader.writeToTheParametersOf(call.enclosing); isWritten {
+		return innerSite{problem: buildsItsPath, writtenAt: written}, true
+	}
 	return innerSite{form: form}, true
+}
+
+// writeToTheParametersOf finds where a wrapper writes its path or method parameter. The parameter
+// stays the same variable after a write, so only a wrapper that never writes them can be trusted
+// to register the values its callers pass. A write with no place in the repo still counts.
+func (reader routeReader) writeToTheParametersOf(wrapper *types.Func) (*sourcePlace, bool) {
+	positions := reader.wrappers[routeKind][wrapper]
+	read := []*types.Var{}
+	for _, name := range []string{"path", "method"} {
+		if position, isNamed := positions[name]; isNamed {
+			read = append(read, parameterAt(wrapper, position))
+		}
+	}
+	written, isWritten := reader.bodies.firstWriteTo(wrapper, read)
+	if !isWritten {
+		return nil, false
+	}
+	if place, isInTheRepo := reader.service.placeOf(written); isInTheRepo {
+		return &place, true
+	}
+	return nil, true
 }
 
 // formOf reads three forms and no others: the wrapper's path parameter alone, a constant method

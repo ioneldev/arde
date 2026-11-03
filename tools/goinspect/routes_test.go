@@ -38,9 +38,10 @@ type wrapperCallOutput struct {
 }
 
 type unreadSiteOutput struct {
-	File    string `json:"file"`
-	Line    int    `json:"line"`
-	Problem string `json:"problem"`
+	File      string       `json:"file"`
+	Line      int          `json:"line"`
+	Problem   string       `json:"problem"`
+	WrittenAt *placeOutput `json:"written_at"`
 }
 
 type routesOutput struct {
@@ -1146,6 +1147,50 @@ func TestRoutesStopsAtAWrapperThatBuildsItsPathFromMoreThanItsParameters(t *test
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: got %+v, want %+v", name, got, want)
 		}
+	}
+}
+
+// A parameter that is still the same variable can hold another value by the time the site reads it,
+// so a write anywhere in the wrapper, a closure's included, stops the run and names the write.
+func TestRoutesStopsAtAWrapperThatWritesAParameterItRegisters(t *testing.T) {
+	cases := map[string]struct {
+		site     string
+		write    string
+		patterns string
+	}{
+		"a prefix from a field": {"path = g.prefix + path\n\tg.mux.HandleFunc(\"GET \"+path, h)", "path = g.prefix", postWithoutAMethod},
+		"a prefix written in":   {"path = \"/v1\" + path\n\tg.mux.HandleFunc(path, h)", "path = \"/v1\"", postWithoutAMethod},
+		"a slash added in a branch": {
+			"if !strings.HasSuffix(path, \"/\") {\n\t\tpath += \"/\"\n\t}\n\tg.mux.HandleFunc(\"GET \"+path, h)", "path += ", postWithoutAMethod,
+		},
+		"the method replaced":         {"method = \"PUT\"\n\tg.mux.HandleFunc(method+\" \"+path, h)", "method = ", postWithAMethod},
+		"the path declared again":     {"path, found := \"/v1\"+path, true\n\t_ = found\n\tg.mux.HandleFunc(\"GET \"+path, h)", "path, found", postWithoutAMethod},
+		"the path written by a range": {"for path = range map[string]int{\"/x\": 1} {\n\t}\n\tg.mux.HandleFunc(\"GET \"+path, h)", "for path = range", postWithoutAMethod},
+		"the address taken":           {"where := &path\n\t_ = where\n\tg.mux.HandleFunc(\"GET \"+path, h)", "where := &path", postWithoutAMethod},
+		"a write inside a closure":    {"widen := func() { path = \"/v1\" + path }\n\twiden()\n\tg.mux.HandleFunc(\"GET \"+path, h)", "widen := func", postWithoutAMethod},
+	}
+
+	for name, test := range cases {
+		source := aWrapperRegistering(test.site)
+
+		got := unreadSitesOf(t, source, test.patterns)
+
+		written := &placeOutput{File: "main.go", Line: lineHolding(t, source, test.write)}
+		want := []unreadSiteOutput{{File: "main.go", Line: lineHolding(t, source, "HandleFunc("), Problem: "builds its path", WrittenAt: written}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %+v, want %+v", name, got, want)
+		}
+	}
+}
+
+func TestRoutesReadsAWrapperThatOnlyReadsItsParameters(t *testing.T) {
+	source := aWrapperRegistering("if path == \"\" || method == \"\" {\n\t\treturn\n\t}\n\tg.mux.HandleFunc(method+\" \"+path, h)")
+	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
+
+	output := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: postWithAMethod})
+
+	if got := sitePaths(output.Sites); !reflect.DeepEqual(got, []string{"PUT /items"}) || len(output.UnreadSites) != 0 {
+		t.Fatalf("got %v and %+v", got, output.UnreadSites)
 	}
 }
 

@@ -151,6 +151,99 @@ def test_a_wrapper_that_adds_to_its_path_parameter_stops_the_run(
     assert stopped.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
 
 
+def a_wrapper_that_writes(*, parameters: str, write: str, site: str, call: str) -> str:
+    return f"""package main
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+	"strings"
+)
+
+var _ = strings.HasSuffix
+
+type group struct {{
+	mux    *http.ServeMux
+	prefix string
+}}
+
+func (g *group) add({parameters}, h http.HandlerFunc) {{
+	{write}
+	g.mux.HandleFunc({site}, h)
+}}
+
+func items(w http.ResponseWriter, r *http.Request) {{ fmt.Fprint(w, "items") }}
+
+func main() {{
+	g := &group{{mux: http.NewServeMux(), prefix: "/api/v1"}}
+	g.add({call}, items)
+	http.ListenAndServe(":"+os.Getenv("PORT"), g.mux)
+}}
+"""
+
+
+PATH_FIRST = ExtractionPattern(kind="route", call=r"^g\.add$", args={"path": 0, "handler": 1})
+METHOD_FIRST = ExtractionPattern(
+    kind="route", call=r"^g\.add$", args={"method": 0, "path": 1, "handler": 2}
+)
+
+
+# The reviewer's services: each gave GET /items while the service serves another route there.
+@pytest.mark.parametrize(
+    ("service", "pattern"),
+    [
+        (
+            a_wrapper_that_writes(
+                parameters="path string",
+                write="path = g.prefix + path",
+                site='"GET "+path',
+                call='"/items"',
+            ),
+            PATH_FIRST,
+        ),
+        (
+            a_wrapper_that_writes(
+                parameters="path string",
+                write='path = "/v1" + path',
+                site='"GET "+path',
+                call='"/items"',
+            ),
+            PATH_FIRST,
+        ),
+        (
+            a_wrapper_that_writes(
+                parameters="path string",
+                write='if !strings.HasSuffix(path, "/") { path += "/" }',
+                site='"GET "+path',
+                call='"/items"',
+            ),
+            PATH_FIRST,
+        ),
+        (
+            a_wrapper_that_writes(
+                parameters="method, path string",
+                write='method = "PUT"',
+                site='method+" "+path',
+                call='"GET", "/items"',
+            ),
+            METHOD_FIRST,
+        ),
+    ],
+    ids=["a group prefix in a field", "a prefix written in", "a slash added", "the method set"],
+)
+def test_a_wrapper_that_writes_a_parameter_it_registers_stops_the_run_and_names_the_write(
+    adapter: GoAdapter, tmp_path: Path, service: str, pattern: ExtractionPattern
+) -> None:
+    repo = a_service(tmp_path, service)
+
+    with pytest.raises(RouteNotUnderstoodError, match=r"registered at main\.go:19:") as stopped:
+        adapter.extract_inventory(repo, reading(pattern))
+
+    assert "builds its path" in str(stopped.value)
+    assert "written at main.go:18" in str(stopped.value)
+
+
 GET_JSON = """package main
 
 import (

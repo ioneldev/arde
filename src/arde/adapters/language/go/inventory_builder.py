@@ -119,8 +119,7 @@ class _Located(Protocol):
 class RouteNotUnderstoodError(ProfileProblem):
     def __init__(self, place: _Located, problem: str, *, next_action: str) -> None:
         super().__init__(
-            f"Cannot read the route registered at {printable_name(place.file)}:{place.line}: "
-            f"{problem}.",
+            f"Cannot read the route registered at {_place(place)}: {problem}.",
             next_action=next_action,
         )
 
@@ -188,7 +187,13 @@ def _stop_where_a_path_changes(service: RouteReport) -> None:
     if service.unread_sites:
         site = service.unread_sites[0]
         problem, next_action = _WHY_A_SITE_IS_UNREAD[site.problem]
+        if site.written_at is not None:
+            problem += f": a parameter it registers is written at {_place(site.written_at)}"
         raise RouteNotUnderstoodError(site, problem, next_action=next_action)
+
+
+def _place(place: _Located) -> str:
+    return f"{printable_name(place.file)}:{place.line}"
 
 
 _WHY_A_SITE_IS_UNREAD: dict[UnreadProblem, tuple[str, str]] = {

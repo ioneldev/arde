@@ -510,7 +510,7 @@ def test_the_file_named_by_a_prefix_stop_is_printed_safely() -> None:
 
 
 def stopped_at_an_unread_site(problem: UnreadProblem) -> RouteNotUnderstoodError:
-    site = UnreadSite(file="web/router.go", line=8, problem=problem)
+    site = UnreadSite(file="web/router.go", line=8, problem=problem, written_at=None)
     with pytest.raises(RouteNotUnderstoodError) as stopped:
         inventory_of(registering(Lit("GET /items")), unread_sites=(site,))
     return stopped.value
@@ -537,6 +537,18 @@ def test_a_site_goinspect_cannot_read_stops_the_run_names_the_place_and_says_why
     assert "Do not narrow" in error.next_action
 
 
+def test_a_wrapper_that_writes_a_parameter_it_registers_names_the_write() -> None:
+    write = SourcePlace(file="web/route\x1bs.go", line=6)
+    site = UnreadSite(file="web/router.go", line=8, problem="builds its path", written_at=write)
+
+    with pytest.raises(RouteNotUnderstoodError) as stopped:
+        inventory_of(registering(Lit("GET /items")), unread_sites=(site,))
+
+    assert "web/router.go:8" in str(stopped.value)
+    assert "builds its path from more than its parameters" in str(stopped.value)
+    assert "written at web/route\\u001bs.go:6" in str(stopped.value)
+
+
 def test_a_wrapper_that_builds_its_path_is_told_how_to_name_a_method_parameter() -> None:
     error = stopped_at_an_unread_site("builds its path")
 
@@ -544,7 +556,7 @@ def test_a_wrapper_that_builds_its_path_is_told_how_to_name_a_method_parameter()
 
 
 def test_the_file_named_by_an_unread_site_is_printed_safely() -> None:
-    site = UnreadSite(file="e\x1bvil.go", line=2, problem="registers nothing")
+    site = UnreadSite(file="e\x1bvil.go", line=2, problem="registers nothing", written_at=None)
 
     with pytest.raises(RouteNotUnderstoodError) as stopped:
         inventory_of(registering(Lit("GET /items")), unread_sites=(site,))

@@ -605,7 +605,14 @@ ROUTES_REPLY = {
         }
     ],
     "stripped_prefixes": [{"file": "web/files.go", "line": 4}],
-    "unread_sites": [{"file": "web/router.go", "line": 6, "problem": "builds its path"}],
+    "unread_sites": [
+        {
+            "file": "web/router.go",
+            "line": 6,
+            "problem": "builds its path",
+            "written_at": {"file": "web/router.go", "line": 5},
+        }
+    ],
     "wrapper_calls": [{"kind": "env", "file": "main.go", "line": 7}],
 }
 
@@ -630,7 +637,12 @@ def test_routes_hand_over_the_patterns_and_the_main_package_and_read_the_reply(
     assert site.roots == ("(*example.com/depot.desk).list", "example.com/depot.logged")
     assert reply.stripped_prefixes == (SourcePlace(file="web/files.go", line=4),)
     assert reply.unread_sites == (
-        UnreadSite(file="web/router.go", line=6, problem="builds its path"),
+        UnreadSite(
+            file="web/router.go",
+            line=6,
+            problem="builds its path",
+            written_at=SourcePlace(file="web/router.go", line=5),
+        ),
     )
     assert reply.wrapper_calls == (WrapperCall(kind="env", file="main.go", line=7),)
 
@@ -660,7 +672,7 @@ def test_a_routes_reply_with_no_package_folders_is_refused(stand_in: StandIn, fo
 def test_a_routes_reply_with_a_problem_arde_does_not_know_is_refused(
     stand_in: StandIn, folder: Path
 ) -> None:
-    unknown = [{"file": "web/router.go", "line": 6, "problem": "something new"}]
+    unknown = [{"file": "web/router.go", "line": 6, "problem": "something new", "written_at": None}]
     stand_in.replies_with(json.dumps({**ROUTES_REPLY, "unread_sites": unknown}))
 
     with pytest.raises(GoinspectError, match="unread_sites"):
