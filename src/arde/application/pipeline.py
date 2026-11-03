@@ -31,7 +31,7 @@ from arde.application.changes import (
     NO_CHANGES,
     RunChanges,
     SnapshotComparison,
-    changed_topics,
+    changed_fact_ids,
     changes_since_snapshot,
     paths_that_differ,
     restore_last_pages,
@@ -80,7 +80,7 @@ from arde.checks.spec_inventory import SpecMatchesInventory
 from arde.checks.spec_valid import SpecValid
 from arde.domain.base import Frozen, one_line, printable_name, visible_text
 from arde.domain.errors import ArdeError
-from arde.domain.facts import Topic, Wiki
+from arde.domain.facts import Wiki
 from arde.domain.findings import Finding
 from arde.domain.inventory import Inventory
 from arde.domain.profile import DiscoveredProfile, RepoProfile
@@ -473,7 +473,7 @@ def _write_output(
     wiki: Wiki,
     run: _Run,
     repair_findings: Sequence[Finding] = (),
-    repaired_topics: frozenset[Topic] = frozenset(),
+    repaired_fact_ids: frozenset[str] = frozenset(),
 ) -> _Output:
     """A new output copy of the input, with the annotations, spec and docs written from the wiki."""
     output_repo = _copy_output(basis.input_repo, run)
@@ -484,7 +484,7 @@ def _write_output(
             repo=output_repo,
             wiki=wiki,
             inventory=basis.reading.inventory,
-            stale_topics=changed_topics(basis.last.wiki, wiki) | repaired_topics,
+            changed_fact_ids=changed_fact_ids(basis.last.wiki, wiki) | repaired_fact_ids,
             repair_findings=tuple(repair_findings),
         ),
         run,
@@ -576,8 +576,8 @@ class _Verification:
     # The latest wiki, which an explore repair replaces before the docs repair writes from it.
     wiki: Wiki
     output: _Output
-    # The topics of the facts explore changed in a repair, whose sections docs writes again.
-    repaired_topics: frozenset[Topic] = frozenset()
+    # The ids of the facts explore changed in a repair, whose sections docs writes again.
+    repaired_fact_ids: frozenset[str] = frozenset()
     # What the last check found, which the round after it repairs.
     found: list[Finding] = field(default_factory=list)
     checks_run: int = 0
@@ -611,7 +611,7 @@ class _Verification:
             repair_findings=findings,
             attempt=self.checks_run,
         )
-        self.repaired_topics |= changed_topics(self.wiki, explored.wiki)
+        self.repaired_fact_ids |= changed_fact_ids(self.wiki, explored.wiki)
         self.wiki = explored.wiki
 
     # The docs repair ends every round, after explore's when there is one, so it writes the whole
@@ -622,7 +622,7 @@ class _Verification:
             wiki=self.wiki,
             run=self.run,
             repair_findings=findings,
-            repaired_topics=self.repaired_topics,
+            repaired_fact_ids=self.repaired_fact_ids,
         )
 
 

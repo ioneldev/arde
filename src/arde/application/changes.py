@@ -22,7 +22,7 @@ from arde.application.agents.docs_writer import (
 )
 from arde.application.ports import LanguageAdapter, ProfileProblem, RenderManifest, RouteHashes
 from arde.domain.change import ChangeReport, stale_fact_ids
-from arde.domain.facts import Fact, ProbeCitation, Topic, Wiki
+from arde.domain.facts import Fact, ProbeCitation, Wiki
 from arde.domain.inventory import Inventory
 from arde.domain.profile import RepoProfile
 
@@ -71,20 +71,23 @@ def changes_since_snapshot(comparison: SnapshotComparison, adapter: LanguageAdap
     return RunChanges(stale_ids=stale_fact_ids(comparison.wiki, report), report=report)
 
 
-def changed_topics(last: Wiki, new: Wiki) -> frozenset[Topic]:
-    """The topics of the facts that were added, removed or changed, or whose probe answers anew."""
+def changed_fact_ids(last: Wiki, new: Wiki) -> frozenset[str]:
+    """The ids of the facts both wikis hold whose content differs, or whose probe answers anew.
+
+    A fact that came or went is left out: each doc section notices that from the facts it rests on.
+    """
     last_facts = {fact.id: fact for fact in last.facts}
-    new_facts = {fact.id: fact for fact in new.facts}
     last_probes = {(probe.method, probe.path_and_query): probe for probe in last.probes}
     reanswered = {
         (probe.method, probe.path_and_query)
         for probe in new.probes
         if last_probes.get((probe.method, probe.path_and_query)) not in (None, probe)
     }
-    changed = [fact for fact in last_facts.values() if new_facts.get(fact.id) != fact]
-    changed += [fact for fact in new_facts.values() if last_facts.get(fact.id) != fact]
-    changed += [fact for fact in new_facts.values() if _cites_any(fact, reanswered)]
-    return frozenset(fact.topic for fact in changed)
+    return frozenset(
+        fact.id
+        for fact in new.facts
+        if fact.id in last_facts and (last_facts[fact.id] != fact or _cites_any(fact, reanswered))
+    )
 
 
 def _cites_any(fact: Fact, requests: set[tuple[str, str]]) -> bool:

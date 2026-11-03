@@ -105,9 +105,12 @@ def test_a_second_run_after_one_changed_function_redoes_only_what_it_touches(
         }
     )
     quote_endpoint = next(fact for fact in SHOP_FACTS if fact.id == "endpoint.quote")
+    # The overview and the change guide rest on every fact, so the changed rule rewrites them too.
     script = [
         *exploring_the_shop(quote_endpoint, reworded, probes=(TEA, NOTHING, BAD_PIECES)),
+        writing_a_section("What the shop is, again.", NO_DISCOUNT.id),
         writing_a_section("There is no volume discount on any order.", NO_DISCOUNT.id),
+        writing_a_section("How to change the shop safely, again.", NO_DISCOUNT.id),
     ]
 
     code, report, err = arde.run("--repo", shop.as_uri(), script=script)

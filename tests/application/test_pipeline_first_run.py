@@ -32,8 +32,9 @@ from arde.application.agents.explore import SYSTEM_PROMPT as EXPLORE_PROMPT
 from arde.application.pipeline import run_pipeline
 from arde.application.ports import LLMResponse, ProviderError, RouteHashes
 from arde.application.profile_store import save_profile
-from arde.domain.facts import RuleFact
+from arde.domain.facts import ParamFact, RuleFact
 from arde.domain.findings import Finding
+from arde.domain.inventory import Param
 from arde.domain.profile import DiscoveredProfile
 from arde.domain.report import ExitCode, RunReport
 
@@ -638,10 +639,16 @@ def test_a_fact_submitted_again_unchanged_rewrites_no_section(tmp_path: Path) ->
     assert output_page.read_text() == page.read_text()
 
 
-def test_a_changed_fact_rewrites_its_own_section_and_no_other(tmp_path: Path) -> None:
+# The overview and the change guide rest on every fact, so they are among those sections.
+def test_a_changed_fact_rewrites_each_section_resting_on_it_and_no_other(tmp_path: Path) -> None:
     a_documented_repo(tmp_path)
     reworded = ORDER_RULE.model_copy(update={"statement": "Things come back oldest first."})
-    script = [*exploring(reworded), writing_a_section("Oldest first.", "rule.order")]
+    script = [
+        *exploring(reworded),
+        an_overview("rule.order"),
+        writing_a_section("Oldest first.", "rule.order"),
+        a_change_guide("rule.order"),
+    ]
     second = Rig(
         tmp_path=tmp_path, script=script, adapter=FakeAdapter(changed=["main.go::func things"])
     )
@@ -649,13 +656,63 @@ def test_a_changed_fact_rewrites_its_own_section_and_no_other(tmp_path: Path) ->
     report = run(second)
 
     assert report.status == "success"
-    docs_requests = [r for r in second.llm.requests if r.config == second.llm.requests[-1].config]
-    sections = [r for r in docs_requests if "submit_section" in {t.name for t in r.tools}]
-    assert len(sections) == 1
-    assert "business-rules" in str(sections[0].messages[0]["content"])
+    sections = [r for r in second.llm.requests if "submit_section" in {t.name for t in r.tools}]
+    assignments = [str(r.messages[0]["content"]).split("\n", 1)[0] for r in sections]
+    assert [a.split('"')[1] for a in assignments] == ["overview", "business-rules", "change-guide"]
     output = Path(report.run_dir) / "output" / "docs"
     assert "Oldest first." in (output / "business-rules.md").read_text()
     assert "Set THINGS_PORT" in (output / "configuration.md").read_text()
+
+
+LIMIT = ParamFact(
+    name="limit",
+    location="query",
+    declared_type="int",
+    required=False,
+    description="How many things to list",
+    minimum=1,
+    maximum=10,
+    enum=(),
+    default="10",
+)
+CAPPED_THINGS = THINGS_FACT.model_copy(update={"params": (LIMIT,)})
+
+
+def reading_limit() -> FakeAdapter:
+    return FakeAdapter(inventory=an_inventory(params=(Param(name="limit"),)))
+
+
+# Measured on a re-run: maxQty went from 10 to 20, and only the API page, which code renders, said
+# 20. The business rules had used the endpoint fact and still said 10, because only the changed
+# fact's own topic, api, counted as stale.
+def test_a_section_that_used_a_changed_fact_of_another_topic_is_written_again(
+    tmp_path: Path,
+) -> None:
+    first_script = [
+        submitting_the_profile(),
+        *exploring(CAPPED_THINGS, ORDER_RULE, PORT_RULE),
+        an_overview(ORDER_RULE.id),
+        writing_a_section("At most 10 things come back.", ORDER_RULE.id, CAPPED_THINGS.id),
+        writing_a_section("Set THINGS_PORT to choose the port.", PORT_RULE.id),
+        a_change_guide(ORDER_RULE.id),
+    ]
+    assert run(a_rig(tmp_path, first_script, adapter=reading_limit())).status == "success"
+    raised_limit = LIMIT.model_copy(update={"maximum": 20})
+    raised = CAPPED_THINGS.model_copy(update={"params": (raised_limit,)})
+    second_script = [
+        *exploring(raised),
+        an_overview(ORDER_RULE.id),
+        writing_a_section("At most 20 things come back.", ORDER_RULE.id, raised.id),
+        a_change_guide(ORDER_RULE.id),
+    ]
+    second = Rig(tmp_path=tmp_path, script=second_script, adapter=reading_limit())
+
+    report = run(second)
+
+    assert report.status == "success"
+    docs = Path(report.run_dir) / "output" / "docs"
+    assert "At most 20 things come back." in (docs / "business-rules.md").read_text()
+    assert "Set THINGS_PORT" in (docs / "configuration.md").read_text()
 
 
 class FailingLLM:

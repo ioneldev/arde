@@ -186,6 +186,10 @@ def section_replies(topics: tuple[Topic, ...] = WRITTEN_TOPICS) -> list[LLMRespo
     return [submitting(f"About {topic}.", [OWN_FACT[topic]]) for topic in topics]
 
 
+def rewriting(topics: tuple[Topic, ...]) -> list[LLMResponse]:
+    return [submitting(f"About {topic}, again.", [OWN_FACT[topic]]) for topic in topics]
+
+
 def last_result_sent(run: Scripted, request: int) -> dict[str, Any]:
     content = run.llm.requests[request].messages[-1]["content"]
     assert isinstance(content, list)
@@ -203,14 +207,14 @@ def docs_request(
     repo: Path,
     wiki: Wiki = WIKI,
     *,
-    stale: frozenset[Topic] = frozenset(),
+    changed: frozenset[str] = frozenset(),
     repair_findings: tuple[Finding, ...] = (),
 ) -> DocsRequest:
     return DocsRequest(
         repo=repo,
         wiki=wiki,
         inventory=EMPTY_INVENTORY,
-        stale_topics=stale,
+        changed_fact_ids=changed,
         repair_findings=repair_findings,
     )
 
@@ -440,19 +444,55 @@ def test_a_section_records_its_own_facts_with_those_it_used(tmp_path: Path) -> N
     assert result.sections["business-rules"] == ("endpoint:quote", "rule:rounding")
 
 
-def test_stale_set_limits_rewritten_sections(tmp_path: Path) -> None:
+# The overview and the change guide rest on every fact, so any changed fact rewrites them.
+def test_a_changed_fact_rewrites_only_the_sections_that_rest_on_it(tmp_path: Path) -> None:
     repo = a_repo(tmp_path)
     first_run(tmp_path, repo)
     before = docs_files(repo)
-    run = scripted(tmp_path, submitting("Rounding, rewritten.", ["rule:rounding"]))
+    run = scripted(tmp_path, *rewriting(("overview", "configuration", "change-guide")))
 
-    result = write_docs(docs_request(repo, stale=frozenset({"business-rules"})), run.deps)
+    result = write_docs(docs_request(repo, changed=frozenset({"rule:port"})), run.deps)
 
     after = docs_files(repo)
-    assert len(run.llm.requests) == 1
-    assert '"business-rules"' in str(run.llm.requests[0].messages[0]["content"])
-    assert result.changed_paths == ("docs/business-rules.md",)
-    assert {name for name in after if after[name] != before[name]} == {"business-rules.md"}
+    assert len(run.llm.requests) == 3
+    assert result.changed_paths == (
+        "docs/change-guide.md",
+        "docs/configuration.md",
+        "docs/overview.md",
+    )
+    assert {name for name in after if after[name] != before[name]} == {
+        "change-guide.md",
+        "configuration.md",
+        "overview.md",
+    }
+
+
+# Measured on a re-run: maxQty went from 10 to 20, and the business rules, which had used the
+# endpoint fact, kept saying 10, because only the changed fact's own topic counted as stale.
+def test_a_section_that_used_a_changed_fact_of_another_topic_is_rewritten(tmp_path: Path) -> None:
+    repo = a_repo(tmp_path)
+    first = scripted(
+        tmp_path,
+        *section_replies(WRITTEN_TOPICS[:1]),
+        submitting("Up to 10 pieces.", ["rule:rounding", "endpoint:quote"]),
+        *section_replies(WRITTEN_TOPICS[2:]),
+    )
+    save_sections(first.deps.store, write_docs(docs_request(repo), first.deps).sections)
+    run = scripted(
+        tmp_path,
+        *rewriting(("overview",)),
+        submitting("Up to 20 pieces.", ["rule:rounding", "endpoint:quote"]),
+        *rewriting(("change-guide",)),
+    )
+
+    result = write_docs(docs_request(repo, changed=frozenset({"endpoint:quote"})), run.deps)
+
+    assert result.changed_paths == (
+        "docs/business-rules.md",
+        "docs/change-guide.md",
+        "docs/overview.md",
+    )
+    assert "Up to 20 pieces." in (repo / "docs" / "business-rules.md").read_text(encoding="utf-8")
 
 
 def test_section_with_no_facts_removed(tmp_path: Path) -> None:
