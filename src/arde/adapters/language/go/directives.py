@@ -9,7 +9,7 @@ and a wrong "comment-only" ignores a change.
 import re
 from pathlib import Path
 
-# A whole line: indentation, //, then whitespace or the end. "//word" is how every directive is
+# A whole line: indentation, //, then whitespace or the end. "//word" is how most directives are
 # written, so it is not ordinary. The spaced forms below are read by the compiler or go test too.
 _LINE_COMMENT = re.compile(r"[ \t]*//(?:[ \t].*)?")
 _SPACED_DIRECTIVE = re.compile(

@@ -1,4 +1,4 @@
-"""Runs one child process to the end, with the allow-listed environment and a timeout that holds.
+"""Runs one child process to the end, in the environment it is given, with a timeout that holds.
 
 Output goes to temporary files, not pipes. A pipe stays open as long as any process holds its
 end, so a grandchild that outlived the child would keep the caller waiting after the timeout.

@@ -37,9 +37,8 @@ func (source *parsedSource) lineOf(pos token.Pos) int {
 	return source.fileSet.PositionFor(pos, false).Line
 }
 
-// normalisedHash says whether two sources mean the same thing to ARDE: it ignores
-// comments, formatting, line endings and the tags ARDE adds. It is the one normaliser that both
-// compare and the declaration hashes rely on.
+// normalisedHash is the same for two sources that mean the same thing to ARDE: it ignores comments,
+// formatting, line endings and the tags ARDE adds.
 func normalisedHash(path string, source []byte) (string, error) {
 	parsed, err := parseSource(path, source)
 	if err != nil {
@@ -49,8 +48,9 @@ func normalisedHash(path string, source []byte) (string, error) {
 	return hashOfDump(parsed.syntax), nil
 }
 
-// normaliseTree is the step every command runs on syntax before it hashes anything in it. It
-// changes the tree in place and is safe to run twice.
+// normaliseTree is the step every command runs on syntax before it hashes anything in it, so it
+// is the one normaliser that compare, the declaration hashes and the fingerprints share. It changes
+// the tree in place and is safe to run twice.
 func normaliseTree(tree ast.Node) {
 	dropTagsAddedByArde(tree)
 	markSyntaxHeldInPositions(tree)

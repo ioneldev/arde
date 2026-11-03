@@ -13,8 +13,8 @@ import (
 	"strings"
 )
 
-// walkPolicy says what a walk leaves out. Directories and files are judged by name alone, and
-// separately: a directory name decides whether to descend, a file name whether to list.
+// walkPolicy says what a walk leaves out. A directory's name decides whether to descend and a
+// file's name whether to list it, and the two flags add what a name cannot show.
 type walkPolicy struct {
 	skipsDirectory func(name string) bool
 	skipsFile      func(name string) bool

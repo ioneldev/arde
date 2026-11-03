@@ -155,7 +155,7 @@ func compilePattern(spec patternSpec) (callPattern, error) {
 		return callPattern{}, errors.New("call is empty, and an empty regex matches every call")
 	}
 	if spec.Args == nil {
-		return callPattern{}, errors.New("args is missing or null; write {} for a call whose arguments do not matter")
+		return callPattern{}, errors.New("args is missing or null; give the position of each argument this kind reads")
 	}
 	if length := utf8.RuneCountInString(spec.Call); length > maxCallPatternLength {
 		return callPattern{}, fmt.Errorf("call is %d characters long, and the limit is %d", length, maxCallPatternLength)

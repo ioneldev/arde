@@ -37,7 +37,7 @@ Give ARDE reliable eyes on a Go repo before any agent uses them. At the end, cod
 - Child processes get an allow-listed environment, so the API key can't reach them.
 - `catalog-poc` is read, never changed.
 - ARDE knows nothing about any target repo. Repo-specific facts come only from Discovery's profile, from code reading the repo, or from the wiki. An architecture test fails if product code or a prompt names `catalog-poc` or one of its identifiers.
-- A silent skip is a defect. If a file can't be read or a route can't be understood, the tool says so or stops. Only `compare` may over-report, and it never misses a change.
+- A silent skip is a defect. If a file can't be read or a route can't be understood, the tool says so or stops. Only `compare`, the fingerprints and the comment-only rule may over-report, and `compare` never misses a change to code it can see.
 - `LanguageAdapter` holds only methods that have an implementation. Four more arrive with Tasks 14, 15 and 18.
 
 ## How we know it's done

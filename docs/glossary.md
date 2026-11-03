@@ -2,7 +2,7 @@
 
 Terms as ARDE uses them.
 
-**Directive**: A comment that a compiler or a tool reads, such as `//go:build`, `//go:embed`, a cgo preamble or an example's `// Output:` line. Changing one can change behaviour, so the comment-only rule never takes one out of the comparison: it takes out only ordinary comment lines, a whole line that starts `// ` and is none of these, and the tags ARDE adds. A line like `//go:build` has no space after the slashes, which is how every directive is written.
+**Directive**: A comment that a compiler or a tool reads, such as `//go:build`, `//go:embed`, a cgo preamble or an example's `// Output:` line. Changing one can change behaviour, so the comment-only rule never takes one out of the comparison: it takes out only ordinary comment lines, a whole line that starts `// ` and is none of these, and the tags ARDE adds. A line like `//go:build` has no space after the slashes, which is how most directives are written. The Go tools also read `// +build`, `// #cgo` and `// Output:` with a space, so those are directives too.
 
 **Fact**: One checked statement about the target service, with an id, evidence (a code quote or a citation of a recorded request and response) and links to the declarations, routes or files it depends on. Facts are what the docs agent writes from.
 
@@ -10,7 +10,7 @@ Terms as ARDE uses them.
 
 **Inline handler**: A route whose handler is a function written in place, or another expression with no plain name to show. The inventory stores it as `(inline)`. A function written in place has no fingerprint, so the stale rule counts it as changed on every run.
 
-**Inventory**: The routes, params, error codes, response fields, env vars and make targets that code extracts from the source using the profile's patterns. It is computed on every run and never stored, so an agent cannot invent an item that is not in it. A call that matched a pattern but gave nothing, because an argument was not a string literal, is listed in its `dropped` lines, so a missing item can be told from a call that was never found.
+**Inventory**: The routes, params, error codes, response fields, env vars and make targets that code extracts from the source using the profile's patterns. It is computed on every run and never stored, so an agent cannot invent an item that is not in it. A call that matched a pattern but gave nothing, because an argument was missing, empty or not a string literal, is listed in its `dropped` lines, so a missing item can be told from a call that was never found.
 
 **Profile**: What discovery learns about how to build, run and read one repo: the main package, the port variable, the main file for `swag`, and the patterns that find routes, params and error codes. It is stored, reused, and re-validated on every run.
 

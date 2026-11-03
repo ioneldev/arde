@@ -86,9 +86,9 @@ class Inventory(Frozen):
     make_targets: tuple[NameText, ...]
     # Every declaration of the service, as file::kind name, so a fact can be checked against them.
     declarations: tuple[DeclarationText, ...] = ()
-    # One short line for each thing that was found and gave nothing, because an argument was not a
-    # string literal, its text could not be read or it lies outside the service. Without it a repo
-    # with constant error codes looks like one with none.
+    # One short line for each thing that was found and gave nothing, because an argument was
+    # missing, empty or not a string literal, its text could not be read or it lies outside the
+    # service. Without it a repo with constant error codes looks like one with none.
     dropped: tuple[DroppedLine, ...] = ()
     # Each pattern of the profile that matched no call, as "kind regex". A dead pattern looks the
     # same as a repo with no such calls, and only this tells them apart.

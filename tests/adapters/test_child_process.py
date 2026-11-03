@@ -1,4 +1,4 @@
-"""Running a child process: the allow-listed environment, a timeout that holds, bounded output."""
+"""Running a child process: the environment it is given, a timeout that holds, bounded output."""
 
 import json
 import subprocess
