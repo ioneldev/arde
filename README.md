@@ -20,3 +20,5 @@ make check               # go vet + go test
 ```sh
 make docker-build docker-run
 ```
+
+New to this service? Read [its documentation](docs/).

@@ -35,24 +35,38 @@ func (p Product) UnitPrice() int64 {
 }
 
 type LaptopSpecs struct {
-	Brand          string  `json:"brand"`
-	CPU            string  `json:"cpu"`
-	RAMGB          int     `json:"ram_gb"`
-	StorageGB      int     `json:"storage_gb"`
-	ScreenInches   float64 `json:"screen_inches"`
-	WarrantyMonths int     `json:"warranty_months"`
+	// Laptop manufacturer brand (JSON brand), in specs of electronics products.
+	Brand string `json:"brand"`
+	// Free-text processor description (JSON cpu), e.g. "8-core 3.2 GHz".
+	CPU string `json:"cpu"`
+	// Memory size in gigabytes (JSON ram_gb).
+	RAMGB int `json:"ram_gb"`
+	// Storage capacity in gigabytes (JSON storage_gb).
+	StorageGB int `json:"storage_gb"`
+	// Screen diagonal in inches (JSON screen_inches), a number that may have decimals; a whole value is encoded without a fraction (14).
+	ScreenInches float64 `json:"screen_inches"`
+	// Warranty length in months (JSON warranty_months).
+	WarrantyMonths int `json:"warranty_months"`
 }
 
 type BookSpecs struct {
-	Author   string `json:"author"`
-	Pages    int    `json:"pages"`
-	ISBN     string `json:"isbn"`
+	// Book author name (JSON author), in specs of books products.
+	Author string `json:"author"`
+	// Page count (JSON pages).
+	Pages int `json:"pages"`
+	// ISBN as a hyphenated string (JSON isbn), e.g. "978-0-00-000000-2".
+	ISBN string `json:"isbn"`
+	// Language code of the book (JSON language), e.g. "en".
 	Language string `json:"language"`
-	Format   string `json:"format"` // paperback, hardcover or ebook
+	// Binding or edition format (JSON format): paperback, hardcover or ebook.
+	Format string `json:"format"` // paperback, hardcover or ebook
 }
 
 type ApparelSpecs struct {
-	Sizes    []string `json:"sizes"`
-	Color    string   `json:"color"`
-	Material string   `json:"material"`
+	// Available sizes as an array of strings (JSON sizes), e.g. ["S","M","L","XL"], in specs of fashion products.
+	Sizes []string `json:"sizes"`
+	// Colour name (JSON color), e.g. "navy".
+	Color string `json:"color"`
+	// Fabric composition (JSON material), e.g. "100% cotton".
+	Material string `json:"material"`
 }

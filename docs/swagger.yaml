@@ -1,0 +1,362 @@
+components:
+  schemas:
+    catalog.ApparelSpecs:
+      properties:
+        color:
+          description: Colour name (JSON color), e.g. "navy".
+          type: string
+        material:
+          description: Fabric composition (JSON material), e.g. "100% cotton".
+          type: string
+        sizes:
+          description: Available sizes as an array of strings (JSON sizes), e.g. ["S","M","L","XL"],
+            in specs of fashion products.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      required:
+      - color
+      - material
+      - sizes
+      type: object
+    catalog.BookSpecs:
+      properties:
+        author:
+          description: Book author name (JSON author), in specs of books products.
+          type: string
+        format:
+          description: 'Binding or edition format (JSON format): paperback, hardcover
+            or ebook.'
+          type: string
+        isbn:
+          description: ISBN as a hyphenated string (JSON isbn), e.g. "978-0-00-000000-2".
+          type: string
+        language:
+          description: Language code of the book (JSON language), e.g. "en".
+          type: string
+        pages:
+          description: Page count (JSON pages).
+          type: integer
+      required:
+      - author
+      - format
+      - isbn
+      - language
+      - pages
+      type: object
+    catalog.LaptopSpecs:
+      properties:
+        brand:
+          description: Laptop manufacturer brand (JSON brand), in specs of electronics
+            products.
+          type: string
+        cpu:
+          description: Free-text processor description (JSON cpu), e.g. "8-core 3.2
+            GHz".
+          type: string
+        ram_gb:
+          description: Memory size in gigabytes (JSON ram_gb).
+          type: integer
+        screen_inches:
+          description: Screen diagonal in inches (JSON screen_inches), a number that
+            may have decimals; a whole value is encoded without a fraction (14).
+          type: number
+        storage_gb:
+          description: Storage capacity in gigabytes (JSON storage_gb).
+          type: integer
+        warranty_months:
+          description: Warranty length in months (JSON warranty_months).
+          type: integer
+      required:
+      - brand
+      - cpu
+      - ram_gb
+      - screen_inches
+      - storage_gb
+      - warranty_months
+      type: object
+    httpapi.ErrorBody:
+      properties:
+        code:
+          description: 'Stable machine-readable error code (JSON code): invalid_id,
+            invalid_currency, invalid_qty, product_not_found or internal.'
+          type: string
+        message:
+          description: Human-readable explanation (JSON message), e.g. "qty must be
+            an integer between 1 and 10" or "product 99 does not exist". Not meant
+            for matching; use code.
+          type: string
+      required:
+      - code
+      - message
+      type: object
+    httpapi.ErrorResponse:
+      properties:
+        error:
+          $ref: '#/components/schemas/httpapi.ErrorBody'
+          description: The error envelope (JSON error) that every handler error reply
+            carries, holding code and message. Router-level 404 and 405 replies are
+            plain text and do not use it.
+      required:
+      - error
+      type: object
+    httpapi.HealthResponse:
+      properties:
+        status:
+          description: Always "ok" (JSON status).
+          type: string
+      required:
+      - status
+      type: object
+    httpapi.IndexResponse:
+      properties:
+        count:
+          description: Number of products in the listing (JSON count), equal to the
+            length of products.
+          type: integer
+        products:
+          description: Every catalog product as a summary, ordered by ascending ID
+            (JSON products). Always an array, never null.
+          items:
+            $ref: '#/components/schemas/httpapi.ProductSummary'
+          type: array
+          uniqueItems: false
+      required:
+      - count
+      - products
+      type: object
+    httpapi.Money:
+      properties:
+        amount:
+          description: Amount as a JSON number in the given currency (JSON amount),
+            rounded half away from zero to 2 decimals for RON and EUR and to whole
+            units for HUF. Trailing zeros are dropped (59, 704.2).
+          type: number
+        currency:
+          description: 'Upper-case ISO currency code of the amount (JSON currency):
+            "RON", "EUR" or "HUF".'
+          type: string
+      required:
+      - amount
+      - currency
+      type: object
+    httpapi.ProductResponse:
+      properties:
+        available:
+          description: 'Whether stock covers the requested quantity (JSON available):
+            stock >= quantity. A request for more than the stock still succeeds with
+            available false (e.g. book with stock 3, qty 4).'
+          type: boolean
+        category:
+          description: 'Product category (JSON category): one of "electronics", "books"
+            or "fashion". It decides the shape of specs.'
+          type: string
+        description:
+          description: Short free-text product description (JSON description). Only
+            in the product detail, not in the index summary.
+          type: string
+        discount_percent:
+          description: Promotion discount as a whole percentage (JSON discount_percent),
+            e.g. 20. Present only when the product is discounted; omitted when there
+            is no discount.
+          type: integer
+        id:
+          description: Numeric product ID (JSON id), the same value as the {id} path
+            param after parsing.
+          type: integer
+        list_price:
+          $ref: '#/components/schemas/httpapi.Money'
+          description: Undiscounted price of one unit in the requested currency (JSON
+            list_price). Present only when the product has a discount above 0; omitted
+            otherwise.
+        name:
+          description: Display name of the product (JSON name).
+          type: string
+        quantity:
+          description: 'The quantity the reply is priced for (JSON quantity): the
+            qty query param, or 1 when it is missing or empty.'
+          type: integer
+        rating:
+          description: Average customer rating as a decimal number (JSON rating),
+            e.g. 4.6.
+          type: number
+        slug:
+          description: URL-friendly product identifier (JSON slug), e.g. "nimbus-14-laptop".
+            Informational only; the route takes the numeric id.
+          type: string
+        specs:
+          description: 'Category-specific attributes (JSON specs): a laptop spec object
+            for electronics, a book spec object for books, an apparel spec object
+            for fashion.'
+          oneOf:
+          - $ref: '#/components/schemas/catalog.LaptopSpecs'
+          - $ref: '#/components/schemas/catalog.BookSpecs'
+          - $ref: '#/components/schemas/catalog.ApparelSpecs'
+        stock:
+          description: Units in stock (JSON stock); 0 for an out-of-stock product,
+            which is still returned.
+          type: integer
+        total:
+          $ref: '#/components/schemas/httpapi.Money'
+          description: 'Price of quantity units (JSON total). Computed as the discounted
+            RON-bani unit price times quantity, then converted once and rounded, so
+            it can differ from unit_price.amount * quantity (e.g. laptop, EUR, qty
+            3: total 2112.59 while 704.2 * 3 = 2112.6).'
+        unit_price:
+          $ref: '#/components/schemas/httpapi.Money'
+          description: Price of one unit after any discount (JSON unit_price), converted
+            to the requested currency. The discounted price is computed in RON bani
+            with integer division (rounded down), then converted and rounded half
+            away from zero.
+      required:
+      - available
+      - category
+      - description
+      - id
+      - name
+      - quantity
+      - rating
+      - slug
+      - specs
+      - stock
+      - total
+      - unit_price
+      type: object
+    httpapi.ProductSummary:
+      properties:
+        category:
+          description: 'Product category (JSON category): "electronics", "books" or
+            "fashion".'
+          type: string
+        id:
+          description: Numeric product ID (JSON id); use it with GET /products/{id}.
+          type: integer
+        in_stock:
+          description: True when the product has at least one unit in stock (JSON
+            in_stock).
+          type: boolean
+        name:
+          description: Display name of the product (JSON name).
+          type: string
+        price:
+          $ref: '#/components/schemas/httpapi.Money'
+          description: Discounted price of one unit, always in RON (JSON price); the
+            index takes no currency param. E.g. the 20%-off book lists 71.92 RON.
+        slug:
+          description: URL-friendly product identifier (JSON slug).
+          type: string
+        url:
+          description: Relative path of the product detail (JSON url), "/products/<id>".
+          type: string
+      required:
+      - category
+      - id
+      - in_stock
+      - name
+      - price
+      - slug
+      - url
+      type: object
+externalDocs:
+  description: ""
+  url: ""
+info:
+  title: catalog-poc API
+  version: 0.0.0
+openapi: 3.1.0
+paths:
+  /:
+    get:
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/httpapi.IndexResponse'
+          description: 'The catalog listing: count and an array of product summaries.'
+      summary: Lists every product in the catalog, ordered by ID, with its discounted
+        unit price in RON, whether it is in stock and its URL. Registered as "GET
+        /{$}", so it matches only the exact root path; query params are ignored. HEAD
+        is also served by the GET pattern.
+  /healthz:
+    get:
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/httpapi.HealthResponse'
+          description: The service is up; status is 'ok'.
+      summary: Liveness check. Always replies 200 with {"status":"ok"}; it does not
+        inspect the store. HEAD /healthz also replies 200 with the JSON content type
+        and no body.
+  /products/{id}:
+    get:
+      parameters:
+      - description: Product ID, parsed with strconv.Atoi; must be an integer >= 1.
+          A leading plus sign or leading zeros are accepted ('+1', '01' and '%31'
+          all mean 1). Otherwise invalid_id.
+        in: path
+        name: id
+        required: true
+        schema:
+          minimum: 1
+          type: integer
+      - description: Currency of all prices in the reply. Matched case-insensitively
+          after trimming surrounding whitespace ('eur', ' huf ' are accepted). Missing
+          or empty means RON. When repeated, the first value is used. Any other value
+          gives invalid_currency.
+        in: query
+        name: currency
+        schema:
+          default: RON
+          enum:
+          - RON
+          - EUR
+          - HUF
+          type: string
+      - description: Quantity used for total and available, parsed with strconv.Atoi
+          (no whitespace trimming, no decimals); must be 1..10. Missing or empty means
+          1. When repeated, the first value is used. Otherwise invalid_qty.
+        in: query
+        name: qty
+        schema:
+          default: 1
+          maximum: 10
+          minimum: 1
+          type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/httpapi.ProductResponse'
+          description: The product priced in the requested currency for the requested
+            quantity. Out-of-stock products are still returned, with available false.
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/httpapi.ErrorResponse'
+          description: An invalid id, currency or qty; the first failing check in
+            that order is reported.
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/httpapi.ErrorResponse'
+          description: No product has this id; the message is 'product <id> does not
+            exist'.
+        "500":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/httpapi.ErrorResponse'
+          description: Declared for an unexpected store error or a recovered panic;
+            no request reaches it with the current in-memory store.
+      summary: Returns one product with its unit price, optional list price and discount,
+        the requested quantity and the total, priced in the requested currency, plus
+        stock, availability for that quantity, rating and category-specific specs.
+        Validation runs in order id, currency, qty, and only then the product lookup,
+        so an invalid param is reported even for an unknown id.

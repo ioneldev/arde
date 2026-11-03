@@ -13,6 +13,8 @@ import (
 	"catalog/internal/httpapi"
 )
 
+// @title catalog-poc API
+// @version 0.0.0
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	if err := run(logger); err != nil {
