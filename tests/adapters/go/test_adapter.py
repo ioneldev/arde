@@ -4,14 +4,11 @@ import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
-import time
 import urllib.request
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -28,7 +25,8 @@ from arde.adapters.language.go.errors import (
 )
 from arde.adapters.language.go.inventory_builder import NoRoutesError, RouteNotUnderstoodError
 from arde.adapters.language.go.toolchain import BadTestCommandError
-from arde.application.ports import ProfileProblem, RouteHashes
+from arde.adapters.service_runner import local_service_runner
+from arde.application.ports import ProfileProblem, RouteHashes, ServiceConfig
 from arde.domain.errors import ArdeError
 from arde.domain.inventory import (
     INLINE_HANDLER,
@@ -889,39 +887,6 @@ def binaries_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return folder
 
 
-def free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
-
-
-def wait_for_port(port: int) -> None:
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        try:
-            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-            return
-        except OSError:
-            time.sleep(0.05)
-    pytest.fail(f"nothing listened on port {port}")
-
-
-@contextmanager
-def started(binary: Path, port: int) -> Iterator[None]:
-    process = subprocess.Popen(
-        [str(binary)],
-        env={"SHOP_PORT": str(port)},
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    try:
-        wait_for_port(port)
-        yield
-    finally:
-        process.terminate()
-        process.wait(timeout=10)
-
-
 def test_built_service_builds_a_binary_outside_the_repo(
     adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
 ) -> None:
@@ -968,14 +933,16 @@ def test_a_build_that_fails_runs_no_body_and_leaves_no_folder(
 
 
 def test_the_service_listens_on_the_port_its_env_var_names(
-    adapter: GoAdapter, shop: Path, binaries_in_tmp: Path
+    adapter: GoAdapter, shop: Path, binaries_in_tmp: Path, tmp_path: Path
 ) -> None:
-    port = free_port()
+    log = tmp_path / "service.log"
 
     with (
         adapter.built_service(shop, shop_profile()) as binary,
-        started(binary, port),
-        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5) as reply,
+        local_service_runner().running(
+            ServiceConfig(binary=binary, cwd=shop, port_env="SHOP_PORT", log=log)
+        ) as service,
+        urllib.request.urlopen(f"{service.base_url}/", timeout=5) as reply,
     ):
         body = reply.read().decode()
 
