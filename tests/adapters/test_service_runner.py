@@ -834,41 +834,39 @@ def test_a_port_that_cannot_be_tested_after_the_stop_does_not_pass_as_released(
     assert stopped.value.next_action
 
 
-def test_a_connection_reset_says_nothing_about_the_port_either(
-    monkeypatch: pytest.MonkeyPatch, runner: ServiceRunner, tmp_path: Path
-) -> None:
-    def reset(*args: object, **kwargs: object) -> socket.socket:
-        raise ConnectionResetError
-
-    monkeypatch.setattr(socket, "create_connection", reset)
-    config = config_for(stand_in(tmp_path, SERVES), tmp_path, timeout_s=1)
-
-    with pytest.raises(ServiceStartError) as stopped, runner.running(config):
-        pytest.fail("the body must not run on a port that was never tested")
-
-    assert "did not accept" not in str(stopped.value)
+NO_CONNECTION = [
+    ConnectionRefusedError,
+    TimeoutError,
+    ConnectionResetError,
+    ConnectionAbortedError,
+]
 
 
-def test_a_port_that_times_out_reads_as_not_listening_and_the_wait_goes_on(
-    monkeypatch: pytest.MonkeyPatch, runner: ServiceRunner, tmp_path: Path
+@pytest.mark.parametrize("failure", NO_CONNECTION)
+def test_a_port_that_gives_no_connection_reads_as_not_listening_and_the_wait_goes_on(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: ServiceRunner,
+    tmp_path: Path,
+    failure: type[OSError],
 ) -> None:
     real_connect = socket.create_connection
     probes: list[int] = []
 
-    def times_out_at_first(*args: object, **kwargs: object) -> socket.socket:
+    def fails_at_first(*args: object, **kwargs: object) -> socket.socket:
         if not probes:
             probes.append(1)
-            raise TimeoutError
+            raise failure
         return real_connect(*args, **kwargs)  # type: ignore[call-overload, no-any-return]
 
-    monkeypatch.setattr(socket, "create_connection", times_out_at_first)
+    monkeypatch.setattr(socket, "create_connection", fails_at_first)
 
     with runner.running(config_for(stand_in(tmp_path, SERVES), tmp_path)) as service:
         assert accepts_connection(service.port)
 
 
-@pytest.mark.parametrize("refusal", [ConnectionRefusedError, TimeoutError])
-def test_a_port_that_refuses_or_times_out_after_the_stop_is_released(
+# A listener that dies during the handshake resets the connection, which is a stop going well.
+@pytest.mark.parametrize("refusal", NO_CONNECTION)
+def test_a_port_that_gives_no_connection_after_the_stop_is_released(
     monkeypatch: pytest.MonkeyPatch,
     runner: ServiceRunner,
     tmp_path: Path,

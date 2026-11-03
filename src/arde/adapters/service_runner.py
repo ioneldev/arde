@@ -172,13 +172,14 @@ def _wait_until_listening(started: _Started) -> None:
         time.sleep(POLL_INTERVAL_S)
 
 
-# A connection is the whole test, because a service need not have a health route. Only a refusal
-# or a timeout says nothing listens. Any other error, such as a full file table, means the port
-# was never tested, and reading that as closed would pass the stop check on no evidence.
+# A connection is the whole test, because a service need not have a health route. A connection
+# that fails says nothing accepts one, and a listener dying during the handshake resets it. Any
+# other error, such as a full file table, means the port was never tested, and reading that as
+# closed would pass the stop check on no evidence.
 def _accepts_connection(port: int) -> bool:
     try:
         socket.create_connection((LOOPBACK, port), timeout=CONNECT_TIMEOUT_S).close()
-    except (ConnectionRefusedError, TimeoutError):
+    except (ConnectionError, TimeoutError):
         return False
     return True
 
