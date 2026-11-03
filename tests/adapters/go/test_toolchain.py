@@ -5,6 +5,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from known_environment import known_go_environment
 from shop_support import shop_profile
 from tree_support import a_tree_too_deep_for_one_path
 
@@ -63,15 +64,9 @@ def listed(folder: Path, *ignored_files: str) -> str:
     return json.dumps(package, indent="\t") + "\n"
 
 
-GO_ENVIRONMENT = {"PATH": "/usr/bin", "GOPRIVATE": "corp.example/*", "GOENV": "off"}
-
-
-# The real environment is read from the toolchain, which these tests do without.
 @pytest.fixture(autouse=True)
 def a_known_go_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        toolchain, "go_environment", lambda repo: {**GO_ENVIRONMENT, "FOR": str(repo)}
-    )
+    monkeypatch.setattr(toolchain, "go_environment", known_go_environment)
 
 
 @pytest.fixture
@@ -443,7 +438,7 @@ def test_every_go_command_and_every_extra_command_runs_with_the_go_environment(
         pass
 
     assert len(go.asked) >= 8
-    assert go.environments == [{**GO_ENVIRONMENT, "FOR": str(repo)}] * len(go.asked)
+    assert go.environments == [known_go_environment(repo)] * len(go.asked)
     assert ("make", "smoke") in go.asked
 
 

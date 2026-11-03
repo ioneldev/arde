@@ -16,7 +16,7 @@ SECRETS_AND_RISKS = {
     "ARDE_HOME": "/somewhere",
 }
 
-TOOLCHAIN_VARIABLES = (
+GO_VARIABLES = (
     "GOPATH",
     "GOCACHE",
     "GOMODCACHE",
@@ -35,7 +35,7 @@ TOOLCHAIN_VARIABLES = (
 
 @pytest.fixture
 def clean_environment(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
-    for name in (*ALLOWED_VARIABLES, *SECRETS_AND_RISKS, *TOOLCHAIN_VARIABLES):
+    for name in (*ALLOWED_VARIABLES, *SECRETS_AND_RISKS, *GO_VARIABLES):
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
 
@@ -99,11 +99,11 @@ def test_nothing_outside_the_allow_list_reaches_a_child(
     assert name not in child_environment()
 
 
-@pytest.mark.parametrize("name", TOOLCHAIN_VARIABLES)
+@pytest.mark.parametrize("name", GO_VARIABLES)
 def test_a_service_style_child_gets_no_toolchain_variable(
     clean_environment: pytest.MonkeyPatch, name: str
 ) -> None:
-    for each in TOOLCHAIN_VARIABLES:
+    for each in GO_VARIABLES:
         clean_environment.setenv(each, "set-by-the-test")
 
     environment = child_environment()

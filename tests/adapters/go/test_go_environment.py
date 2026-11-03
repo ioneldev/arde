@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from arde.adapters.child_env import child_environment
+from arde.adapters.child_env import ALLOWED_VARIABLES, child_environment
 from arde.adapters.child_process import ChildCommand, ChildOutcome, run_child
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES
 from arde.adapters.language.go import go_environment
@@ -31,11 +31,7 @@ from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT
 REAL_PATH = os.environ["PATH"]
 
 EVERY_VARIABLE_OF_THE_GENERIC_LIST_AND_THE_TOOLCHAIN = (
-    "PATH",
-    "HOME",
-    "TMPDIR",
-    "LANG",
-    "LC_ALL",
+    *ALLOWED_VARIABLES,
     "XDG_CONFIG_HOME",
     "GOFLAGS",
     "GOENV",

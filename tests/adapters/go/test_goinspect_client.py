@@ -6,6 +6,7 @@ import stat
 from pathlib import Path
 
 import pytest
+from known_environment import known_go_environment
 
 from arde.adapters.child_process import (
     ChildCommand,
@@ -64,16 +65,12 @@ class StandIn:
         return json.loads(Path(f"{self.binary}.handed-over").read_text(encoding="utf-8"))
 
 
-GO_ENVIRONMENT = {"PATH": os.environ["PATH"], "GOPRIVATE": "corp.example/*", "GOENV": "off"}
 NOISY_STDERR = "\x1b[2J" + "bad package\n" * 5000 + "the real reason\n"
 
 
-# The real environment is read from the toolchain, which these tests do without.
 @pytest.fixture(autouse=True)
 def a_known_go_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        goinspect_client, "go_environment", lambda repo: {**GO_ENVIRONMENT, "FOR": str(repo)}
-    )
+    monkeypatch.setattr(goinspect_client, "go_environment", known_go_environment)
 
 
 @pytest.fixture
@@ -573,7 +570,7 @@ def test_every_call_to_goinspect_runs_with_the_go_environment(
     GoinspectClient(tmp_path / "goinspect").declarations(folder)
 
     [command] = recording.commands
-    assert command.env == {**GO_ENVIRONMENT, "FOR": str(folder)}
+    assert command.env == known_go_environment(folder)
 
 
 def test_the_build_of_goinspect_runs_with_the_go_environment(
@@ -586,7 +583,7 @@ def test_the_build_of_goinspect_runs_with_the_go_environment(
     build_goinspect(tmp_path / "bin")
 
     [command] = recording.commands
-    assert command.env == {**GO_ENVIRONMENT, "FOR": str(GOINSPECT_SOURCE)}
+    assert command.env == known_go_environment(GOINSPECT_SOURCE)
 
 
 ROUTES_REPLY = {
