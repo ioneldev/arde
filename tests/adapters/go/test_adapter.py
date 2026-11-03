@@ -25,6 +25,7 @@ from arde.adapters.language.go.errors import (
     GoinspectError,
 )
 from arde.adapters.language.go.inventory_builder import NoRoutesError, RouteNotUnderstoodError
+from arde.adapters.language.go.prebuilt import GOINSPECT_VARIABLE, SWAG_VARIABLE
 from arde.adapters.language.go.toolchain import BadTestCommandError
 from arde.adapters.service_runner import local_service_runner
 from arde.application.ports import ProfileProblem, RouteHashes, ServiceConfig
@@ -89,7 +90,13 @@ def field(
     )
 
 
-def test_the_factory_builds_the_tools_and_hands_back_the_port(tmp_path: Path) -> None:
+# The container image names its prebuilt tools, and this test is about building them.
+def test_the_factory_builds_the_tools_and_hands_back_the_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(GOINSPECT_VARIABLE, raising=False)
+    monkeypatch.delenv(SWAG_VARIABLE, raising=False)
+
     port = go_adapter(tmp_path / "bin")
 
     assert isinstance(port, GoAdapter)

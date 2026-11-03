@@ -38,8 +38,11 @@ STOP_GRACE_S = 5
 LOG_MODE = 0o600
 POLL_INTERVAL_S = 0.05
 CONNECT_TIMEOUT_S = 1
-# A process that was killed may take a moment to let go of the socket it held.
-PORT_RELEASE_WAIT_S = 1
+# A process that was killed may take a moment to let go of the socket it held. Measured on Linux: a
+# service whose group held a few hundred processes kept its port for up to 2.6 s after the kill,
+# while the kernel ended them, so 1 s raised a false stop error. The wait ends as soon as the port
+# is free, so a normal stop costs nothing more.
+PORT_RELEASE_WAIT_S = 5
 
 
 @dataclass(frozen=True)

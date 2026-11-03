@@ -20,6 +20,7 @@ from arde.adapters.language.go.http_statuses import http_status
 from arde.adapters.language.go.inventory_builder import SourceReading, build_inventory
 from arde.adapters.language.go.json_shapes import json_shape
 from arde.adapters.language.go.makefile import make_targets_of
+from arde.adapters.language.go.prebuilt import GOINSPECT_VARIABLE, SWAG_VARIABLE, prebuilt_tool
 from arde.adapters.language.go.quotes import quote_content
 from arde.adapters.language.go.renderer import render
 from arde.adapters.language.go.swag import build_swag, run_swag
@@ -191,7 +192,9 @@ class GoAdapter(LanguageAdapter):
 # The return type is the static proof that GoAdapter satisfies the port: mypy fails here when
 # the port gains a method that GoAdapter lacks, or when a signature drifts.
 def go_adapter(bin_dir: Path) -> LanguageAdapter:
-    return GoAdapter(build_goinspect(bin_dir), swag=build_swag(bin_dir))
+    goinspect = prebuilt_tool(GOINSPECT_VARIABLE) or build_goinspect(bin_dir)
+    swag = prebuilt_tool(SWAG_VARIABLE) or build_swag(bin_dir)
+    return GoAdapter(goinspect, swag=swag)
 
 
 def _of_the_profile(unmatched: Iterable[PatternName]) -> tuple[PatternName, ...]:

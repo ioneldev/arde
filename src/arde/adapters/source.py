@@ -13,10 +13,11 @@ import shutil
 import stat
 import tempfile
 import unicodedata
+from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from arde.adapters.child_env import child_environment
+from arde.adapters.child_env import child_environment, exported
 from arde.adapters.child_process import (
     ChildCommand,
     ChildOutcome,
@@ -412,6 +413,10 @@ _COMMIT_SETTINGS = (
     f"core.hooksPath={os.devnull}",
 )
 
+# The person the result is written for may name themselves as its author. ARDE stays the
+# committer, so the history still shows which commits a run made.
+_AUTHOR_VARIABLES = ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL")
+
 
 def commit_result(commit: ResultCommit) -> str:
     """Commits the paths on a new branch at the clone's current commit, and returns its id."""
@@ -429,8 +434,14 @@ def commit_result(commit: ResultCommit) -> str:
     if commit.paths:
         _ask(("add", "--all", "--force", "--", *commit.paths), repo=commit.clone)
     message = ("-m", commit.message)
-    _ask((*_COMMIT_SETTINGS, "commit", "--quiet", "--allow-empty", *message), repo=commit.clone)
+    committing = (*_COMMIT_SETTINGS, "commit", "--quiet", "--allow-empty", *message)
+    _ask(committing, repo=commit.clone, extra_env=_author())
     return _head_commit(commit.clone)
+
+
+# git refuses an empty name, so an empty value counts as none.
+def _author() -> dict[str, str]:
+    return {name: value for name, value in exported(_AUTHOR_VARIABLES).items() if value}
 
 
 # The clone may hold a link to a folder inside it, and a file written through it would land in
@@ -509,8 +520,11 @@ def without_credentials(url: str) -> str:
 # Running git
 
 
-def _ask(arguments: tuple[str, ...], *, repo: Path) -> str:
-    return _reply(_git(arguments, cwd=repo), asked=" ".join(arguments), repo=repo)
+def _ask(
+    arguments: tuple[str, ...], *, repo: Path, extra_env: Mapping[str, str] | None = None
+) -> str:
+    outcome = _git(arguments, cwd=repo, extra_env=extra_env)
+    return _reply(outcome, asked=" ".join(arguments), repo=repo)
 
 
 def _reply(outcome: ChildOutcome, *, asked: str, repo: Path) -> str:
@@ -529,13 +543,14 @@ def _git(
     cwd: Path,
     timeout_s: float = GIT_QUERY_TIMEOUT_S,
     output: OutputLimit = GIT_REPLY_LIMIT,
+    extra_env: Mapping[str, str] | None = None,
 ) -> ChildOutcome:
     command = ChildCommand(
         argv=("git", *_NO_COMMAND_FROM_THE_REPO, *arguments),
         cwd=cwd,
         timeout_s=timeout_s,
         output=output,
-        env={**child_environment(), **_GIT_VARIABLES},
+        env={**child_environment(), **(extra_env or {}), **_GIT_VARIABLES},
     )
     return run_child(command)
 

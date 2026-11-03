@@ -112,7 +112,9 @@ while not pathlib.Path("go.txt").exists():
 sys.exit(1)
 """
 # Without a pause the leader is inside fork most of the time, and the children end on their own
-# if a stop misses them. A child that ignores SIGCHLD is collected at once, so none piles up.
+# if a stop misses them. A child that ignores SIGCHLD is collected at once, so none piles up. A
+# child the stop missed holds the port for 30 s, well past the runner's wait for the port, so the
+# stop reports it instead of outwaiting it.
 FORKS_WITHOUT_A_PAUSE = (
     "signal.signal(signal.SIGCHLD, signal.SIG_IGN)\n"
     "open('leader.pid', 'w').write(str(os.getpid()))\n"
@@ -121,7 +123,7 @@ FORKS_WITHOUT_A_PAUSE = (
     + """
 for _ in range(3000):
     if os.fork() == 0:
-        time.sleep(5)
+        time.sleep(30)
         os._exit(0)
 time.sleep(3600)
 """
@@ -942,6 +944,40 @@ def test_a_stop_that_lands_while_the_service_is_forking_leaves_nothing(
         assert wait_until_group_is_empty(leader), (
             f"stop {attempt} left {live_group_members(leader)} running"
         )
+
+
+# Measured on Linux, in the container: when the stop began, the group of the service above held
+# up to 380 processes, and its port stayed open for up to 2.6 s while the kernel ended them, though
+# none outlived the kill. On macOS fork is slower, so the group held about 30 and took 0.15 s at
+# most. A process outside the group that lets go of the port two seconds after the stop stands in.
+CHILD_THAT_LETS_GO_OF_THE_PORT_TWO_SECONDS_AFTER_ITS_PARENT = f"""
+import os, pathlib, socket, time
+server = socket.socket()
+server.bind(("127.0.0.1", int(os.environ["{PORT_ENV}"])))
+server.listen()
+parent = os.getppid()
+pathlib.Path("child.pid").write_text(str(os.getpid()))
+while os.getppid() == parent:
+    time.sleep(0.02)
+time.sleep(2)
+"""
+
+
+def test_a_port_released_seconds_after_the_stop_counts_as_released(
+    runner: ServiceRunner, tmp_path: Path
+) -> None:
+    holder = starts_a_child(
+        CHILD_THAT_LETS_GO_OF_THE_PORT_TWO_SECONDS_AFTER_ITS_PARENT, own_session=True
+    )
+    config = config_for(stand_in(tmp_path, holder + HOURS), tmp_path)
+
+    try:
+        with runner.running(config) as service:
+            assert accepts_connection(service.port)
+    finally:
+        kill_leftover(tmp_path, "child.pid")
+
+    assert not accepts_connection(service.port)
 
 
 def test_a_stop_that_is_not_permitted_to_signal_ends_in_a_stop_error(
