@@ -264,28 +264,26 @@ def _log_tail(log: Path) -> str:
 def _stop_keeping_the_cause(
     started: _Started, *, cause: BaseException | None, was_in_use: bool
 ) -> None:
-    problems = _stop_and_collect_problems(started, was_in_use=was_in_use)
-    if cause is not None:
-        for problem in problems:
-            cause.add_note(_as_note(problem))
-    elif problems:
-        first, *others = problems
-        for problem in others:
+    # Read before the SIGTERM: a service that is already gone did not leave because of it.
+    exit_code = started.process.poll() if was_in_use else None
+    failed_stop = _failure_of_the_stop(started)
+    died = None if exit_code is None else _died_while_in_use(started, exit_code=exit_code)
+    first = cause or died or failed_stop
+    if first is None:
+        return
+    for problem in (died, failed_stop):
+        if problem is not None and problem is not first:
             first.add_note(_as_note(problem))
+    if cause is None:
         raise first
 
 
-def _stop_and_collect_problems(started: _Started, *, was_in_use: bool) -> list[Exception]:
-    # Read before the SIGTERM: a service that is already gone did not leave because of it.
-    exit_code = started.process.poll() if was_in_use else None
-    problems: list[Exception] = []
+def _failure_of_the_stop(started: _Started) -> Exception | None:
     try:
         _stop(started)
     except Exception as failure:
-        problems.append(failure)
-    if exit_code is not None:
-        problems.insert(0, _died_while_in_use(started, exit_code=exit_code))
-    return problems
+        return failure
+    return None
 
 
 def _as_note(problem: Exception) -> str:
