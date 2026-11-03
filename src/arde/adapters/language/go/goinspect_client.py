@@ -131,6 +131,7 @@ UnreadProblem = Literal[
     "hands on its path",
     "registers nothing",
     "method is not a constant",
+    "method is empty",
     "used as a value",
     "called through an interface",
     "mounts a mux",

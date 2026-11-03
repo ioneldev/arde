@@ -44,6 +44,8 @@ const (
 	mountsAMux = "mounts a mux"
 	// The argument a route pattern names as the method is not a constant at this call.
 	methodIsNotKnown = "method is not a constant"
+	// The argument a route pattern names as the method is an empty string at this call.
+	methodIsEmpty = "method is empty"
 )
 
 // aMethodAndASpace is the constant a wrapper may put before its path parameter, such as "GET ".
@@ -300,6 +302,21 @@ func (call routeCall) methodOf() (string, bool) {
 	return knownString(call.info, call.argument("method"))
 }
 
+// problemWithTheMethod is why the method a route pattern names at this call cannot be read, or
+// empty when it can, or when the pattern names none.
+func (call routeCall) problemWithTheMethod() string {
+	method, isKnown := call.methodOf()
+	switch {
+	case !call.namesA("method"):
+		return ""
+	case !isKnown:
+		return methodIsNotKnown
+	case method == "":
+		return methodIsEmpty
+	}
+	return ""
+}
+
 // callReading is what one call adds to the report.
 type callReading struct {
 	sites  []routeSite
@@ -457,7 +474,7 @@ func (reader routeReader) formOf(site routeCall) (wrapperForm, bool) {
 		return wrapperForm{methodBefore: method}, aMethodAndASpace.MatchString(method)
 	}
 	methodAndSpace, isSum := ast.Unparen(sum.X).(*ast.BinaryExpr)
-	if !isSum || methodAndSpace.Op != token.ADD || !parameters.isTheOneNamed("method", methodAndSpace.X) {
+	if !isSum || methodAndSpace.Op != token.ADD || !parameters.isTheOneNamed("method", parameters.withoutAStringConversion(methodAndSpace.X)) {
 		return wrapperForm{}, false
 	}
 	space, isKnown := knownString(site.info, methodAndSpace.Y)
@@ -474,6 +491,19 @@ type wrapperParameters struct {
 func (parameters wrapperParameters) isTheOneNamed(name string, expression ast.Expr) bool {
 	position, isNamed := parameters.positions[name]
 	return isNamed && parameters.refersTo(expression, parameterAt(parameters.wrapper, position))
+}
+
+// withoutAStringConversion takes string(m) to m, so a method parameter of a named string type,
+// such as Method, reads as the method.
+func (syntax typedSyntax) withoutAStringConversion(expression ast.Expr) ast.Expr {
+	conversion, isCall := ast.Unparen(expression).(*ast.CallExpr)
+	if !isCall || len(conversion.Args) != 1 || !syntax.info.Types[conversion.Fun].IsType() {
+		return expression
+	}
+	if basic, isBasic := syntax.info.TypeOf(conversion.Fun).Underlying().(*types.Basic); isBasic && basic.Info()&types.IsString != 0 {
+		return conversion.Args[0]
+	}
+	return expression
 }
 
 // parameterAt is the parameter an argument at that position is passed to: the last one for the
@@ -516,10 +546,10 @@ func (reader routeReader) wrapperCallAt(call routeCall) callReading {
 	if len(reader.forms[wrapper]) == 0 {
 		return call.unreadAs(registersNothing)
 	}
-	method, methodIsKnown := call.methodOf()
-	if call.namesA("method") && !methodIsKnown {
-		return call.unreadAs(methodIsNotKnown)
+	if problem := call.problemWithTheMethod(); problem != "" {
+		return call.unreadAs(problem)
 	}
+	method, methodIsKnown := call.methodOf()
 	path, pathIsKnown := knownString(call.info, call.argument("path"))
 	if !pathIsKnown {
 		return callReading{sites: []routeSite{reader.siteAt(call, handler)}}
@@ -560,11 +590,10 @@ func (reader routeReader) registrationAt(call routeCall) callReading {
 		return callReading{}
 	}
 	registered, pathIsKnown := knownString(call.info, call.argument("path"))
-	if call.namesA("method") {
-		method, methodIsKnown := call.methodOf()
-		if !methodIsKnown {
-			return call.unreadAs(methodIsNotKnown)
-		}
+	if problem := call.problemWithTheMethod(); problem != "" {
+		return call.unreadAs(problem)
+	}
+	if method, methodIsKnown := call.methodOf(); methodIsKnown {
 		registered = method + " " + registered
 	}
 	site := reader.siteAt(call, handler)

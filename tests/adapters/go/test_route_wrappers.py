@@ -578,3 +578,57 @@ def test_a_mux_handed_to_a_wrapper_that_does_more_stops_the_run_and_says_so(
 
     assert "hands a mux" in str(stopped.value)
     assert "positions" not in stopped.value.next_action
+
+
+# The reviewer's r7 stopped, and m_empty stopped with a message about a path that looked right.
+def a_typed_method(method: str) -> str:
+    return f"""package main
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+)
+
+type Method string
+
+const Delete Method = "DELETE"
+
+type app struct{{ mux *http.ServeMux }}
+
+func (a *app) handle(m Method, path string, h http.HandlerFunc) {{
+	a.mux.HandleFunc(string(m)+" "+path, h)
+}}
+
+func items(w http.ResponseWriter, r *http.Request) {{ fmt.Fprint(w, "items") }}
+
+func main() {{
+	a := &app{{mux: http.NewServeMux()}}
+	a.handle({method}, "/items", items)
+	http.ListenAndServe(":"+os.Getenv("PORT"), a.mux)
+}}
+"""
+
+
+METHOD_PATH_HANDLER = ExtractionPattern(
+    kind="route", call=r"^a\.handle$", args={"method": 0, "path": 1, "handler": 2}
+)
+
+
+def test_a_method_of_a_named_string_type_converted_at_the_site_is_read(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(tmp_path, a_typed_method("Delete"))
+
+    assert keys_of(adapter, repo, profile=reading(METHOD_PATH_HANDLER)) == ["DELETE /items"]
+
+
+def test_an_empty_method_stops_the_run_and_says_the_method_is_empty(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(tmp_path, a_typed_method('""'))
+
+    with pytest.raises(RouteNotUnderstoodError, match=r"main\.go:23:") as stopped:
+        adapter.extract_inventory(repo, reading(METHOD_PATH_HANDLER))
+
+    assert "method argument is empty" in str(stopped.value)

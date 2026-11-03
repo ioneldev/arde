@@ -2166,3 +2166,58 @@ func TestRoutesStopsAtAMuxHandedToAWrapperThatDoesMoreThanRegisterItAtItsPath(t 
 		}
 	}
 }
+
+// aMethodOfItsOwnType registers through a wrapper whose method parameter has a named string type,
+// with the method the call passes.
+func aMethodOfItsOwnType(method string) string {
+	return `package main
+
+import "net/http"
+
+type Method string
+
+const Delete Method = "DELETE"
+
+type gate struct{ mux *http.ServeMux }
+
+func (g gate) post(m Method, path string, h http.HandlerFunc) {
+	g.mux.HandleFunc(string(m)+" "+path, h)
+}
+
+func main() {
+	gate{mux: http.NewServeMux()}.post(` + method + `, "/items", parcels)
+}
+` + handlerFuncs
+}
+
+func TestRoutesReadsAMethodOfANamedStringTypeConvertedAtTheSite(t *testing.T) {
+	root := writeModule(t, "example.com/depot", map[string]string{"main.go": aMethodOfItsOwnType("Delete")})
+
+	output := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: postWithAMethod})
+
+	if got := sitePaths(output.Sites); !reflect.DeepEqual(got, []string{"DELETE /items"}) || len(output.UnreadSites) != 0 {
+		t.Fatalf("got %v and %+v", got, output.UnreadSites)
+	}
+}
+
+// An empty method makes the registered pattern start with a space, and a message about the path
+// would not say why.
+func TestRoutesStopsAtAnEmptyMethod(t *testing.T) {
+	wrapped := aMethodOfItsOwnType(`""`)
+	if got := unreadSitesOf(t, wrapped, postWithAMethod); !reflect.DeepEqual(got, []unreadSiteOutput{{File: "main.go", Line: lineHolding(t, wrapped, `post(""`), Problem: "method is empty"}}) {
+		t.Errorf("a wrapper: got %+v", got)
+	}
+
+	source := "package main\n\nimport (\n\t\"net/http\"\n\n\t\"example.com/router\"\n)\n\nfunc main() {\n\tr := &router.Router{}\n\tr.Method(\"\", \"/x\", parcels)\n}\n" + handlerFuncs
+	root := writeTree(t, map[string]string{
+		"go.mod":           "module example.com/depot\n\ngo 1.22\n\nrequire example.com/router v0.0.0\n\nreplace example.com/router => ./router\n",
+		"router/go.mod":    "module example.com/router\n\ngo 1.22\n",
+		"router/router.go": "package router\n\nimport \"net/http\"\n\ntype Router struct{}\n\nfunc (*Router) Method(method, path string, h http.HandlerFunc) {}\n",
+		"main.go":          source,
+	})
+	patterns := `[{"kind":"route","call":"^r\\.Method$","args":{"method":0,"path":1,"handler":2}}]`
+	output := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns})
+	if want := []unreadSiteOutput{{File: "main.go", Line: 11, Problem: "method is empty"}}; !reflect.DeepEqual(output.UnreadSites, want) {
+		t.Errorf("another module's router: got %+v", output.UnreadSites)
+	}
+}

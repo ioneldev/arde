@@ -109,6 +109,10 @@ READ_A_CONSTANT_METHOD = (
     "ARDE reads a method the compiler knows. If the method is computed or comes from a table, "
     f"this repo cannot be documented yet: report that. {DO_NOT_NARROW}"
 )
+READ_A_NAMED_METHOD = (
+    "ARDE reads the method a call passes, and an empty one names no method. If the service "
+    f"registers this route, this repo cannot be documented yet: report that. {DO_NOT_NARROW}"
+)
 GIVE_THE_HANDLER_POSITION = (
     "The route pattern gives a handler position past the end of this call. Correct that position "
     "in the profile, then run again."
@@ -227,6 +231,10 @@ _WHY_A_SITE_IS_UNREAD: dict[UnreadProblem, tuple[str, str]] = {
     "method is not a constant": (
         "the method argument is not a constant",
         READ_A_CONSTANT_METHOD,
+    ),
+    "method is empty": (
+        "the method argument is empty, so the registered pattern starts with a space",
+        READ_A_NAMED_METHOD,
     ),
     "used as a value": (
         "a function that registers routes is used here other than in a direct call, so what it "
