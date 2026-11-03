@@ -89,11 +89,12 @@ def field(
     )
 
 
-def test_the_factory_builds_the_helper_and_hands_back_the_port(tmp_path: Path) -> None:
+def test_the_factory_builds_the_tools_and_hands_back_the_port(tmp_path: Path) -> None:
     port = go_adapter(tmp_path / "bin")
 
     assert isinstance(port, GoAdapter)
     assert (tmp_path / "bin" / "goinspect").is_file()
+    assert (tmp_path / "bin" / "swag").is_file()
 
 
 # detects
@@ -815,7 +816,7 @@ from arde.domain.profile import RepoProfile
 
 profile = RepoProfile(main_package=".", main_file="main.go", port_env="PORT", patterns=())
 try:
-    GoAdapter(Path("unused")).run_checks(Path(sys.argv[1]), profile)
+    GoAdapter(Path("unused"), swag=Path("unused")).run_checks(Path(sys.argv[1]), profile)
     stopped_with = ""
 except ArdeError as error:
     stopped_with = str(error)

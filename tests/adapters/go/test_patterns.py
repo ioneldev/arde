@@ -20,7 +20,7 @@ def test_the_default_env_pattern_goes_last() -> None:
 
 
 def guidance() -> str:
-    return GoAdapter(Path("unused")).discovery_guidance()
+    return GoAdapter(Path("unused"), swag=Path("unused")).discovery_guidance()
 
 
 @pytest.mark.parametrize("kind", sorted(REQUIRED_ARGUMENTS))
@@ -42,4 +42,4 @@ def test_the_guidance_says_what_is_read_with_no_pattern() -> None:
 
 # The prompt is hashed into the trace, so its text must not change from one run to the next.
 def test_the_guidance_is_the_same_text_every_time() -> None:
-    assert guidance() == GoAdapter(Path("other")).discovery_guidance()
+    assert guidance() == GoAdapter(Path("other"), swag=Path("other")).discovery_guidance()

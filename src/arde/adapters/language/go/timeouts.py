@@ -13,3 +13,5 @@ GO_LIST_TIMEOUT_S = 120
 GO_ENV_TIMEOUT_S = 30
 # A profile's extra command can be anything, so it gets as long as the tests do.
 EXTRA_TEST_COMMAND_TIMEOUT_S = GO_TEST_TIMEOUT_S
+# swag parses every Go file of the repo, much as a build does.
+SWAG_TIMEOUT_S = GO_BUILD_TIMEOUT_S

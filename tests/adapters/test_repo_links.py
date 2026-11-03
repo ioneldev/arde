@@ -298,12 +298,13 @@ REPO_METHODS = (
     "route_fingerprints",
     "run_checks",
     "built_service",
+    "generate_spec",
 )
 
 
-# The helper's path is never used: the gate stops each method before anything runs.
+# The tools' paths are never used: the gate stops each method before anything runs.
 def every_repo_method(repo: Path) -> dict[str, object]:
-    adapter = GoAdapter(Path("unused"))
+    adapter = GoAdapter(Path("unused"), swag=Path("unused"))
     return {
         "detects": lambda: adapter.detects(repo),
         "changed_declarations old": lambda: adapter.changed_declarations(repo, repo.parent),
@@ -312,6 +313,7 @@ def every_repo_method(repo: Path) -> dict[str, object]:
         "route_fingerprints": lambda: adapter.route_fingerprints(repo, (), main_package="."),
         "run_checks": lambda: adapter.run_checks(repo, a_profile()),
         "built_service": lambda: adapter.built_service(repo, a_profile()),
+        "generate_spec": lambda: adapter.generate_spec(repo, a_profile()),
     }
 
 
