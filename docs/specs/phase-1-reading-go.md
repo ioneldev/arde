@@ -1,6 +1,6 @@
 # Phase 1: Reading Go
 
-**Status:** in progress
+**Status:** built and reviewed; waiting for Ionel's gate
 
 This spec says what this phase delivers and how we know it's done. The reasoning lives in the [design](../superpowers/specs/2026-11-01-arde-design.md), and the step-by-step tasks live in the [plan](../superpowers/plans/2026-11-01-arde.md). The plan's "Amendments from the Phase 1 scan" section overrides its task text.
 
@@ -12,8 +12,8 @@ This spec says what this phase delivers and how we know it's done. The reasoning
 | 7 | `goinspect`: patterns and call graph | Done |
 | 8 | `GoAdapter` and the `shop` fixture | Done |
 | 9 | Service runner | Done |
-| Review | Architecture, code, bug hunters, security | Fixing findings |
-| Gate | Ionel reviews, understands and tests | Not started |
+| Review | Architecture, code, bug hunters, security | Done: fix rounds A to G, see the [walkthrough](../decisions/phase-1-walkthrough.md) |
+| Gate | Ionel reviews, understands and tests | Guide written; Ionel reads it afterwards |
 
 ## Purpose
 
@@ -57,16 +57,17 @@ Give ARDE reliable eyes on a Go repo before any agent uses them. At the end, cod
 make check
 make integration
 cd tools/goinspect
-go run . match --patterns ../../docs/research/spike/data/stdlib.json ../../../catalog-poc
-go run . routes --patterns ../../docs/research/spike/data/stdlib.json --main ./cmd/server ../../../catalog-poc
-go run . declarations ../../../catalog-poc
+cp -R ../../../catalog-poc /tmp/catalog-copy && rm -rf /tmp/catalog-copy/.git
+go run . match --patterns ../../docs/research/spike/data/stdlib.json /tmp/catalog-copy
+go run . routes --patterns ../../docs/research/spike/data/stdlib.json --main ./cmd/server /tmp/catalog-copy
+go run . declarations /tmp/catalog-copy
 echo '["(*catalog/internal/httpapi.handlers).index"]' > /tmp/roots.json
-go run . fingerprints --roots /tmp/roots.json --main ./cmd/server ../../../catalog-poc
+go run . fingerprints --roots /tmp/roots.json --main ./cmd/server /tmp/catalog-copy
 ```
 
 `fingerprints` takes the ids that `routes` prints as `roots`, in a JSON file, because an id can hold a comma.
 
-The walkthrough will add a worked example: edit a copy of `catalog-poc`, then watch which hashes change.
+The [walkthrough](../decisions/phase-1-walkthrough.md) has a worked example: edit the copy, then watch which hashes change.
 
 ## Not in this phase
 
@@ -74,8 +75,7 @@ Agents, the workspace and anything that writes to a repo. Those start in Phase 2
 
 ## Known limits
 
-- The call graph is static, so it misses calls through interfaces and function values. Declaration hashes and stored requests cover that gap.
-- Only `net/http` is tested. A `gin` pattern can match and keeps its method, but paths stay in `gin`'s `:id` form and router group prefixes aren't resolved. `http.StripPrefix` stops the run, unless its handler is a direct call to a file server.
+- See [limitations](../limitations.md) for the full list. In short: only `net/http` is tested, routes are read statically, and a wrapper or registration ARDE can't read stops the run and names the site rather than guessing.
 - Embedded struct fields aren't listed as response fields.
 
 ## Open items

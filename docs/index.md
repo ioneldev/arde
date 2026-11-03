@@ -30,6 +30,7 @@ Each file gives the decision, why, and what it costs.
 What each phase built, why, and how to test it.
 
 - [Phase 0 walkthrough](decisions/phase-0-walkthrough.md)
+- [Phase 1 walkthrough](decisions/phase-1-walkthrough.md)
 
 ## Phase specs
 
@@ -37,6 +38,8 @@ One per build phase: status, what it delivers, how we know it is done, and how t
 
 - [Phase 0: Foundations](specs/phase-0-foundations.md)
 - [Phase 1: Reading Go](specs/phase-1-reading-go.md)
+- [Phase 2: Thin first run](specs/phase-2-first-run.md)
+- [Phase 3: Checks that prove the run](specs/phase-3-checks.md)
 
 ## Design and plan
 
