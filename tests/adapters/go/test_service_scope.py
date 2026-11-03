@@ -1,14 +1,9 @@
 """One service out of a repo: two mains, mounted muxes, and the shapes a regex could not read."""
 
-import os
 import shutil
-import socket
-import subprocess
-import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager
 from pathlib import Path
 
 import pytest
@@ -16,6 +11,8 @@ from shop_support import SHOP
 
 from arde.adapters.language.go.adapter import GoAdapter
 from arde.adapters.language.go.inventory_builder import RouteNotUnderstoodError
+from arde.adapters.service_runner import local_service_runner
+from arde.application.ports import ServiceConfig, ServiceHandle
 from arde.domain.inventory import INLINE_HANDLER, Inventory
 from arde.domain.profile import ExtractionPattern, RepoProfile
 from arde.domain.report import ExitCode
@@ -55,39 +52,13 @@ def keys_of(inventory: Inventory) -> list[str]:
     return [route.key for route in inventory.routes]
 
 
-def free_port() -> int:
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return int(probe.getsockname()[1])
-
-
-def wait_for(port: int) -> None:
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        try:
-            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-            return
-        except OSError:
-            time.sleep(0.05)
-    pytest.fail(f"nothing listened on port {port}")
-
-
-@contextmanager
-def serving(binary: Path, port_env: str, *, cwd: Path | None = None) -> Iterator[int]:
-    port = free_port()
-    process = subprocess.Popen(
-        [str(binary)],
-        cwd=cwd,
-        env={**os.environ, port_env: str(port)},
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    try:
-        wait_for(port)
-        yield port
-    finally:
-        process.terminate()
-        process.wait(timeout=10)
+# The runner ARDE itself uses, so the service gets the allow-listed environment and is always
+# stopped.
+def serving(
+    binary: Path, *, port_env: str, cwd: Path, log: Path
+) -> AbstractContextManager[ServiceHandle]:
+    config = ServiceConfig(binary=binary, cwd=cwd, port_env=port_env, log=log)
+    return local_service_runner().running(config)
 
 
 def status_of(port: int, *, method: str, path: str) -> int:
@@ -180,15 +151,17 @@ def test_a_function_written_in_place_has_no_id_and_says_so(adapter: GoAdapter) -
 
 
 def test_the_running_service_answers_the_routes_listed_and_not_the_other_mains(
-    adapter: GoAdapter,
+    adapter: GoAdapter, tmp_path: Path
 ) -> None:
     with (
         adapter.built_service(PARCELS, TRACKER) as binary,
-        serving(binary, "TRACKER_PORT") as port,
+        serving(
+            binary, port_env="TRACKER_PORT", cwd=PARCELS, log=tmp_path / "service.log"
+        ) as service,
     ):
-        assert status_of(port, method="GET", path="/parcels/abc") == 200
-        assert status_of(port, method="GET", path="/rollcall") == 204
-        assert status_of(port, method="POST", path="/purge") == 404
+        assert status_of(service.port, method="GET", path="/parcels/abc") == 200
+        assert status_of(service.port, method="GET", path="/rollcall") == 204
+        assert status_of(service.port, method="POST", path="/purge") == 404
 
 
 def test_a_mounted_mux_is_no_route_and_its_routes_are_listed_whole(adapter: GoAdapter) -> None:
@@ -209,15 +182,19 @@ def test_every_route_behind_a_mount_has_its_function_and_its_hash(adapter: GoAda
     assert sorted(hashes.hashes) == sorted(route.key for route in routes)
 
 
-def test_the_running_service_answers_every_route_behind_a_mount(adapter: GoAdapter) -> None:
+def test_the_running_service_answers_every_route_behind_a_mount(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
     routes = adapter.extract_inventory(LIBRARY, LIBRARY_PROFILE).routes
     with (
         adapter.built_service(LIBRARY, LIBRARY_PROFILE) as binary,
-        serving(binary, "LIBRARY_PORT") as port,
+        serving(
+            binary, port_env="LIBRARY_PORT", cwd=LIBRARY, log=tmp_path / "service.log"
+        ) as service,
     ):
         statuses = {
             route.key: status_of(
-                port,
+                service.port,
                 method=route.method,
                 path=route.path.replace("{id}", "7").replace("{isbn}", "9"),
             )
@@ -245,6 +222,7 @@ FILES_PROFILE = RepoProfile(
 
 
 def a_file_server(root: Path) -> Path:
+    root.mkdir(exist_ok=True)
     (root / "go.mod").write_text("module example.com/files\n\ngo 1.27\n", encoding="utf-8")
     (root / "main.go").write_text(FILE_SERVER, encoding="utf-8")
     (root / "public").mkdir()
@@ -274,13 +252,13 @@ def test_a_file_server_counts_as_changed_on_every_run_because_nothing_hashes_it(
 def test_the_running_service_serves_the_files_under_the_route_listed(
     adapter: GoAdapter, tmp_path: Path
 ) -> None:
-    repo = a_file_server(tmp_path)
+    repo = a_file_server(tmp_path / "files")
 
     with (
         adapter.built_service(repo, FILES_PROFILE) as binary,
-        serving(binary, "FILES_PORT", cwd=repo) as port,
+        serving(binary, port_env="FILES_PORT", cwd=repo, log=tmp_path / "service.log") as service,
     ):
-        assert status_of(port, method="GET", path="/static/notes.txt") == 200
+        assert status_of(service.port, method="GET", path="/static/notes.txt") == 200
 
 
 def test_a_prefix_stripped_before_a_mount_stops_the_run(adapter: GoAdapter, tmp_path: Path) -> None:
