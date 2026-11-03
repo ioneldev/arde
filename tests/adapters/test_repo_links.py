@@ -286,56 +286,6 @@ def test_a_repo_that_is_not_there_stops_the_gate(tmp_path: Path) -> None:
         require_no_link_leaves(tmp_path / "not-there")
 
 
-# One folder of a repo, walked alone, with each link still judged against the whole repo.
-
-
-def test_a_link_in_the_walked_folder_that_leaves_the_repo_is_listed(
-    repo: Path, secret: Path
-) -> None:
-    (repo / ".git").mkdir()
-    (repo / ".git" / "packed-refs").symlink_to(secret)
-
-    assert links_leaving(repo, under=".git") == [".git/packed-refs"]
-
-
-def test_a_link_from_the_walked_folder_to_elsewhere_in_the_repo_is_kept(repo: Path) -> None:
-    (repo / "scripts").mkdir()
-    (repo / "scripts" / "pre-commit").write_text("#!/bin/sh\n", encoding="utf-8")
-    (repo / ".git" / "hooks").mkdir(parents=True)
-    (repo / ".git" / "hooks" / "pre-commit").symlink_to(
-        Path("..") / ".." / "scripts" / "pre-commit"
-    )
-
-    assert links_leaving(repo, under=".git") == []
-
-
-def test_a_link_outside_the_walked_folder_is_not_looked_at(repo: Path, secret: Path) -> None:
-    (repo / ".git").mkdir()
-    (repo / ".env").symlink_to(secret)
-
-    assert links_leaving(repo, under=".git") == []
-
-
-def test_a_walked_folder_that_is_itself_a_link_out_is_listed_and_not_walked(
-    repo: Path, secret: Path
-) -> None:
-    (secret.parent / "packed-refs").symlink_to(secret)
-    (repo / ".git").symlink_to(secret.parent)
-
-    assert links_leaving(repo, under=".git") == [".git"]
-
-
-def test_the_gate_on_one_folder_stops_at_a_link_that_leaves(repo: Path, secret: Path) -> None:
-    (repo / ".git").mkdir()
-    (repo / ".git" / "config").symlink_to(secret)
-
-    with pytest.raises(LinkLeavesRepoError) as stopped:
-        require_no_link_leaves(repo, under=".git")
-
-    assert ".git/config" in str(stopped.value)
-    assert FAKE_SECRET not in str(stopped.value)
-
-
 def a_profile() -> RepoProfile:
     return RepoProfile(main_package=".", main_file="main.go", port_env="PORT", patterns=())
 

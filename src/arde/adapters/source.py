@@ -12,6 +12,7 @@ import re
 import shutil
 import stat
 import tempfile
+import unicodedata
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
@@ -165,7 +166,7 @@ def _local(request: SourceRequest) -> ResolvedSource:
             ),
         )
     root = _existing_folder(Path(request.repo))
-    _require_git_folder_stays_inside(root)
+    _require_no_link_out_before_git_runs(root)
     _require_top_of_a_repo(root)
     origin = _origin_url(root)
     return ResolvedSource(
@@ -195,12 +196,12 @@ def _existing_folder(path: Path) -> Path:
 
 
 # Git reads every file in .git, and quotes a line it cannot parse in its error: measured, a
-# packed-refs that was a link to a file outside put that file's line in the message. So the links
-# there are judged before git runs, against the whole repo, which lets a hook link to a script of
-# the repo. A .git that is a file, as in a worktree, names a folder elsewhere by design.
-def _require_git_folder_stays_inside(root: Path) -> None:
-    if (root / ".git").is_dir():
-        require_no_link_leaves(root, under=".git")
+# packed-refs that was a link to a file outside put that file's line in the message. A link in .git
+# can also lead to a folder of the repo that holds a link out, so the whole tree is walked, ignored
+# files included, before git runs. A .git that is a file, as in a worktree, names a folder
+# elsewhere, and that folder is not walked.
+def _require_no_link_out_before_git_runs(root: Path) -> None:
+    require_no_link_leaves(root)
 
 
 def _require_top_of_a_repo(root: Path) -> None:
@@ -250,9 +251,14 @@ def copy_tree(source: ResolvedSource, dest: Path) -> None:
     """
     names = _listed_files(source.root)
     try:
+        files, links = _files_and_links(names, root=source.root)
         dest.mkdir(parents=True)
-        for name in names:
-            _copy_one(name, source=source.root, dest=dest)
+        # Every file before any link, so no file can be written through a link the copy made, even
+        # where this disk reads as one path two names that the repo's own disk tells apart.
+        for name in files:
+            _copy_file(source.root / name, dest / name)
+        for name in links:
+            _copy_link(source.root / name, dest / name)
     except OSError as error:
         raise SourceError(
             "Cannot copy the repo into ARDE's workspace: "
@@ -282,7 +288,9 @@ def _listed_files(root: Path) -> list[str]:
     names = [_unquoted(line) for line in listing.split("\n") if line]
     for name in names:
         _require_plain_path(name.removesuffix("/"))
-    return [name for name in names if not name.endswith("/")]
+    files = [name for name in names if not name.endswith("/")]
+    _require_one_name_per_path(files)
+    return files
 
 
 # With core.quotePath, git prints a name that holds a quote, a backslash, a control character or
@@ -312,25 +320,67 @@ def _require_plain_path(name: str) -> None:
         )
 
 
-def _copy_one(name: str, *, source: Path, dest: Path) -> None:
-    original = source / name
-    if _behind_a_link(source, name) or not os.path.lexists(original):
-        return
-    mode = os.lstat(original).st_mode
-    copy = dest / name
-    if stat.S_ISLNK(mode):
-        copy.parent.mkdir(parents=True, exist_ok=True)
+# A disk that ignores case, as macOS does by default, or Unicode form reads A and a/x as one
+# folder, and a/x is then written through the link A into wherever it leads. The repo's own disk
+# may tell them apart, so the listing is judged, not either disk.
+def _require_one_name_per_path(names: list[str]) -> None:
+    first_seen: dict[str, tuple[str, str]] = {}
+    for name in names:
+        parts = name.split("/")
+        for depth in range(1, len(parts) + 1):
+            spelling = "/".join(parts[:depth])
+            seen, listed = first_seen.setdefault(_folded(spelling), (spelling, name))
+            if seen != spelling:
+                raise SourceError(
+                    f"The repo lists {printable_name(listed)} and {printable_name(name)}, which "
+                    "are one path on a disk that ignores case or Unicode form.",
+                    next_action="Rename one of them in the repo, then run again.",
+                )
+
+
+# Unicode's caseless match: canonical decomposition, case folding, then one composed form.
+def _folded(path: str) -> str:
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFD", path).casefold())
+
+
+def _files_and_links(names: list[str], *, root: Path) -> tuple[list[str], list[str]]:
+    """The listed names that are regular files in the working tree, and those that are links.
+
+    A name gone from the working tree is left out, and so is a folder: git lists a submodule as
+    one name, and none of its files.
+    """
+    files: list[str] = []
+    links: list[str] = []
+    for name in names:
+        path = root / name
+        if _behind_a_link(root, name) or not os.path.lexists(path):
+            continue
+        mode = os.lstat(path).st_mode
+        if stat.S_ISREG(mode):
+            files.append(name)
+        elif stat.S_ISLNK(mode):
+            links.append(name)
+        elif not stat.S_ISDIR(mode):
+            # Such as a pipe, which a read would wait on forever.
+            raise SourceError(
+                f"{printable_name(name)} is neither a file nor a link, so it cannot be copied.",
+                next_action="Remove it, or add it to .gitignore, then run again.",
+            )
+    return files, links
+
+
+def _copy_file(original: Path, copy: Path) -> None:
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(original, copy, follow_symlinks=False)
+
+
+def _copy_link(original: Path, copy: Path) -> None:
+    copy.parent.mkdir(parents=True, exist_ok=True)
+    try:
         os.symlink(os.readlink(original), copy)
-    elif stat.S_ISREG(mode):
-        copy.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(original, copy, follow_symlinks=False)
-    elif not stat.S_ISDIR(mode):
-        # Such as a pipe, which a read would wait on forever.
-        raise SourceError(
-            f"{printable_name(name)} is neither a file nor a link, so it cannot be copied.",
-            next_action="Remove it, or add it to .gitignore, then run again.",
-        )
-    # A folder that git lists is a submodule, and git lists none of its files.
+    except OSError as error:
+        # os.symlink names the link's target first, and a message never shows where a link leads.
+        raise OSError(error.errno, error.strerror, str(copy)) from error
 
 
 # Git counts a path below a link as gone from the working tree, and so does the copy. Read through

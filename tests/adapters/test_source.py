@@ -298,7 +298,32 @@ def test_link_out_of_the_repo_stops_the_run(tmp_path: Path, secret: Path) -> Non
     assert stopped.value.exit_code == ExitCode.BAD_USAGE
     assert "go.mod" in str(stopped.value)
     assert FAKE_SECRET not in f"{stopped.value} {stopped.value.next_action}"
-    assert (dest / "go.mod").is_symlink()
+    assert not dest.exists()
+
+
+# The cost of checking the whole tree before git runs: git would leave this link out of the copy.
+def test_an_ignored_link_that_leaves_the_repo_stops_the_run_too(
+    tmp_path: Path, secret: Path
+) -> None:
+    repo = a_repo(tmp_path / "shop", {".gitignore": ".env\n", "main.go": "package main\n"})
+    (repo / ".env").symlink_to(secret)
+
+    with pytest.raises(LinkLeavesRepoError) as stopped:
+        resolve_source(local(repo), Path("unused"))
+
+    assert ".env" in str(stopped.value)
+
+
+# Inside the repo, so the walk of the source passes it. Copied, it names the user's repo, which is
+# outside the copy.
+def test_a_link_to_an_absolute_path_inside_the_repo_stops_the_copy(tmp_path: Path) -> None:
+    repo = a_repo(tmp_path / "shop", {"main.go": "package main\n"})
+    (repo / "alias.go").symlink_to(repo.resolve() / "main.go")
+
+    with pytest.raises(LinkLeavesRepoError) as stopped:
+        copied(repo, tmp_path / "copy")
+
+    assert "alias.go" in str(stopped.value)
 
 
 # Git quotes a line of packed-refs it cannot parse, so this link put the secret in git's error.
@@ -324,37 +349,96 @@ def test_a_hook_linked_to_a_script_in_the_repo_is_fine(tmp_path: Path) -> None:
     assert resolve_source(local(repo), Path("unused")).kind == "local"
 
 
-# The index still lists lib/inner.txt after lib became a link. Read through the link, the copy
-# would take a file from outside, and written through the copied link, it would land outside.
-def test_a_file_behind_a_linked_folder_is_neither_read_nor_written(tmp_path: Path) -> None:
-    repo = a_repo(tmp_path / "shop", {"lib/inner.txt": "tracked\n"})
+# A link in .git that stays in the repo passes when judged alone. The folder it leads to holds a
+# link out, which git would follow from .git, and which the copy leaves out because it is ignored.
+def test_a_link_in_dot_git_to_a_folder_holding_a_link_out_stops_the_run(
+    tmp_path: Path, secret: Path
+) -> None:
+    repo = a_repo(tmp_path / "shop", {".gitignore": "stash/\n", "main.go": "package main\n"})
+    (repo / "stash").mkdir()
+    (repo / "stash" / "packed-refs").symlink_to(secret)
+    (repo / ".git" / "stash").symlink_to(Path("..") / "stash")
+
+    with pytest.raises(LinkLeavesRepoError) as stopped:
+        resolve_source(local(repo), Path("unused"))
+
+    assert "stash/packed-refs" in str(stopped.value)
+    assert FAKE_SECRET not in str(stopped.value)
+
+
+# The index still lists lib/key.txt after lib became a link to an ignored folder. Read through the
+# link, the copy would take the ignored file that the copy promises to leave out.
+def test_a_file_behind_a_linked_folder_is_left_out(tmp_path: Path) -> None:
+    repo = a_repo(tmp_path / "shop", {".gitignore": "secrets/\n", "lib/key.txt": "tracked\n"})
+    write(repo, {"secrets/key.txt": FAKE_SECRET})
     shutil.rmtree(repo / "lib")
-    (repo / "lib").symlink_to(Path("..") / "target")
-    (tmp_path / "target").mkdir()
-    (tmp_path / "target" / "inner.txt").write_text(FAKE_SECRET, encoding="utf-8")
-    dest = tmp_path / "deeper" / "copy"
-    (tmp_path / "deeper" / "target").mkdir(parents=True)
+    (repo / "lib").symlink_to("secrets")
 
-    with pytest.raises(LinkLeavesRepoError):
-        copied(repo, dest)
+    dest = copied(repo, tmp_path / "copy")
 
-    assert list((tmp_path / "deeper" / "target").iterdir()) == []
-    assert all(FAKE_SECRET.encode() not in text for text in every_byte_in(dest).values())
+    assert all(FAKE_SECRET.encode() not in data for data in every_byte_in(dest).values())
+    assert (dest / "lib").is_symlink()
+
+
+# On a disk that ignores case, a link made first could be written through by a later file, when
+# the repo's own disk tells the two names apart. With every file first, no link exists yet.
+def test_every_file_is_copied_before_any_link_is_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = a_repo(tmp_path / "shop", {"b.txt": "b\n", "c/inner.txt": "c\n"})
+    (repo / "a").symlink_to("b.txt")
+    made: list[str] = []
+    copy_file, make_link = shutil.copy2, os.symlink
+
+    def recorded_copy(source: Path, target: Path, **options: bool) -> object:
+        made.append("file")
+        return copy_file(source, target, **options)
+
+    def recorded_link(target: str, path: Path) -> None:
+        made.append("link")
+        make_link(target, path)
+
+    monkeypatch.setattr(shutil, "copy2", recorded_copy)
+    monkeypatch.setattr(os, "symlink", recorded_link)
+
+    copied(repo, tmp_path / "copy")
+
+    assert made == ["file", "file", "link"]
+
+
+# os.symlink names the link's target first, and a target's path can say what it holds.
+def test_a_link_that_cannot_be_made_is_named_and_not_its_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = a_repo(tmp_path / "shop", {"main.go": "package main\n"})
+    (repo / "alias.go").symlink_to("private-name-of-the-target.go")
+
+    def refuse(target: str, path: Path) -> None:
+        raise OSError(28, "No space left on device", target, None, str(path))
+
+    monkeypatch.setattr(os, "symlink", refuse)
+
+    with pytest.raises(SourceError) as stopped:
+        copied(repo, tmp_path / "copy")
+
+    assert "alias.go" in str(stopped.value)
+    assert "private-name-of-the-target" not in str(stopped.value)
 
 
 # A crafted index
 
 
-def an_index_listing(repo: Path, names: list[str]) -> None:
+def an_index_listing(repo: Path, files: list[str], *, links: tuple[str, ...] = ()) -> None:
     """Writes a version 2 index by hand, as git itself refuses to add these names."""
     empty_blob = bytes.fromhex("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391")
+    modes = {**dict.fromkeys(files, 0o100644), **dict.fromkeys(links, 0o120000)}
     entries = b""
-    for name in sorted(names):
+    for name, mode in sorted(modes.items(), key=lambda item: item[0].encode("utf-8")):
         encoded = name.encode("utf-8")
-        entry = struct.pack(">10I", 0, 0, 0, 0, 0, 0, 0o100644, 0, 0, 0) + empty_blob
+        entry = struct.pack(">10I", 0, 0, 0, 0, 0, 0, mode, 0, 0, 0) + empty_blob
         entry += struct.pack(">H", len(encoded)) + encoded
         entries += entry + b"\0" * (8 - len(entry) % 8)
-    body = b"DIRC" + struct.pack(">II", 2, len(names)) + entries
+    body = b"DIRC" + struct.pack(">II", 2, len(modes)) + entries
     (repo / ".git" / "index").write_bytes(body + hashlib.sha1(body).digest())
 
 
@@ -373,6 +457,40 @@ def test_a_listed_path_that_git_would_refuse_stops_the_copy(
 
     assert stopped.value.next_action
     assert not dest.exists()
+
+
+# On a disk that ignores case, A and a are one folder, so a/x would be written through the link A
+# into the folder it names. The link stays inside the repo, so the walk of the source passes it,
+# and its absolute target is the user's own repo.
+def test_names_that_are_one_path_on_a_disk_that_ignores_case_stop_the_copy(
+    tmp_path: Path,
+) -> None:
+    repo = a_repo(tmp_path / "shop", {"main.go": "package main\n"})
+    (repo / "target").mkdir()
+    (repo / "A").symlink_to(repo.resolve() / "target")
+    an_index_listing(repo, ["a/x", "main.go"], links=("A",))
+    dest = tmp_path / "copy"
+
+    with pytest.raises(SourceError) as stopped:
+        copied(repo, dest)
+
+    assert "lists A and a/x" in str(stopped.value)
+    assert stopped.value.next_action
+    assert not dest.exists()
+    assert list((repo / "target").iterdir()) == []
+
+
+def test_names_that_are_one_path_once_unicode_is_normalised_stop_the_copy(
+    tmp_path: Path,
+) -> None:
+    composed, decomposed = "café.txt", "café.txt"
+    repo = a_repo(tmp_path / "shop", {"main.go": "package main\n"})
+    an_index_listing(repo, [composed, decomposed, "main.go"])
+
+    with pytest.raises(SourceError) as stopped:
+        copied(repo, tmp_path / "copy")
+
+    assert "caf" in str(stopped.value)
 
 
 # A pipe stands where a tracked file was, and reading it would wait for a writer forever.
