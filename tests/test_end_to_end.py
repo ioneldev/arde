@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 from end_to_end_support import (
     NO_DISCOUNT,
+    NO_DISCOUNT_SECTION,
+    PORT_RULE,
     PORT_SECTION,
     SHOP_FACTS,
     Arde,
@@ -22,19 +24,21 @@ from end_to_end_support import (
     a_repo_of,
     commit_all,
     exploring_the_shop,
+    submitting_the_shop_profile,
     writing_a_section,
 )
 from hostile_support import HOSTILE, PLANTED_ROUTE
 from openapi_spec_validator import OpenAPIV31SpecValidator
 from pipeline_support import git
 from pydantic import SecretStr
-from shop_facts import BAD_PIECES, NOTHING, TEA, quote
+from shop_facts import BAD_PIECES, LISTING, NOTHING, SKU, TEA, a_param, quote
 from shop_support import SHOP, shop_profile
 
 from arde.adapters.language.go.adapter import go_adapter
 from arde.application.changes import paths_that_differ
-from arde.application.ports import LanguageAdapter
+from arde.application.ports import LanguageAdapter, LLMResponse
 from arde.cli import LOCAL_WIRING, run
+from arde.domain.facts import Fact
 from arde.domain.report import ExitCode, RunReport
 
 SCRIPTED_ARDE = Path(__file__).resolve().parent / "scripted_arde.py"
@@ -118,6 +122,75 @@ def test_a_second_run_after_one_changed_function_redoes_only_what_it_touches(
     docs = Path(report.run_dir) / "output" / "docs"
     assert "no volume discount on any order" in (docs / "business-rules.md").read_text()
     assert PORT_SECTION in (docs / "configuration.md").read_text()
+
+
+# The shop refuses more than 50 pieces. A fact that says 40 gives the spec a maximum the running
+# service does not keep, which the live contract finds, and explore owns.
+
+
+def the_quote_endpoint_with_a_maximum_of(maximum: int) -> Fact:
+    quote_endpoint = next(fact for fact in SHOP_FACTS if fact.id == "endpoint.quote")
+    return quote_endpoint.model_copy(update={"params": (SKU, a_param(maximum=maximum))})
+
+
+def a_first_attempt_whose_maximum_is_wrong() -> list[LLMResponse]:
+    wrong = the_quote_endpoint_with_a_maximum_of(40)
+    facts = [wrong if fact.id == wrong.id else fact for fact in SHOP_FACTS]
+    return [
+        submitting_the_shop_profile(),
+        *exploring_the_shop(*facts, probes=(TEA, NOTHING, BAD_PIECES, LISTING)),
+        *writing_the_shop_sections(),
+    ]
+
+
+def a_repair_that_sets_the_maximum_to(maximum: int) -> list[LLMResponse]:
+    endpoint = the_quote_endpoint_with_a_maximum_of(maximum)
+    return [
+        *exploring_the_shop(endpoint, probes=(TEA, NOTHING, BAD_PIECES)),
+        *writing_the_shop_sections(),
+    ]
+
+
+def writing_the_shop_sections() -> list[LLMResponse]:
+    return [
+        writing_a_section(NO_DISCOUNT_SECTION, NO_DISCOUNT.id),
+        writing_a_section(PORT_SECTION, PORT_RULE.id),
+    ]
+
+
+THE_MAXIMUM_FINDING = ("live_contract", "explore", "GET /items/{sku} query param pieces")
+
+
+@pytest.mark.integration
+def test_a_bound_explore_got_wrong_is_repaired_and_the_run_commits(arde: Arde, shop: Path) -> None:
+    cloned = git(shop, "rev-parse", "HEAD").strip()
+    script = [*a_first_attempt_whose_maximum_is_wrong(), *a_repair_that_sets_the_maximum_to(50)]
+
+    code, report, err = arde.run("--repo", shop.as_uri(), script=script)
+
+    assert (code, report.status, report.findings) == (ExitCode.OK, "success", ()), err
+    [repaired] = report.repair_rounds
+    assert [(f.check, f.owner, f.subject) for f in repaired.findings] == [THE_MAXIMUM_FINDING]
+    clone = Path(report.result_dir)
+    assert report.branch is not None
+    assert git(clone, "rev-list", "--count", f"{cloned}..{report.branch}").strip() == "1"
+    handlers = git(clone, "show", f"{report.branch}:web/handlers.go")
+    assert "maximum(50)" in handlers
+    assert "maximum(40)" not in handlers
+
+
+@pytest.mark.integration
+def test_a_finding_the_repair_leaves_exits_1_and_commits_nothing(arde: Arde, shop: Path) -> None:
+    script = [*a_first_attempt_whose_maximum_is_wrong(), *a_repair_that_sets_the_maximum_to(40)]
+
+    code, report, _ = arde.run("--repo", shop.as_uri(), script=script)
+
+    assert (code, report.status) == (ExitCode.CHECKS_FAILED, "failed")
+    assert [(f.check, f.owner, f.subject) for f in report.findings] == [THE_MAXIMUM_FINDING]
+    assert [repair.number for repair in report.repair_rounds] == [1]
+    assert (report.branch, report.commit) == (None, None)
+    clone = Path(report.run_dir).parents[1] / "clone"
+    assert git(clone, "branch", "--list", "arde/run-*").strip() == ""
 
 
 @pytest.mark.integration

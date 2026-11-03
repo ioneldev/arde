@@ -16,6 +16,14 @@ class ExitCode(IntEnum):
     BUDGET_EXCEEDED = 4
 
 
+class RepairRound(Frozen):
+    """One pass of sending the checks' findings back to the agents that own them."""
+
+    number: int
+    # Everything the checks found before the round, each finding sent to the agent that owns it.
+    findings: tuple[Finding, ...]
+
+
 class RunReport(Frozen):
     status: Literal["success", "no_changes", "failed"]
     exit_code: ExitCode
@@ -39,3 +47,6 @@ class RunReport(Frozen):
     # The branch and commit that hold the result in the workspace clone, for a URL source.
     branch: str | None = None
     commit: str | None = None
+    # In order. A round that failed part way is here too, because the findings it started from
+    # say what the first attempt got wrong.
+    repair_rounds: tuple[RepairRound, ...] = ()
