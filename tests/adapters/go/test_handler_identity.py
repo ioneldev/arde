@@ -282,3 +282,80 @@ def test_a_route_whose_handler_names_one_function_keeps_that_functions_fingerpri
 
     assert routes_by_key(adapter, repo)["GET /api/ping"].roots == (ping,)
     assert hashes_of(adapter, repo)["GET /api/ping"] == alone.fingerprints[ping]
+
+
+# The reviewer's h2: each handler's code sits in a ServeHTTP that the static graph reaches only
+# through http.Handler.
+HANDLER_TYPES = """package main
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+)
+
+type headerMiddleware struct{ next http.Handler }
+
+func (m *headerMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Frame-Options", "DENY")
+	m.next.ServeHTTP(w, r)
+}
+
+func secured(next http.Handler) http.Handler { return &headerMiddleware{next: next} }
+
+type itemsHandler struct{ names []string }
+
+func (h *itemsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprint(w, h.names)
+}
+
+func newItemsHandler(names []string) http.Handler { return &itemsHandler{names: names} }
+
+func listOrders(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "orders") }
+
+func main() {
+	mux := http.NewServeMux()
+	mux.Handle("GET /items", newItemsHandler([]string{"a"}))
+	mux.Handle("GET /orders", secured(http.HandlerFunc(listOrders)))
+	mux.Handle("GET /plain", &itemsHandler{names: []string{"b"}})
+	http.ListenAndServe(":"+os.Getenv("PORT"), mux)
+}
+"""
+
+
+def moved_by(adapter: GoAdapter, repo: Path, *, old: str, new: str) -> set[str]:
+    before = hashes_of(adapter, repo)
+    main = repo / "main.go"
+    assert old in main.read_text()
+    main.write_text(main.read_text().replace(old, new))
+    after = hashes_of(adapter, repo)
+    return {key for key in before if before[key] != after.get(key)}
+
+
+def test_an_edit_to_a_handler_types_serve_method_moves_its_routes(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(tmp_path, HANDLER_TYPES)
+
+    moved = moved_by(adapter, repo, old="fmt.Fprint(w, h.names)", new="fmt.Fprint(w, len(h.names))")
+
+    assert moved == {"GET /items", "GET /plain"}
+
+
+def test_an_edit_to_middleware_that_keeps_its_handler_in_a_struct_moves_its_route(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(tmp_path, HANDLER_TYPES)
+
+    moved = moved_by(adapter, repo, old='"DENY"', new='"SAMEORIGIN"')
+
+    assert moved == {"GET /orders"}
+
+
+def test_a_value_that_serves_requests_itself_is_anchored_at_its_serve_method(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    route = routes_by_key(adapter, a_service(tmp_path, HANDLER_TYPES))["GET /plain"]
+
+    serve = "(*example.com/served.itemsHandler).ServeHTTP"
+    assert (route.handler, route.handler_id, route.roots) == ("itemsHandler", serve, (serve,))

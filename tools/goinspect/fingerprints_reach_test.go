@@ -275,3 +275,59 @@ func distinctFingerprints(t *testing.T, source string, runs int) map[string]bool
 	}
 	return distinct
 }
+
+// A call through an interface reaches a method no instruction names, so a value of the module's own
+// type made into an interface brings every method of that type into the walk, promoted ones too.
+func TestFingerprintFollowsTheMethodsOfAValueMadeIntoAnInterface(t *testing.T) {
+	source := `package shop
+
+import "net/http"
+
+type items struct{ names []string }
+
+func (h *items) ServeHTTP(w http.ResponseWriter, r *http.Request) { w.Write([]byte("items")) }
+
+func (h items) Describe() string { return "described" }
+
+type guard struct{ *items }
+
+func (guard) Close() error { return nil }
+
+func newItems() http.Handler { return &items{} }
+
+func newGuard() any { return guard{&items{}} }
+
+func plainHandler() http.Handler { return http.HandlerFunc(nil) }
+`
+	cases := map[string]reachCase{
+		"the method that serves, behind a pointer": {
+			source: source, old: `[]byte("items")`, new: `[]byte("other")`,
+			mustReach: []string{"(*shop.items).ServeHTTP", "(shop.items).Describe", "shop.newItems"},
+			root:      "shop.newItems",
+		},
+		"a method on the value receiver": {
+			source: source, old: `return "described"`, new: `return "other"`,
+			root: "shop.newItems",
+		},
+		"a method the type gets by embedding": {
+			source: source, old: `[]byte("items")`, new: `[]byte("other")`,
+			mustReach: []string{"(shop.guard).Close", "(*shop.items).ServeHTTP"},
+			root:      "shop.newGuard",
+		},
+	}
+
+	for name, test := range cases {
+		assertEditMovesAndReaches(t, name, test)
+	}
+}
+
+func TestFingerprintTakesNoMethodsOfATypeFromOutsideTheModule(t *testing.T) {
+	source := "package shop\n\nimport \"net/http\"\n\nfunc plainHandler() http.Handler { return http.HandlerFunc(nil) }\n"
+	root := writeModule(t, "shop", map[string]string{"shop.go": source})
+
+	reach := fingerprintsOf(t, root, "shop.plainHandler").Reach["shop.plainHandler"]
+
+	if !reflect.DeepEqual(reach, []string{"shop.plainHandler"}) {
+		t.Fatalf("got %v", reach)
+	}
+}

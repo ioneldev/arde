@@ -128,8 +128,16 @@ func (service loadedService) buildFiles() []string {
 }
 
 func (service loadedService) holds(function *types.Func) bool {
-	return function.Pkg() != nil && slices.ContainsFunc(service.packages, func(loaded *packages.Package) bool {
-		return loaded.Types == function.Pkg()
+	return service.holdsPackage(function.Pkg())
+}
+
+func (service loadedService) declares(named *types.Named) bool {
+	return service.holdsPackage(named.Obj().Pkg())
+}
+
+func (service loadedService) holdsPackage(declaring *types.Package) bool {
+	return declaring != nil && slices.ContainsFunc(service.packages, func(loaded *packages.Package) bool {
+		return loaded.Types == declaring
 	})
 }
 

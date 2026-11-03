@@ -33,9 +33,23 @@ type handlerReader struct {
 	bodies  functionBodies
 }
 
+// registration is a call that registers a route, with the position of its handler.
+type registration struct {
+	call    *ast.CallExpr
+	handler int
+}
+
+func (registered registration) handlerExpression() ast.Expr {
+	if registered.handler < 0 || registered.handler >= len(registered.call.Args) {
+		return nil
+	}
+	return registered.call.Args[registered.handler]
+}
+
 // read gives a handler that holds a function written in place neither anchor nor roots: that
 // function has no id to hash and no declaration to carry docs. It can still mount a mux.
-func (reader handlerReader) read(handler ast.Expr) handlerReading {
+func (reader handlerReader) read(registered registration) handlerReading {
+	handler := registered.handlerExpression()
 	if handler == nil {
 		return handlerReading{}
 	}
@@ -46,7 +60,11 @@ func (reader handlerReader) read(handler ast.Expr) handlerReading {
 	}
 	reading.anchor = reader.anchorAt(innermost)
 	if reading.anchor.function != nil {
-		reading.roots = reader.functionsNamedIn(handler)
+		reading.roots = sortedByID(slices.Concat(
+			reader.functionsNamedIn(handler),
+			[]*types.Func{reading.anchor.function},
+			reader.methodsHandedToAnInterface(registered),
+		))
 	}
 	return reading
 }
@@ -111,16 +129,200 @@ func (reader handlerReader) isMount(handler ast.Expr) bool {
 	return handlerType != nil && handlerType.String() == serveMuxType
 }
 
-// anchorAt names the function behind the innermost handler: a function of the module, or the
-// factory a call that does more than wrap reaches. Anything else has no declaration for the docs
-// and no body to hash, so the route has no anchor.
+// anchorAt names the function behind the innermost handler: a function of the module, the factory
+// a call that does more than wrap reaches, or the ServeHTTP of a value of the module's own type.
+// Anything else has no declaration for the docs and no body to hash, so the route has no anchor.
 func (reader handlerReader) anchorAt(innermost ast.Expr) handlerRoot {
 	name := nameBehind(innermost)
-	function := reader.functionNamedBy(name)
-	if function == nil {
+	if function := reader.functionNamedBy(name); function != nil {
+		return handlerRoot{function: function, name: name}
+	}
+	return reader.serveMethodOfAValue(innermost)
+}
+
+// serveMethodOfAValue anchors a value of a module type that serves requests itself, such as
+// &itemsHandler{...} or a variable of that type, at its ServeHTTP, which is the whole handler. A
+// call is a factory's. A value of a function type holds code no reading can name, and a value of an
+// interface can be of any type.
+func (reader handlerReader) serveMethodOfAValue(innermost ast.Expr) handlerRoot {
+	if _, isCall := innermost.(*ast.CallExpr); isCall {
 		return handlerRoot{}
 	}
-	return handlerRoot{function: function, name: name}
+	valueType := reader.info.TypeOf(innermost)
+	if valueType == nil || reader.info.Types[innermost].IsType() || types.IsInterface(valueType) {
+		return handlerRoot{}
+	}
+	if _, isFunction := valueType.Underlying().(*types.Signature); isFunction {
+		return handlerRoot{}
+	}
+	method, _, _ := types.LookupFieldOrMethod(valueType, true, nil, "ServeHTTP")
+	serve, isMethod := method.(*types.Func)
+	if !isMethod || !hasTheHandlersShape(serve.Signature()) || !reader.service.holds(serve.Origin()) {
+		return handlerRoot{}
+	}
+	return handlerRoot{function: serve, name: nameOfAValue(innermost)}
+}
+
+// nameOfAValue shows a composite literal by its type, as `itemsHandler` for &itemsHandler{...}, and
+// anything else as it is written.
+func nameOfAValue(value ast.Expr) ast.Expr {
+	expression := ast.Unparen(value)
+	if address, isAddress := expression.(*ast.UnaryExpr); isAddress && address.Op == token.AND {
+		expression = ast.Unparen(address.X)
+	}
+	if literal, isLiteral := expression.(*ast.CompositeLit); isLiteral && literal.Type != nil {
+		return literal.Type
+	}
+	return value
+}
+
+// methodsHandedToAnInterface is every method of each module type the handler hands to an
+// interface, where the static graph cannot follow a call: the handler itself given to a parameter
+// of interface type, an argument given to one inside it, an element a composite literal keeps as
+// one, and the operand of a conversion to one.
+func (reader handlerReader) methodsHandedToAnInterface(registered registration) []*types.Func {
+	handed := reader.argumentTypesHandedOn(registered.call, []int{registered.handler})
+	ast.Inspect(registered.handlerExpression(), func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.CallExpr:
+			handed = append(handed, reader.argumentTypesHandedOn(node, positionsOf(node.Args))...)
+		case *ast.CompositeLit:
+			handed = append(handed, reader.elementTypesHandedOn(node)...)
+		}
+		return true
+	})
+	methods := []*types.Func{}
+	for _, handedType := range handed {
+		methods = append(methods, reader.methodsOf(handedType)...)
+	}
+	return methods
+}
+
+func positionsOf(arguments []ast.Expr) []int {
+	positions := make([]int, len(arguments))
+	for position := range arguments {
+		positions[position] = position
+	}
+	return positions
+}
+
+func (reader handlerReader) argumentTypesHandedOn(call *ast.CallExpr, positions []int) []types.Type {
+	if reader.info.Types[call.Fun].IsType() {
+		if len(call.Args) == 1 && types.IsInterface(reader.info.TypeOf(call.Fun)) {
+			return reader.concreteTypeOf(call.Args[0])
+		}
+		return nil
+	}
+	calleeType := reader.info.TypeOf(call.Fun)
+	if calleeType == nil {
+		return nil
+	}
+	signature, isSignature := calleeType.Underlying().(*types.Signature)
+	if !isSignature {
+		return nil
+	}
+	handed := []types.Type{}
+	for _, position := range positions {
+		parameter := parameterTypeAt(signature, position, call.Ellipsis.IsValid())
+		if position < len(call.Args) && parameter != nil && types.IsInterface(parameter) {
+			handed = append(handed, reader.concreteTypeOf(call.Args[position])...)
+		}
+	}
+	return handed
+}
+
+// parameterTypeAt is the type an argument at that position is given as: the element of a variadic
+// parameter for its extra arguments, unless the call spreads a slice into it.
+func parameterTypeAt(signature *types.Signature, position int, spreads bool) types.Type {
+	parameters := signature.Params()
+	last := parameters.Len() - 1
+	if signature.Variadic() && position >= last {
+		variadic := parameters.At(last).Type()
+		if slice, isSlice := variadic.Underlying().(*types.Slice); isSlice && !spreads {
+			return slice.Elem()
+		}
+		return variadic
+	}
+	if position > last {
+		return nil
+	}
+	return parameters.At(position).Type()
+}
+
+func (reader handlerReader) elementTypesHandedOn(literal *ast.CompositeLit) []types.Type {
+	handed := []types.Type{}
+	for index, element := range literal.Elts {
+		var key ast.Expr
+		value := element
+		if pair, isPair := element.(*ast.KeyValueExpr); isPair {
+			key, value = pair.Key, pair.Value
+		}
+		if slot := slotOf(reader.info.TypeOf(literal), index, key); slot != nil && types.IsInterface(slot) {
+			handed = append(handed, reader.concreteTypeOf(value)...)
+		}
+	}
+	return handed
+}
+
+// slotOf is the type a composite literal keeps an element's value as: a field of a struct, or the
+// element of a slice, an array or a map.
+func slotOf(literalType types.Type, index int, key ast.Expr) types.Type {
+	if literalType == nil {
+		return nil
+	}
+	if pointer, isPointer := literalType.Underlying().(*types.Pointer); isPointer {
+		literalType = pointer.Elem()
+	}
+	switch kept := literalType.Underlying().(type) {
+	case *types.Struct:
+		return fieldOf(kept, index, key)
+	case *types.Slice:
+		return kept.Elem()
+	case *types.Array:
+		return kept.Elem()
+	case *types.Map:
+		return kept.Elem()
+	}
+	return nil
+}
+
+func fieldOf(structure *types.Struct, index int, key ast.Expr) types.Type {
+	if name, isNamed := key.(*ast.Ident); isNamed {
+		for field := range structure.Fields() {
+			if field.Name() == name.Name {
+				return field.Type()
+			}
+		}
+		return nil
+	}
+	if index < structure.NumFields() {
+		return structure.Field(index).Type()
+	}
+	return nil
+}
+
+func (reader handlerReader) concreteTypeOf(value ast.Expr) []types.Type {
+	valueType := reader.info.TypeOf(value)
+	if valueType == nil || types.IsInterface(valueType) {
+		return nil
+	}
+	return []types.Type{valueType}
+}
+
+// methodsOf is every method of a named type of the module, promoted ones included, on value and
+// pointer receivers alike.
+func (reader handlerReader) methodsOf(handedType types.Type) []*types.Func {
+	named := namedBehind(handedType)
+	if named == nil || !reader.service.declares(named) {
+		return nil
+	}
+	methods := []*types.Func{}
+	for selection := range types.NewMethodSet(types.NewPointer(named)).Methods() {
+		if method, isFunction := selection.Obj().(*types.Func); isFunction && reader.service.holds(method.Origin()) {
+			methods = append(methods, method)
+		}
+	}
+	return methods
 }
 
 // nameBehind takes a factory call to its callee, and an instantiated function to the function.
@@ -151,8 +353,12 @@ func (reader handlerReader) functionsNamedIn(handler ast.Expr) []*types.Func {
 		}
 		return true
 	})
-	slices.SortFunc(found, func(a, b *types.Func) int { return cmp.Compare(functionID(a), functionID(b)) })
-	return slices.CompactFunc(found, func(a, b *types.Func) bool { return functionID(a) == functionID(b) })
+	return sortedByID(found)
+}
+
+func sortedByID(functions []*types.Func) []*types.Func {
+	slices.SortFunc(functions, func(a, b *types.Func) int { return cmp.Compare(functionID(a), functionID(b)) })
+	return slices.CompactFunc(functions, func(a, b *types.Func) bool { return functionID(a) == functionID(b) })
 }
 
 func (reader handlerReader) functionNamedBy(name ast.Expr) *types.Func {

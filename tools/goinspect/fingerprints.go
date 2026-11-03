@@ -222,10 +222,10 @@ func (module moduleProgram) methodsDeclaredOn(declaredType *ssa.Type) []*ssa.Fun
 }
 
 func (module moduleProgram) isInModule(function *ssa.Function) bool {
-	if function.Pkg == nil {
-		return false
-	}
-	path := function.Pkg.Pkg.Path()
+	return function.Pkg != nil && module.holdsPackage(function.Pkg.Pkg.Path())
+}
+
+func (module moduleProgram) holdsPackage(path string) bool {
 	return path == module.modulePath || strings.HasPrefix(path, module.modulePath+"/")
 }
 
@@ -233,8 +233,10 @@ func (module moduleProgram) isInModule(function *ssa.Function) bool {
 // function an instruction names, whether it calls it or hands it over, such as the comparator
 // given to slices.SortFunc: a fingerprint that moves too often is safe, and one that does not move
 // is not. A function's closures count as reached with it, because SSA has no edge into one that
-// is only passed around. Calls through an interface, or through a function value that is not
-// named where it is used, are not followed, and that is a documented limit.
+// is only passed around. A call through an interface is followed to every method of each type of
+// the module that reached code makes into an interface. A call through a function value that is not
+// named where it is used, or through an interface whose value was made by code not reached, is not
+// followed, and that is a documented limit.
 func (module moduleProgram) reachFrom(start *ssa.Function) []*ssa.Function {
 	walk := &reachWalk{module: module, visited: map[*ssa.Function]bool{}}
 	walk.visit(start)
@@ -276,9 +278,45 @@ func (walk *reachWalk) visit(function *ssa.Function) {
 	for _, mentioned := range functionsMentionedBy(function) {
 		walk.visit(mentioned)
 	}
+	for _, converted := range typesMadeIntoInterfaces(function) {
+		for _, method := range walk.module.methodsOf(converted) {
+			walk.visit(method)
+		}
+	}
 	for _, closure := range function.AnonFuncs {
 		walk.visit(closure)
 	}
+}
+
+// typesMadeIntoInterfaces is the type of every value the function converts to an interface. A
+// call through the interface reaches a method no instruction names, so the walk takes them all.
+func typesMadeIntoInterfaces(function *ssa.Function) []types.Type {
+	converted := []types.Type{}
+	for _, block := range function.Blocks {
+		for _, instruction := range block.Instrs {
+			if conversion, isConversion := instruction.(*ssa.MakeInterface); isConversion {
+				converted = append(converted, conversion.X.Type())
+			}
+		}
+	}
+	return converted
+}
+
+// methodsOf is every method of a named type of the module, on value and pointer receivers alike,
+// promoted ones included. A type that still has a type parameter gives none, because SSA builds no
+// method for it, and each instance is converted where its type is known.
+func (module moduleProgram) methodsOf(converted types.Type) []*ssa.Function {
+	named := namedBehind(converted)
+	if named == nil || named.Obj().Pkg() == nil || !module.holdsPackage(named.Obj().Pkg().Path()) {
+		return nil
+	}
+	methods := []*ssa.Function{}
+	for selection := range module.program.MethodSets.MethodSet(types.NewPointer(named)).Methods() {
+		if method := module.program.MethodValue(selection); method != nil {
+			methods = append(methods, method)
+		}
+	}
+	return methods
 }
 
 func functionsMentionedBy(function *ssa.Function) []*ssa.Function {

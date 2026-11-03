@@ -700,7 +700,7 @@ func TestRoutesAnchorsAtTheFactoryAndRootsAtEveryFunctionTheHandlerNames(t *test
 			"logged(http.HandlerFunc(parcels))", "parcels", "parcels", []string{"logged", "parcels"},
 		},
 		"a conversion of a handler that returns an error": {
-			"failable(d.failing)", "(*example.com/depot.desk).failing", "d.failing", []string{"(*example.com/depot.desk).failing"},
+			"failable(d.failing)", "(*example.com/depot.desk).failing", "d.failing", []string{"(*example.com/depot.desk).failing", "(example.com/depot.failable).ServeHTTP"},
 		},
 		"a handler alone": {
 			"http.HandlerFunc(parcels)", "parcels", "parcels", []string{"parcels"},
@@ -1842,6 +1842,92 @@ func TestRoutesRejectsBadArguments(t *testing.T) {
 
 		if exitCode != 1 || stdout != "" || strings.TrimSpace(stderr) == "" {
 			t.Errorf("%s: exit %d, stdout %q, stderr %q", name, exitCode, stdout, stderr)
+		}
+	}
+}
+
+// handlerTypes are the module's own types that serve requests, for the tests on a value as the
+// handler.
+const handlerTypes = `
+type items struct{ names []string }
+
+func (h *items) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.render(w) }
+
+func (h *items) render(w http.ResponseWriter) {}
+
+type plain struct{}
+
+func (plain) ServeHTTP(w http.ResponseWriter, r *http.Request) {}
+
+type apiFunc func(w http.ResponseWriter, r *http.Request) error
+
+func (f apiFunc) ServeHTTP(w http.ResponseWriter, r *http.Request) { _ = f(w, r) }
+
+type guard struct{ next http.Handler }
+
+func (g *guard) ServeHTTP(w http.ResponseWriter, r *http.Request) { g.next.ServeHTTP(w, r) }
+
+type desk struct{ items *items }
+
+func failing(w http.ResponseWriter, r *http.Request) error { return nil }
+
+func newItems() *items { return &items{} }
+
+func logged(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+}
+
+var shared = &items{}
+
+var table = map[string]*items{}
+`
+
+func aHandlerRegistered(argument string) string {
+	return `package main
+
+import "net/http"
+` + handlerTypes + `
+func main() {
+	h := &items{}
+	d := desk{items: h}
+	_ = d
+	http.Handle("/x", ` + argument + `)
+}
+`
+}
+
+// A value of a module type that serves requests itself is anchored at its ServeHTTP, which is the
+// whole handler, and the methods of a module type the handler hands to an interface are roots,
+// because the static graph cannot follow a call through the interface.
+func TestRoutesAnchorsAValueThatServesItselfAtItsServeHTTP(t *testing.T) {
+	itemsMethods := []string{"(*example.com/depot.items).ServeHTTP", "(*example.com/depot.items).render"}
+	cases := map[string]struct {
+		argument   string
+		wantAnchor string
+		wantShown  string
+		wantRoots  []string
+	}{
+		"a composite literal's address": {`&items{names: []string{"b"}}`, "(*example.com/depot.items).ServeHTTP", "items", itemsMethods},
+		"a composite literal":           {`plain{}`, "(example.com/depot.plain).ServeHTTP", "plain", []string{"(example.com/depot.plain).ServeHTTP"}},
+		"a variable":                    {`h`, "(*example.com/depot.items).ServeHTTP", "h", itemsMethods},
+		"a package variable":            {`shared`, "(*example.com/depot.items).ServeHTTP", "shared", itemsMethods},
+		"a field":                       {`d.items`, "(*example.com/depot.items).ServeHTTP", "d.items", itemsMethods},
+		"a table entry":                 {`table["x"]`, "(*example.com/depot.items).ServeHTTP", `table["x"]`, itemsMethods},
+		"behind middleware":             {`logged(&items{})`, "(*example.com/depot.items).ServeHTTP", "items", append(slices.Clone(itemsMethods), "example.com/depot.logged")},
+		"a conversion of a function":    {`apiFunc(failing)`, "example.com/depot.failing", "failing", []string{"(example.com/depot.apiFunc).ServeHTTP", "example.com/depot.failing"}},
+		"a factory of its own type":     {`newItems()`, "example.com/depot.newItems", "newItems", append(slices.Clone(itemsMethods), "example.com/depot.newItems")},
+		"middleware given its own type": {`logged(newItems())`, "example.com/depot.newItems", "newItems", []string{"(*example.com/depot.items).ServeHTTP", "(*example.com/depot.items).render", "example.com/depot.logged", "example.com/depot.newItems"}},
+		"a handler holding another":     {`&guard{next: newItems()}`, "(*example.com/depot.guard).ServeHTTP", "guard", []string{"(*example.com/depot.guard).ServeHTTP", "(*example.com/depot.items).ServeHTTP", "(*example.com/depot.items).render", "example.com/depot.newItems"}},
+	}
+
+	for name, test := range cases {
+		site := onlySite(t, aHandlerRegistered(test.argument))
+
+		if site.HandlerID == nil || *site.HandlerID != test.wantAnchor || site.Args["handler"] != test.wantShown {
+			t.Errorf("%s: anchor %v shown as %q, want %s", name, site.HandlerID, site.Args["handler"], test.wantAnchor)
+		}
+		if !reflect.DeepEqual(site.Roots, test.wantRoots) {
+			t.Errorf("%s: roots %v, want %v", name, site.Roots, test.wantRoots)
 		}
 	}
 }

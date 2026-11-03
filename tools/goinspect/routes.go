@@ -531,7 +531,11 @@ func (reader routeReader) registrationAt(call routeCall) callReading {
 
 func (reader routeReader) handlerAt(call routeCall) handlerReading {
 	handlers := handlerReader{info: call.info, service: reader.service, bodies: reader.bodies}
-	return handlers.read(call.argument("handler"))
+	position, isNamed := call.positions["handler"]
+	if !isNamed {
+		return handlerReading{}
+	}
+	return handlers.read(registration{call: call.syntax, handler: position})
 }
 
 // siteAt leaves the path to the caller, which knows what the call registers.
