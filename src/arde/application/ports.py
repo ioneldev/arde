@@ -165,6 +165,7 @@ class CheckResult(Frozen):
     tests_listed: int | None
     # Files the build leaves out, such as a test file behind a build tag or one for another
     # platform, as paths from the repo root. A file that leads out of the repo is not listed.
+    # They stay as the repo names them, to match other paths, so whoever prints them escapes them.
     ignored_files: tuple[str, ...]
     # Folders from the repo root that hold a module of their own. No check above reached them.
     unchecked_modules: tuple[str, ...]
@@ -210,7 +211,10 @@ class LanguageAdapter(Protocol):
         ...
 
     def changed_declarations(self, old_repo: Path, new_repo: Path) -> list[str]:
-        """Ids, as file::kind name, of the declarations added, removed or changed. Sorted."""
+        """Ids, as file::kind name, of the declarations added, removed or changed. Sorted.
+
+        They stay raw, to match the inventory's ids, so whoever prints them escapes them.
+        """
         ...
 
     def extract_inventory(self, repo: Path, profile: RepoProfile) -> Inventory:
