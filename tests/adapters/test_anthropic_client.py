@@ -409,6 +409,24 @@ def test_a_timeout_is_told_apart_from_a_refused_connection() -> None:
             "invalid",
             "ARDE_MODELS_FILE",
         ),
+        # Measured on a real run: a spent account comes back as a plain 400, said only in words.
+        (
+            status_error(
+                anthropic.BadRequestError,
+                status=400,
+                detail="usage",
+                body={
+                    "type": "error",
+                    "error": {
+                        "type": "invalid_request_error",
+                        "message": "You have reached your specified API usage limits. You will "
+                        "regain access on 2026-12-01 at 00:00 UTC.",
+                    },
+                },
+            ),
+            "usage limit",
+            "Anthropic Console",
+        ),
         (
             status_error(anthropic.OverloadedError, status=529, detail="Overloaded"),
             "overloaded",

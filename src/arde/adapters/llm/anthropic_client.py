@@ -62,6 +62,8 @@ class _Failure(NamedTuple):
     next_action: str
     # For a status the SDK has no class of its own for: it raises a plain APIStatusError.
     status_code: int | None = None
+    # For a cause the API tells only in its message, under a status it shares with other causes.
+    message_holds: str | None = None
     exit_code: ExitCode = ExitCode.CHECKS_FAILED
 
 
@@ -108,6 +110,15 @@ _FAILURES = (
         next_action=(
             "Report this with the request id: the conversation grew past the API's size limit, "
             "so the same run will fail again"
+        ),
+    ),
+    _Failure(
+        sdk_error=anthropic.BadRequestError,
+        message_holds="usage limits",
+        problem="The Anthropic account has reached its usage limit",
+        next_action=(
+            "Raise the limit in the Anthropic Console (Settings, Limits), or wait until the date "
+            "the message names, then run again"
         ),
     ),
     _Failure(
@@ -360,6 +371,10 @@ def _provider_error(error: anthropic.AnthropicError) -> ProviderError:
 def _applies_to(failure: _Failure, error: anthropic.AnthropicError) -> bool:
     if not isinstance(error, failure.sdk_error):
         return False
+    if failure.message_holds is not None:
+        message = _api_message(error) if isinstance(error, anthropic.APIStatusError) else str(error)
+        if failure.message_holds not in message.lower():
+            return False
     return failure.status_code is None or getattr(error, "status_code", None) == failure.status_code
 
 
