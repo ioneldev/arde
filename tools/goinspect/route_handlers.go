@@ -139,6 +139,21 @@ func (reading handlerReading) alsoRootedAt(functions []*types.Func) handlerReadi
 	return reading
 }
 
+func (reader handlerReader) refersTo(expression ast.Expr, variable *types.Var) bool {
+	return typedSyntax{info: reader.info}.refersTo(expression, variable)
+}
+
+// mentions is true when the variable is anywhere in the expression.
+func (reader handlerReader) mentions(expression ast.Expr, variable *types.Var) bool {
+	found := false
+	ast.Inspect(expression, func(node ast.Node) bool {
+		identifier, isIdentifier := node.(*ast.Ident)
+		found = found || isIdentifier && reader.info.Uses[identifier] == variable
+		return !found
+	})
+	return found
+}
+
 func holdsAFunctionLiteral(expression ast.Expr) bool {
 	found := false
 	ast.Inspect(expression, func(node ast.Node) bool {
@@ -193,8 +208,12 @@ func (reader handlerReader) handlerPositionsOf(call *ast.CallExpr) []int {
 	return positions
 }
 
-// isMount reads the type, so a factory that returns a mux, such as api.Mux(), mounts it too.
+// isMount reads the type, so a factory that returns a mux, such as api.Mux(), mounts it too. A
+// mux's ServeHTTP taken as a value serves what the mux serves, so it counts as the mux.
 func (reader handlerReader) isMount(handler ast.Expr) bool {
+	if selector, isSelector := ast.Unparen(handler).(*ast.SelectorExpr); isSelector && selector.Sel.Name == "ServeHTTP" {
+		handler = selector.X
+	}
 	handlerType := reader.info.TypeOf(handler)
 	return handlerType != nil && handlerType.String() == serveMuxType
 }

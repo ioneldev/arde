@@ -562,6 +562,7 @@ def stopped_at_an_unread_site(problem: UnreadProblem) -> RouteNotUnderstoodError
         ("method is not a constant", "method argument is not a constant"),
         ("used as a value", "used here other than in a direct call"),
         ("called through an interface", "goes through an interface"),
+        ("mounts a mux", "hands a mux to a function"),
     ],
 )
 def test_a_site_goinspect_cannot_read_stops_the_run_names_the_place_and_says_why(

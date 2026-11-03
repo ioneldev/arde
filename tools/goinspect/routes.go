@@ -40,6 +40,8 @@ const (
 	// A call to a wrapper registers no route: its handler is a mux, or no site inside the wrapper
 	// registers a path it is given.
 	registersNothing = "registers nothing"
+	// A call hands a mux to a wrapper that does more with it than register it at its path.
+	mountsAMux = "mounts a mux"
 	// The argument a route pattern names as the method is not a constant at this call.
 	methodIsNotKnown = "method is not a constant"
 )
@@ -105,6 +107,17 @@ type wrapperForm struct {
 	methodFromTheCall bool
 	// named holds the functions of the module the site names, whose code shapes every request.
 	named []*types.Func
+	// passesTheHandlerOn is true when the site registers the wrapper's handler parameter, alone or
+	// behind calls that only wrap it, and holdsTheHandler when the parameter is anywhere in what
+	// the site registers.
+	passesTheHandlerOn bool
+	holdsTheHandler    bool
+}
+
+// mountsAtThePath is true for the form a mux can be handed to: the path parameter alone, with the
+// handler parameter passed on, which reads as registering the mux at the call's path.
+func (form wrapperForm) mountsAtThePath() bool {
+	return form.methodBefore == "" && !form.methodFromTheCall && form.passesTheHandlerOn
 }
 
 func (form wrapperForm) registered(path, method string) string {
@@ -391,7 +404,15 @@ func (reader routeReader) innerSiteAt(call routeCall) (innerSite, bool) {
 	if written, isWritten := reader.writeToTheParametersOf(call.enclosing); isWritten {
 		return innerSite{problem: buildsItsPath, writtenAt: written}, true
 	}
-	form.named = reader.handlersOf(call).functionsNamedIn(call.syntax)
+	handlers := reader.handlersOf(call)
+	form.named = handlers.functionsNamedIn(call.syntax)
+	if position, isNamed := reader.wrappers[routeKind][call.enclosing]["handler"]; isNamed {
+		handlerParameter, registered := parameterAt(call.enclosing, position), call.argument("handler")
+		if handlerParameter != nil && registered != nil {
+			form.passesTheHandlerOn = handlers.refersTo(handlers.innermost(registered), handlerParameter)
+			form.holdsTheHandler = handlers.mentions(registered, handlerParameter)
+		}
+	}
 	return innerSite{form: form}, true
 }
 
@@ -489,7 +510,10 @@ func (reader routeReader) wrapperCallAt(call routeCall) callReading {
 		return callReading{}
 	}
 	handler := reader.handlerAt(call)
-	if len(reader.forms[wrapper]) == 0 || handler.isMount {
+	if handler.isMount {
+		return reader.mountAt(call)
+	}
+	if len(reader.forms[wrapper]) == 0 {
 		return call.unreadAs(registersNothing)
 	}
 	method, methodIsKnown := call.methodOf()
@@ -510,6 +534,21 @@ func (reader routeReader) wrapperCallAt(call routeCall) callReading {
 		reading.sites = append(reading.sites, site)
 	}
 	return reading
+}
+
+// mountAt reads a mux handed to a wrapper as a mount at the call's path when every site of the
+// wrapper registers it there, as mux.Handle(path, mux) would, so it adds no route of its own. A
+// wrapper that does more with the mux stops the run, and so does one whose sites do not register
+// the handler it is given at all.
+func (reader routeReader) mountAt(call routeCall) callReading {
+	forms := reader.forms[call.target()]
+	if len(forms) > 0 && !slices.ContainsFunc(forms, func(form wrapperForm) bool { return !form.mountsAtThePath() }) {
+		return callReading{}
+	}
+	if slices.ContainsFunc(forms, func(form wrapperForm) bool { return form.holdsTheHandler }) {
+		return call.unreadAs(mountsAMux)
+	}
+	return call.unreadAs(registersNothing)
 }
 
 // registrationAt reads a call that registers its route itself, such as mux.HandleFunc or a

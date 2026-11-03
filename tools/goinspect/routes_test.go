@@ -598,6 +598,10 @@ func TestRoutesTreatsAServeMuxHandlerAsAMountAndNotARoute(t *testing.T) {
 		"a mux behind middleware of another module":                 `http.TimeoutHandler(inner, 1, "late")`,
 		"a mux behind middleware given a function written in place": `guarded(inner, func(r *http.Request) bool { return true })`,
 		"a mux a factory returns":                                   `mounted()`,
+		"a mux's ServeHTTP":                                         `http.HandlerFunc(inner.ServeHTTP)`,
+		"a mux's ServeHTTP behind middleware":                       `http.HandlerFunc(called(inner.ServeHTTP))`,
+		"a mux behind middleware that keeps it in a struct":         `secured(inner)`,
+		"a mux behind middleware that takes its ServeHTTP":          `passed(inner)`,
 	}
 
 	for name, handler := range cases {
@@ -610,6 +614,18 @@ func logged(next http.Handler) http.Handler {
 }
 
 func mounted() *http.ServeMux { return http.NewServeMux() }
+
+func called(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { next(w, r) }
+}
+
+type headerMiddleware struct{ next http.Handler }
+
+func (m *headerMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) { m.next.ServeHTTP(w, r) }
+
+func secured(next http.Handler) http.Handler { return &headerMiddleware{next: next} }
+
+func passed(next http.Handler) http.Handler { return http.HandlerFunc(next.ServeHTTP) }
 
 func guarded(next http.Handler, allow func(*http.Request) bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2094,6 +2110,59 @@ func main() {
 	for _, pair := range different {
 		if identity[pair[0]] == identity[pair[1]] {
 			t.Errorf("%s and %s: want two identities", pair[0], pair[1])
+		}
+	}
+}
+
+// aMuxHandedTo hands a mux to a wrapper of the module whose body is given.
+func aMuxHandedTo(wrapper string) string {
+	return `package main
+
+import "net/http"
+
+type app struct{ mux *http.ServeMux }
+
+func (a *app) register(path string, h http.Handler) { ` + wrapper + ` }
+
+func passed(next http.Handler) http.Handler { return http.HandlerFunc(next.ServeHTTP) }
+
+func listing(routes http.Handler) http.Handler { return http.NotFoundHandler() }
+
+func main() {
+	a := &app{mux: http.NewServeMux()}
+	admin := http.NewServeMux()
+	admin.HandleFunc("GET /admin/users", parcels)
+	a.mux.HandleFunc("GET /items", parcels)
+	a.register("/admin/", admin)
+}
+` + handlerFuncs
+}
+
+const registerOnA = `[{"kind":"route","call":"^a\\.register$","args":{"path":0,"handler":1}}]`
+
+// A mux handed to a wrapper that registers it at its path is mounted there, as mux.Handle(path,
+// mux) mounts it, and its own routes are listed where they are registered.
+func TestRoutesReadsAMuxHandedToAWrapperThatRegistersItAtItsPathAsAMount(t *testing.T) {
+	for _, wrapper := range []string{`a.mux.Handle(path, h)`, `a.mux.Handle(path, passed(h))`} {
+		root := writeModule(t, "example.com/depot", map[string]string{"main.go": aMuxHandedTo(wrapper)})
+
+		output := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: registerOnA})
+
+		if got := sitePaths(output.Sites); !reflect.DeepEqual(got, []string{"GET /admin/users", "GET /items"}) || len(output.UnreadSites) != 0 {
+			t.Errorf("%s: got %v and %+v", wrapper, got, output.UnreadSites)
+		}
+	}
+}
+
+func TestRoutesStopsAtAMuxHandedToAWrapperThatDoesMoreThanRegisterItAtItsPath(t *testing.T) {
+	for _, wrapper := range []string{`a.mux.Handle("GET "+path, h)`, `a.mux.Handle(path, listing(h))`} {
+		source := aMuxHandedTo(wrapper)
+
+		got := unreadSitesOf(t, source, registerOnA)
+
+		want := []unreadSiteOutput{{File: "main.go", Line: lineHolding(t, source, `a.register("/admin/"`), Problem: "mounts a mux"}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %+v, want %+v", wrapper, got, want)
 		}
 	}
 }

@@ -94,6 +94,12 @@ REGISTRARS_ARE_READ_AT_THEIR_CALLS = (
     "registers through any other use cannot be listed. This repo cannot be documented yet: report "
     f"that. {DO_NOT_NARROW}"
 )
+A_MUX_IS_READ_AT_ITS_PATH = (
+    "ARDE reads a mux handed to a function that registers routes for its callers only when the "
+    "function registers it at the path it is given, alone or behind middleware, as "
+    "mux.Handle(path, h) does. This repo cannot be documented yet: report that. "
+    f"{DO_NOT_NARROW}"
+)
 GIVE_THE_POSITIONS_OF_THE_ROUTE = (
     "Check the route pattern for this function: its path and handler positions must name the "
     "path and handler of the route it registers. If the function has no such arguments, this repo "
@@ -226,6 +232,11 @@ _WHY_A_SITE_IS_UNREAD: dict[UnreadProblem, tuple[str, str]] = {
         "a function that registers routes is used here other than in a direct call, so what it "
         "registers through this use cannot be read",
         REGISTRARS_ARE_READ_AT_THEIR_CALLS,
+    ),
+    "mounts a mux": (
+        "this call hands a mux to a function that registers routes, and the function does more "
+        "with it than register it at its path, so the routes under it cannot be read",
+        A_MUX_IS_READ_AT_ITS_PATH,
     ),
     "called through an interface": (
         "this goes through an interface that a function registering routes satisfies, so which "

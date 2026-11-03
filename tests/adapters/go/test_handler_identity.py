@@ -484,3 +484,58 @@ def test_one_handler_at_two_paths_keeps_its_anchor(adapter: GoAdapter, tmp_path:
         "GET /missing": "example.com/served.notFound",
     }
     assert routes["GET /help"].shares_anchor_with == ()
+
+
+# The reviewer's mt: each mount gave a route row beside the mounted mux's own routes, and none of
+# those rows is served.
+MOUNTS = """package main
+
+import (
+	"log"
+	"net/http"
+	"os"
+	"time"
+)
+
+type headerMiddleware struct{ next http.Handler }
+
+func (m *headerMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("X-Frame-Options", "DENY")
+	m.next.ServeHTTP(w, r)
+}
+
+func secured(next http.Handler) http.Handler { return &headerMiddleware{next: next} }
+
+func logged(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { log.Println(r.URL); next(w, r) }
+}
+
+func passed(next http.Handler) http.Handler { return http.HandlerFunc(next.ServeHTTP) }
+
+func ok(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) }
+
+func main() {
+	root := http.NewServeMux()
+	a, b, c := http.NewServeMux(), http.NewServeMux(), http.NewServeMux()
+	d, e := http.NewServeMux(), http.NewServeMux()
+	a.HandleFunc("GET /a/x", ok)
+	b.HandleFunc("GET /b/x", ok)
+	c.HandleFunc("GET /c/x", ok)
+	d.HandleFunc("GET /d/x", ok)
+	e.HandleFunc("GET /e/x", ok)
+	root.Handle("/a/", secured(a))
+	root.HandleFunc("/b/", logged(b.ServeHTTP))
+	root.HandleFunc("/c/", c.ServeHTTP)
+	root.Handle("/d/", passed(d))
+	root.Handle("/e/", http.TimeoutHandler(e, time.Second, "slow"))
+	http.ListenAndServe(":"+os.Getenv("PORT"), root)
+}
+"""
+
+
+def test_a_mux_behind_middleware_or_through_its_serve_method_is_a_mount_and_no_route(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    routes = routes_by_key(adapter, a_service(tmp_path, MOUNTS))
+
+    assert sorted(routes) == ["GET /a/x", "GET /b/x", "GET /c/x", "GET /d/x", "GET /e/x"]

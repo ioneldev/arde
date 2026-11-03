@@ -528,3 +528,53 @@ def test_an_edit_to_middleware_the_call_hands_the_wrapper_moves_the_route(
     repo = a_service(tmp_path, GUARDED)
 
     assert hash_moves(adapter, repo, key="GET /admin/items", edit=('!= "admin"', '!= "root"'))
+
+
+# The reviewer's mw1 stopped with advice to check positions that were right.
+ADMIN_MOUNTED = """package main
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+)
+
+type app struct{ mux *http.ServeMux }
+
+func (a *app) handle(path string, h http.Handler) { a.mux.Handle(path, h) }
+
+func items(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "items") }
+
+func main() {
+	a := &app{mux: http.NewServeMux()}
+	admin := http.NewServeMux()
+	admin.HandleFunc("GET /admin/users", items)
+	a.handle("GET /items", http.HandlerFunc(items))
+	a.handle("/admin/", admin)
+	http.ListenAndServe(":"+os.Getenv("PORT"), a.mux)
+}
+"""
+
+
+def test_a_mux_handed_to_a_wrapper_that_registers_it_at_its_path_is_a_mount(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(tmp_path, ADMIN_MOUNTED)
+    pattern = ExtractionPattern(kind="route", call=r"^a\.handle$", args={"path": 0, "handler": 1})
+
+    assert keys_of(adapter, repo, profile=reading(pattern)) == ["GET /admin/users", "GET /items"]
+
+
+def test_a_mux_handed_to_a_wrapper_that_does_more_stops_the_run_and_says_so(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(
+        tmp_path, ADMIN_MOUNTED.replace("a.mux.Handle(path, h)", 'a.mux.Handle("GET "+path, h)')
+    )
+    pattern = ExtractionPattern(kind="route", call=r"^a\.handle$", args={"path": 0, "handler": 1})
+
+    with pytest.raises(RouteNotUnderstoodError, match=r"main\.go:20:") as stopped:
+        adapter.extract_inventory(repo, reading(pattern))
+
+    assert "hands a mux" in str(stopped.value)
+    assert "positions" not in stopped.value.next_action
