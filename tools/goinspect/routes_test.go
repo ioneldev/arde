@@ -1245,6 +1245,62 @@ func TestRoutesReadsOneRouteForEachSiteInsideAWrapper(t *testing.T) {
 	}
 }
 
+// The reviewer's x1: a wrapper registers a CORS preflight beside each route. curl OPTIONS /items is
+// served by preflight, and items never runs.
+const aWrapperWithAFixedCompanion = `package main
+
+import "net/http"
+
+type app struct{ mux *http.ServeMux }
+
+func (a *app) get(path string, h http.HandlerFunc) {
+	a.mux.HandleFunc("OPTIONS "+path, preflight)
+	a.mux.HandleFunc("GET "+path, logged(h))
+}
+
+func logged(next http.HandlerFunc) http.HandlerFunc { return next }
+
+func preflight(w http.ResponseWriter, r *http.Request) {}
+
+func items(w http.ResponseWriter, r *http.Request) {}
+
+func orders(w http.ResponseWriter, r *http.Request) {}
+
+func main() {
+	a := &app{mux: http.NewServeMux()}
+	a.get("/items", items)
+	a.get("/orders", orders)
+}
+`
+
+func TestRoutesReadsASiteInsideAWrapperThatHoldsNoHandlerItIsGivenByItsOwnHandler(t *testing.T) {
+	root := writeModule(t, "example.com/depot", map[string]string{"main.go": aWrapperWithAFixedCompanion})
+
+	sites := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: getOnA}).Sites
+
+	type reading struct {
+		anchor string
+		roots  []string
+	}
+	got, identities := map[string]reading{}, map[string]string{}
+	for _, site := range sites {
+		got[site.Literals["path"]] = reading{anchor: *site.HandlerID, roots: site.Roots}
+		identities[site.Literals["path"]] = site.HandlerIdentity
+	}
+	want := map[string]reading{
+		"OPTIONS /items":  {"example.com/depot.preflight", []string{"(*example.com/depot.app).get", "example.com/depot.preflight"}},
+		"OPTIONS /orders": {"example.com/depot.preflight", []string{"(*example.com/depot.app).get", "example.com/depot.preflight"}},
+		"GET /items":      {"example.com/depot.items", []string{"(*example.com/depot.app).get", "example.com/depot.items", "example.com/depot.logged"}},
+		"GET /orders":     {"example.com/depot.orders", []string{"(*example.com/depot.app).get", "example.com/depot.logged", "example.com/depot.orders"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	if identities["OPTIONS /items"] != identities["OPTIONS /orders"] || identities["GET /items"] == identities["GET /orders"] {
+		t.Fatalf("identities %v", identities)
+	}
+}
+
 func TestRoutesStopsAtAWrapperThatHandsItsPathToAnotherWrapper(t *testing.T) {
 	source := `package main
 

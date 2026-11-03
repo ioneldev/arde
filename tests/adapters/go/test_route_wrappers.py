@@ -632,3 +632,67 @@ def test_an_empty_method_stops_the_run_and_says_the_method_is_empty(
         adapter.extract_inventory(repo, reading(METHOD_PATH_HANDLER))
 
     assert "method argument is empty" in str(stopped.value)
+
+
+# The reviewer's x1: curl OPTIONS /items is served by preflight, and items never runs.
+PREFLIGHT = """package main
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+)
+
+type app struct{ mux *http.ServeMux }
+
+func (a *app) get(path string, h http.HandlerFunc) {
+	a.mux.HandleFunc("OPTIONS "+path, preflight)
+	a.mux.HandleFunc("GET "+path, h)
+}
+
+func preflight(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Methods", "GET")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func items(w http.ResponseWriter, r *http.Request)  { fmt.Fprint(w, "items") }
+func orders(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "orders") }
+
+func main() {
+	a := &app{mux: http.NewServeMux()}
+	a.get("/items", items)
+	a.get("/orders", orders)
+	http.ListenAndServe(":"+os.Getenv("PORT"), a.mux)
+}
+"""
+
+
+def test_a_site_inside_a_wrapper_that_registers_its_own_handler_anchors_there(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(tmp_path, PREFLIGHT)
+
+    routes = adapter.extract_inventory(repo, reading(GET_ON_A)).routes
+
+    assert {route.key: (route.handler_id, route.shares_anchor_with) for route in routes} == {
+        "OPTIONS /items": ("example.com/wrapped.preflight", ()),
+        "OPTIONS /orders": ("example.com/wrapped.preflight", ()),
+        "GET /items": ("example.com/wrapped.items", ()),
+        "GET /orders": ("example.com/wrapped.orders", ()),
+    }
+
+
+def test_an_edit_to_the_handler_a_call_gives_moves_only_the_route_that_runs_it(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(tmp_path, PREFLIGHT)
+    profile = reading(GET_ON_A)
+    routes = adapter.extract_inventory(repo, profile).routes
+    before = adapter.route_fingerprints(repo, routes, main_package=".").hashes
+
+    main = repo / "main.go"
+    main.write_text(main.read_text().replace('fmt.Fprint(w, "items")', 'fmt.Fprint(w, "all")'))
+    routes = adapter.extract_inventory(repo, profile).routes
+    after = adapter.route_fingerprints(repo, routes, main_package=".").hashes
+
+    assert {key for key in before if before[key] != after[key]} == {"GET /items"}

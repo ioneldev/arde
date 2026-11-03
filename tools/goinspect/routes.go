@@ -117,6 +117,16 @@ type wrapperForm struct {
 	// the site registers.
 	passesTheHandlerOn bool
 	holdsTheHandler    bool
+	// ownHandler is what a site that holds no handler the call gives registers, such as a CORS
+	// preflight beside each route, read at the site: every call's route there runs it, and none
+	// runs the call's handler.
+	ownHandler *registeredAtTheSite
+}
+
+// registeredAtTheSite is a handler a site inside a wrapper names itself, and its text as written.
+type registeredAtTheSite struct {
+	reading handlerReading
+	text    string
 }
 
 // mountsAtThePath is true for the form a mux can be handed to: the path parameter alone, with the
@@ -433,7 +443,18 @@ func (reader routeReader) innerSiteAt(call routeCall) (innerSite, bool) {
 			form.holdsTheHandler = handlers.mentions(registered, handlerParameter)
 		}
 	}
+	if !form.holdsTheHandler {
+		form.ownHandler = &registeredAtTheSite{reading: reader.handlerAt(call), text: reader.textOfTheHandlerAt(call)}
+	}
 	return innerSite{form: form}, true
+}
+
+func (reader routeReader) textOfTheHandlerAt(call routeCall) string {
+	handler := call.argument("handler")
+	if handler == nil {
+		return ""
+	}
+	return reader.service.printerSource().textOf(handler)
 }
 
 // writeToTheParametersOf finds where a wrapper writes its path or method parameter. The parameter
@@ -562,11 +583,28 @@ func (reader routeReader) wrapperCallAt(call routeCall) callReading {
 		if form.methodFromTheCall && !methodIsKnown {
 			return call.unreadAs(methodIsNotKnown)
 		}
-		site := reader.siteAt(call, handler.alsoRootedAt(append([]*types.Func{wrapper}, form.named...)))
+		if form.ownHandler != nil && form.ownHandler.reading.isMount {
+			continue
+		}
+		site := reader.siteThrough(call, form, handler)
 		site.Literals["path"] = form.registered(path, method)
 		reading.sites = append(reading.sites, site)
 	}
 	return reading
+}
+
+// siteThrough reads the route one site of a wrapper registers at this call. The wrapper's code and
+// the functions its site names shape every request the route answers, so they are roots too.
+func (reader routeReader) siteThrough(call routeCall, form wrapperForm, given handlerReading) routeSite {
+	shapedBy := append([]*types.Func{call.target()}, form.named...)
+	if form.ownHandler == nil {
+		return reader.siteAt(call, given.alsoRootedAt(shapedBy))
+	}
+	site := reader.siteAt(call, form.ownHandler.reading.alsoRootedAt(shapedBy))
+	if site.HandlerID == nil {
+		site.Args["handler"] = form.ownHandler.text
+	}
+	return site
 }
 
 // mountAt reads a mux handed to a wrapper as a mount at the call's path when every site of the
