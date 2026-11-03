@@ -416,6 +416,7 @@ def test_a_service_that_cannot_be_stopped_is_reported_and_names_how_to_stop_it(
     assert isinstance(refused.value, ArdeError)
     assert str(started[0].pid) in str(refused.value)
     assert f"kill -9 -{started[0].pid}" in refused.value.next_action
+    assert not getattr(refused.value, "__notes__", [])
 
 
 def test_a_failed_stop_does_not_hide_the_error_that_caused_it(
@@ -673,6 +674,7 @@ def test_a_service_that_dies_after_opening_its_port_is_reported(
     assert isinstance(died.value, ArdeError)
     assert "exited with code 5" in str(died.value)
     assert "fatal: lost the database" in str(died.value)
+    assert not getattr(died.value, "__notes__", [])
     assert str(config.log) in died.value.next_action
     assert not accepts_connection(service.port)
 
