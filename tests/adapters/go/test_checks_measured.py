@@ -168,6 +168,28 @@ def test_a_hang_past_ardes_clock_stops_the_run_with_what_go_had_printed(
     assert "waiting for the broker at queue:5672" in str(stopped.value)
 
 
+def test_a_failing_test_keeps_its_text_beside_a_parallel_test_of_its_name_that_passes(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    inside = (
+        'package main\n\nimport (\n\t"testing"\n\t"time"\n)\n\n'
+        'func TestSame(t *testing.T) {\n\tt.Parallel()\n\tt.Log("PAR_FAIL_TEXT_1")\n'
+        '\ttime.Sleep(300 * time.Millisecond)\n\tt.Log("PAR_FAIL_TEXT_2")\n\tt.Fail()\n}\n'
+    )
+    outside = (
+        'package main_test\n\nimport (\n\t"testing"\n\t"time"\n)\n\n'
+        "func TestSame(t *testing.T) {\n\tt.Parallel()\n\ttime.Sleep(100 * time.Millisecond)\n"
+        '\tt.Log("PAR_PASS_TEXT")\n}\n'
+    )
+    repo = repo_of(tmp_path, {"in_test.go": inside, "ex_test.go": outside})
+
+    result = adapter.run_checks(repo, shop_profile())
+
+    assert result.test_ok is False
+    assert "PAR_FAIL_TEXT_1" in result.output
+    assert "PAR_FAIL_TEXT_2" in result.output
+
+
 def test_benchmarks_are_listed_and_do_not_run(adapter: GoAdapter, tmp_path: Path) -> None:
     source = (
         'package main\n\nimport "testing"\n\n'

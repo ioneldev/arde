@@ -50,34 +50,31 @@ def measured_tests(stream: str, *, tests_passed: bool) -> MeasuredTests:
     return MeasuredTests(
         tests_run=sum(1 for e in endings if e.action != "skip" and e.is_top_level),
         tests_skipped=tuple(sorted(printable_name(name) for name in skipped)),
-        text="".join(event.output for event in _without_runs_that_passed(events)),
+        text="".join(event.output for event in _without_names_that_only_passed(events)),
     )
 
 
 # One name can run twice in a package, once from its own test files and once from its external
-# _test package, and go test names both by the package's path. So a run is told by its order: each
-# "run" event of a name starts the next one. A skip keeps its text, because its reason says what
-# the run was missing.
-def _without_runs_that_passed(events: list[_Event]) -> list[_Event]:
-    runs = _run_of_each(events)
-    passed = {
-        run for event, run in zip(events, runs, strict=True) if run and event.action == "pass"
-    }
-    return [event for event, run in zip(events, runs, strict=True) if run not in passed]
+# _test package, and go test names both by the package's path. Run in parallel, their events
+# interleave, so no event says which run it belongs to. A name's text is left out only when every
+# run of it passed, and kept whole otherwise: a passing run's lines beside a failure cost a little
+# room, and a lost failure costs its reason. A skip keeps its text, because its reason says what
+# the run was missing, and so does a run that never ended.
+def _without_names_that_only_passed(events: list[_Event]) -> list[_Event]:
+    only_passed = _names_whose_every_run_passed(events)
+    return [event for event in events if not event.test or event.test_name not in only_passed]
 
 
-# An event of a test belongs to the latest run of its name, and an event of no test to none.
-def _run_of_each(events: list[_Event]) -> list[tuple[str, int] | None]:
-    runs_started: Counter[str] = Counter()
-    runs: list[tuple[str, int] | None] = []
+def _names_whose_every_run_passed(events: list[_Event]) -> set[str]:
+    actions: dict[str, Counter[str]] = {}
     for event in events:
-        if not event.test:
-            runs.append(None)
-            continue
-        if event.action == "run":
-            runs_started[event.test_name] += 1
-        runs.append((event.test_name, runs_started[event.test_name]))
-    return runs
+        if event.test:
+            actions.setdefault(event.test_name, Counter())[event.action] += 1
+    return {
+        name
+        for name, counted in actions.items()
+        if counted["pass"] >= max(counted["run"], 1) and not counted["fail"] and not counted["skip"]
+    }
 
 
 # A failed run may hold the tool's own words. A run that passed may not: every count here rests on

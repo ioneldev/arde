@@ -75,8 +75,52 @@ def test_a_failing_test_keeps_its_text_when_a_test_of_the_same_name_passed() -> 
 
     assert "calc_ext_test.go:26: the second fails" in measured.text
     assert "--- FAIL: TestTwice" in measured.text
-    assert "--- PASS: TestTwice" not in measured.text
     assert measured.tests_run == 2
+
+
+# The same two runs in parallel interleave their events, so no event says which run it belongs to,
+# and the pass of one must not take the other's failure with it. The boundary review's par case.
+def test_a_failing_parallel_run_keeps_its_text_when_a_run_of_the_same_name_passes_beside_it() -> (
+    None
+):
+    measured = measured_tests(
+        stream(
+            event("run", "TestSame"),
+            event("pause", "TestSame"),
+            event("run", "TestSame"),
+            event("pause", "TestSame"),
+            event("cont", "TestSame"),
+            event("cont", "TestSame"),
+            event("output", "TestSame", output="    in_test.go:5: PAR_FAIL_TEXT_1\n"),
+            event("output", "TestSame", output="    ex_test.go:5: PAR_PASS_TEXT\n"),
+            event("output", "TestSame", output="--- PASS: TestSame (0.10s)\n"),
+            event("output", "TestSame", output="    in_test.go:5: PAR_FAIL_TEXT_2\n"),
+            event("pass", "TestSame"),
+            event("output", "TestSame", output="--- FAIL: TestSame (0.30s)\n"),
+            event("fail", "TestSame"),
+            event("fail"),
+        ),
+        tests_passed=False,
+    )
+
+    assert "PAR_FAIL_TEXT_1" in measured.text
+    assert "PAR_FAIL_TEXT_2" in measured.text
+    assert "--- FAIL: TestSame" in measured.text
+
+
+def test_a_name_whose_every_run_passed_leaves_no_text() -> None:
+    measured = measured_tests(
+        stream(
+            event("run", "TestSame"),
+            event("run", "TestSame"),
+            event("output", "TestSame", output="chatter\n"),
+            event("pass", "TestSame"),
+            event("pass", "TestSame"),
+        ),
+        tests_passed=True,
+    )
+
+    assert measured.text == ""
 
 
 def test_a_package_with_no_test_files_skips_and_is_not_a_skipped_test() -> None:
