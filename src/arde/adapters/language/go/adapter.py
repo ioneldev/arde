@@ -18,6 +18,7 @@ from arde.adapters.language.go.goinspect_client import (
 )
 from arde.adapters.language.go.http_statuses import http_status
 from arde.adapters.language.go.inventory_builder import SourceReading, build_inventory
+from arde.adapters.language.go.json_shapes import json_shape
 from arde.adapters.language.go.makefile import make_targets_of
 from arde.adapters.language.go.quotes import quote_content
 from arde.adapters.language.go.renderer import render
@@ -27,6 +28,7 @@ from arde.adapters.repo_links import require_no_link_leaves
 from arde.application.ports import (
     CheckResult,
     EditCheckRequest,
+    JsonShape,
     LanguageAdapter,
     QuoteContent,
     RenderOutcome,
@@ -178,6 +180,9 @@ class GoAdapter(LanguageAdapter):
 
     def http_status(self, written: str) -> int | None:
         return http_status(written)
+
+    def json_shape(self, declared_type: str) -> JsonShape:
+        return json_shape(declared_type)
 
     def tool_versions(self) -> dict[str, str]:
         return tool_versions(goinspect=self._goinspect_binary, swag=self._swag)

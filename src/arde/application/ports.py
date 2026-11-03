@@ -276,6 +276,35 @@ class SourceQuote(Frozen):
     root_files: frozenset[str]
 
 
+# JSON. The API reference shows each reply as the JSON a client reads, and how a declared type
+# becomes JSON is an idiom of the language.
+
+
+class StructRef(Frozen):
+    """A struct a declared type names, for the caller to find among the inventory's."""
+
+    name: str
+    # The package the type names it in, or None when it names a struct of its own package.
+    package: str | None = None
+
+
+# "unknown" when the declared type alone does not say, as with one that holds any value.
+JsonKind = Literal["object", "array", "integer", "number", "string", "boolean", "unknown"]
+
+
+class JsonShape(Frozen):
+    """What one declared type is in JSON.
+
+    An object has a struct when the type names one, and an element when its keys are data, as a
+    map's are. An array has an element. An element is a declared type, written as the source
+    writes it, for the caller to ask about in turn.
+    """
+
+    kind: JsonKind
+    struct: StructRef | None = None
+    element: str | None = None
+
+
 class LanguageAdapter(Protocol):
     """Everything ARDE knows about one language. Each method holds an idiom of that language.
 
@@ -387,6 +416,14 @@ class LanguageAdapter(Protocol):
     def http_status(self, written: str) -> int | None:
         """The HTTP status an error code's status stands for, given as the inventory holds it,
         the text the source writes. None when that text alone does not say, as with a variable.
+        """
+        ...
+
+    def json_shape(self, declared_type: str) -> JsonShape:
+        """What a type, written as the inventory's declared_type holds it, is in a JSON reply.
+
+        A type that names another is an object of the struct it names, whether or not the
+        inventory holds one: the caller looks it up. It reads only the text it is given.
         """
         ...
 
