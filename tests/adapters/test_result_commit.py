@@ -1,5 +1,6 @@
 """The commit of a run's result in the workspace clone: exactly the paths given, on a new branch,
-as ARDE, whatever the user's own git settings say."""
+committed as ARDE, whatever the user's own git settings say, with the author GIT_AUTHOR_NAME and
+GIT_AUTHOR_EMAIL name when they are set."""
 
 import shutil
 import subprocess
@@ -113,3 +114,36 @@ def test_no_path_still_makes_one_commit(clone: Path, output: Path) -> None:
     commit_result(a_commit(clone, output))
 
     assert git(clone, "rev-list", "--count", f"{first}..arde/run-1") == "1"
+
+
+AUTHOR_VARIABLES = ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL")
+
+
+@pytest.fixture(autouse=True)
+def no_author_exported(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in AUTHOR_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_the_author_is_the_one_the_environment_names_and_arde_stays_the_committer(
+    clone: Path, output: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Ana Pop")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "ana@example.invalid")
+
+    commit_result(a_commit(clone, output, "main.go"))
+
+    assert git(clone, "log", "-1", "--format=%an <%ae>") == "Ana Pop <ana@example.invalid>"
+    assert git(clone, "log", "-1", "--format=%cn <%ce>") == "ARDE <arde@localhost>"
+
+
+# git refuses an empty name, and .env.example leaves both empty.
+def test_an_empty_author_counts_as_none(
+    clone: Path, output: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in AUTHOR_VARIABLES:
+        monkeypatch.setenv(name, "")
+
+    commit_result(a_commit(clone, output, "main.go"))
+
+    assert git(clone, "log", "-1", "--format=%an <%ae>") == "ARDE <arde@localhost>"

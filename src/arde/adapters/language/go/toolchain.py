@@ -20,7 +20,7 @@ from arde.adapters.child_text import (
     with_kept_tail,
 )
 from arde.adapters.language.go.errors import BadPackageError, GoCommandError
-from arde.adapters.language.go.go_environment import go_environment
+from arde.adapters.language.go.go_environment import GoCaches, go_environment
 from arde.adapters.language.go.go_test_events import MeasuredTests, measured_tests
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT, TEST_EVENTS_LIMIT
 from arde.adapters.language.go.timeouts import (
@@ -81,19 +81,21 @@ class BadTestCommandError(ArdeError):
 
 # A cleanup that fails leaves one temporary folder, which must not replace the body's own error.
 @contextmanager
-def built_service(repo: Path, profile: RepoProfile) -> Iterator[Path]:
-    _require_one_main_package(repo, profile.main_package)
+def built_service(
+    repo: Path, profile: RepoProfile, *, caches: GoCaches | None = None
+) -> Iterator[Path]:
+    _require_one_main_package(repo, profile.main_package, caches=caches)
     with tempfile.TemporaryDirectory(prefix="arde-service-", ignore_cleanup_errors=True) as folder:
         binary = Path(folder) / SERVICE_BINARY_NAME
-        _build_into(repo, profile, binary=binary)
+        _build_into(repo, profile, binary=binary, caches=caches)
         yield binary
 
 
 # Building any other package writes an archive that looks like a binary and cannot be run, and the
 # caller finds out far from the cause.
-def _require_one_main_package(repo: Path, main_package: str) -> None:
+def _require_one_main_package(repo: Path, main_package: str, *, caches: GoCaches | None) -> None:
     arguments = ("list", "-buildvcs=false", "-f", "{{.Name}}", "--", main_package)
-    listing = _go(repo, GoStep(arguments, GO_LIST_TIMEOUT_S))
+    listing = _go(repo, GoStep(arguments, GO_LIST_TIMEOUT_S), caches)
     if not listing.succeeded:
         raise _cannot_load(main_package, listing)
     names = listing.stdout.split()
@@ -125,9 +127,9 @@ def _what_it_names(names: list[str]) -> str:
 
 # The package comes after "--" so that no text from the profile can be read as a flag, and
 # -buildvcs=false because the copy may carry a .git folder the build cannot read.
-def _build_into(repo: Path, profile: RepoProfile, *, binary: Path) -> None:
+def _build_into(repo: Path, profile: RepoProfile, *, binary: Path, caches: GoCaches | None) -> None:
     arguments = ("build", "-buildvcs=false", "-o", str(binary), "--", profile.main_package)
-    outcome = _go(repo, GoStep(arguments, GO_BUILD_TIMEOUT_S))
+    outcome = _go(repo, GoStep(arguments, GO_BUILD_TIMEOUT_S), caches)
     if not outcome.succeeded:
         raise GoCommandError(
             f"The service does not build: {_end_of(outcome)}",
@@ -138,19 +140,18 @@ def _build_into(repo: Path, profile: RepoProfile, *, binary: Path) -> None:
         )
 
 
-def run_checks(repo: Path, profile: RepoProfile) -> CheckResult:
+def run_checks(repo: Path, profile: RepoProfile, *, caches: GoCaches | None = None) -> CheckResult:
     # Split first, so that a typo in the override file does not wait for build, vet and test.
     extra_commands = [(command, _split_command(command)) for command in profile.extra_test_commands]
     # -o /dev/null: a repo of one main package would otherwise get its binary written into it.
-    build = _go(
-        repo, GoStep(("build", "-buildvcs=false", "-o", os.devnull, "./..."), GO_BUILD_TIMEOUT_S)
-    )
+    build_step = GoStep(("build", "-buildvcs=false", "-o", os.devnull, "./..."), GO_BUILD_TIMEOUT_S)
+    build = _go(repo, build_step, caches)
     build_ok = _built_something(build)
-    vet = _go(repo, GoStep(("vet", "./..."), GO_VET_TIMEOUT_S))
-    test = _run_the_tests(repo)
+    vet = _go(repo, GoStep(("vet", "./..."), GO_VET_TIMEOUT_S), caches)
+    test = _run_the_tests(repo, caches)
     measured = measured_tests(test.stdout, tests_passed=test.succeeded)
-    extras = [(command, _run_extra(repo, words)) for command, words in extra_commands]
-    listing = _go(repo, GoStep(("test", "-list", ".*", "./..."), GO_TEST_TIMEOUT_S))
+    extras = [(command, _run_extra(repo, words, caches)) for command, words in extra_commands]
+    listing = _go(repo, GoStep(("test", "-list", ".*", "./..."), GO_TEST_TIMEOUT_S), caches)
     folders = _go_folders(repo)
     sections = [("build", build), ("vet", vet), ("test", _as_text(test, measured))]
     sections += [(f"extra: {command}", outcome) for command, outcome in extras]
@@ -162,7 +163,7 @@ def run_checks(repo: Path, profile: RepoProfile) -> CheckResult:
         tests_run=measured.tests_run,
         tests_skipped=measured.tests_skipped,
         tests_listed=_count_listed_tests(listing, tests_passed=test.succeeded),
-        ignored_files=_ignored_files(repo, folders.packages, build_passed=build_ok),
+        ignored_files=_ignored_files(repo, folders.packages, build_passed=build_ok, caches=caches),
         unchecked_modules=tuple(printable_name(folder) for folder in folders.nested_modules),
     )
 
@@ -172,10 +173,10 @@ def _built_something(build: ChildOutcome) -> bool:
 
 
 # -count=1 because a cached pass can stand for code outside the repo that has since changed.
-def _run_the_tests(repo: Path) -> ChildOutcome:
+def _run_the_tests(repo: Path, caches: GoCaches | None) -> ChildOutcome:
     timeout = f"{GO_TEST_BINARY_TIMEOUT_S}s"
     arguments = ("test", "-json", "-count=1", "-timeout", timeout, "./...")
-    test = _go(repo, GoStep(arguments, GO_TEST_TIMEOUT_S, output=TEST_EVENTS_LIMIT))
+    test = _go(repo, GoStep(arguments, GO_TEST_TIMEOUT_S, output=TEST_EVENTS_LIMIT), caches)
     if test.output_was_cut:
         raise GoCommandError(
             "The tests printed too much to read in full, so what ran cannot be counted. The end "
@@ -230,21 +231,23 @@ def _require_whole(listing: ChildOutcome, what: str) -> None:
 
 
 # A repo that does not load fails this list too, and the build has already said why in the result.
-def _ignored_files(repo: Path, folders: list[str], *, build_passed: bool) -> tuple[str, ...]:
+def _ignored_files(
+    repo: Path, folders: list[str], *, build_passed: bool, caches: GoCaches | None
+) -> tuple[str, ...]:
     try:
-        return _files_left_out_of(repo, folders)
+        return _files_left_out_of(repo, folders, caches)
     except GoCommandError:
         if build_passed:
             raise
         return ()
 
 
-def _files_left_out_of(repo: Path, folders: list[str]) -> tuple[str, ...]:
+def _files_left_out_of(repo: Path, folders: list[str], caches: GoCaches | None) -> tuple[str, ...]:
     root = os.path.realpath(repo)
     found: set[str] = set()
     for start in range(0, len(folders), FOLDERS_PER_LIST):
         chunk = folders[start : start + FOLDERS_PER_LIST]
-        for package in _packages_in(_list_ignored_files(repo, chunk)):
+        for package in _packages_in(_list_ignored_files(repo, chunk, caches)):
             found.update(_left_out_files_inside(package, root))
     return tuple(sorted(found))
 
@@ -277,9 +280,9 @@ def _packages_in(stream: str) -> list[_ListedPackage]:
     return packages
 
 
-def _list_ignored_files(repo: Path, folders: list[str]) -> str:
+def _list_ignored_files(repo: Path, folders: list[str], caches: GoCaches | None) -> str:
     arguments = ("list", "-e", "-buildvcs=false", "-json=Dir,IgnoredGoFiles", *folders)
-    listing = _go(repo, GoStep(arguments, GO_LIST_TIMEOUT_S))
+    listing = _go(repo, GoStep(arguments, GO_LIST_TIMEOUT_S), caches)
     _require_whole(listing, "the list of files the build leaves out")
     if not listing.succeeded:
         raise GoCommandError(
@@ -321,23 +324,23 @@ def _split_command(command: str) -> tuple[str, ...]:
     return tuple(words)
 
 
-def _run_extra(repo: Path, words: tuple[str, ...]) -> ChildOutcome:
+def _run_extra(repo: Path, words: tuple[str, ...], caches: GoCaches | None) -> ChildOutcome:
     extra = ChildCommand(
         argv=words,
         cwd=repo,
         timeout_s=EXTRA_TEST_COMMAND_TIMEOUT_S,
         output=CHECK_OUTPUT_LIMIT,
-        env=go_environment(repo),
+        env=go_environment(repo, caches),
     )
     return run_child(extra)
 
 
-def _go(repo: Path, step: GoStep) -> ChildOutcome:
+def _go(repo: Path, step: GoStep, caches: GoCaches | None) -> ChildOutcome:
     command = ChildCommand(
         argv=("go", *step.arguments),
         cwd=repo,
         timeout_s=step.timeout_s,
         output=step.output,
-        env=go_environment(repo),
+        env=go_environment(repo, caches),
     )
     return run_child(command)

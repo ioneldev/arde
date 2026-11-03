@@ -1,0 +1,25 @@
+# docker compose run --rm arde --repo <url> [--branch B]   documents a repo from a URL
+# docker compose run --rm arde                             documents the local repo at REPO_PATH
+services:
+  arde:
+    build:
+      context: .
+      target: runtime
+    # Tests name an image of their own, so a test run never replaces the one you built.
+    image: ${ARDE_IMAGE:-arde}
+    user: "${ARDE_UID:-1000}:${ARDE_GID:-1000}"
+    # Passes docker stop's SIGTERM on to ARDE, which stops the service it runs before it exits.
+    init: true
+    # The key arrives at run time only, and never in the image.
+    env_file: [.env]
+    volumes:
+      # Read-only: ARDE copies a local repo into its workspace and never writes to it, so the
+      # repo's code cannot change the host's copy, such as by planting a git hook.
+      - ${REPO_PATH:-./.no-local-repo}:/repo:ro
+      - arde-home:/data
+    # So a build or test that eats memory is killed, and not the machine. Swap counts too, or the
+    # child would swap before the limit stopped it.
+    mem_limit: 4g
+    memswap_limit: 4g
+volumes:
+  arde-home: {}

@@ -22,6 +22,7 @@ from arde.adapters.language.go.errors import GoCommandError
 from arde.adapters.language.go.go_environment import (
     TOOLCHAIN_VARIABLES,
     USER_SETTINGS,
+    GoCaches,
 )
 from arde.adapters.language.go.go_environment import (
     go_environment as read_go_environment,
@@ -440,6 +441,33 @@ def test_an_empty_export_is_no_choice_and_keeps_the_default(
     clean_environment.setenv("GOTOOLCHAIN", "")
 
     assert read_go_environment(repo)["GOTOOLCHAIN"] == "local"
+
+
+# A repo's caches, inside its own workspace, so its commands never read what another repo's
+# commands wrote there, as they would in one shared cache.
+
+
+@pytest.mark.parametrize("exported", [{}, {"GOCACHE": "/shared/c", "GOPATH": "/shared/p"}])
+def test_a_repos_caches_replace_any_exported_or_default_ones(
+    clean_environment: pytest.MonkeyPatch, repo: Path, tmp_path: Path, exported: dict[str, str]
+) -> None:
+    stand_in(clean_environment)
+    for name, value in {**exported, "GOMODCACHE": "/shared/m"}.items():
+        clean_environment.setenv(name, value)
+    caches = GoCaches.inside(tmp_path / "workspace" / "cache")
+
+    environment = read_go_environment(repo, caches)
+
+    assert environment["GOCACHE"] == str(tmp_path / "workspace" / "cache" / "gocache")
+    assert environment["GOPATH"] == str(tmp_path / "workspace" / "cache" / "gopath")
+    assert environment["GOMODCACHE"] == str(tmp_path / "workspace" / "cache" / "gopath/pkg/mod")
+
+
+def test_two_repos_caches_are_two_folders(tmp_path: Path) -> None:
+    first = GoCaches.inside(tmp_path / "a" / "cache")
+    second = GoCaches.inside(tmp_path / "b" / "cache")
+
+    assert {first.build, first.path}.isdisjoint({second.build, second.path})
 
 
 def test_a_repo_with_no_go_work_of_its_own_gets_no_workspace(

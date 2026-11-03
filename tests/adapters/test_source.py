@@ -216,6 +216,23 @@ def test_local_copy_keeps_uncommitted_and_untracked(tmp_path: Path) -> None:
     assert every_byte_in(repo) == before
 
 
+# Latin-1 bytes, which are not UTF-8. macOS refuses such a name, so only a Linux disk can hold one.
+def test_a_file_name_that_is_not_utf_8_is_copied_by_its_bytes(tmp_path: Path) -> None:
+    repo = a_repo(tmp_path / "shop", {"main.go": "package main\n"})
+    tracked, untracked = os.fsdecode(b"caf\xe9.txt"), os.fsdecode(b"na\xefve.txt")
+    try:
+        (repo / tracked).write_bytes(b"tracked\n")
+    except OSError:
+        pytest.skip("this file system refuses a name that is not UTF-8")
+    commit_all(repo)
+    (repo / untracked).write_bytes(b"untracked\n")
+
+    dest = copied(repo, tmp_path / "copy")
+
+    assert (dest / tracked).read_bytes() == b"tracked\n"
+    assert (dest / untracked).read_bytes() == b"untracked\n"
+
+
 def test_local_copy_excludes_gitignored_env(tmp_path: Path) -> None:
     repo = a_repo(tmp_path / "shop", {".gitignore": ".env\n", "main.go": "package main\n"})
     write(repo, {".env": f"KEY={FAKE_SECRET}\n"})

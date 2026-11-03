@@ -6,6 +6,7 @@
       snapshot -> snapshots/<id>    the tree after the last successful run
       clone -> clones/<id>          the clone of a URL source
       runs/<run-id>/                one run: input/, output/, the trace and the logs
+      cache/                        the language tools' caches, for this repo alone
 
 The snapshot and the clone are links, because a link can be replaced in one rename and a folder
 that holds files cannot. A run stopped at any instant leaves the last one whole.
@@ -70,6 +71,12 @@ class Workspace(RunStore):
     @property
     def manifest_path(self) -> Path:
         return self.root / "render_manifest.yaml"
+
+    # A cache that every repo shared would let one repo's build or tests write entries that
+    # another repo's commands then read.
+    @property
+    def cache_dir(self) -> Path:
+        return self.root / "cache"
 
     @property
     def snapshot_dir(self) -> Path:

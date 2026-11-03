@@ -18,7 +18,7 @@ from arde.adapters.child_process import (
 )
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text
 from arde.adapters.language.go.errors import BadPackageError, BadPatternError, GoinspectError
-from arde.adapters.language.go.go_environment import go_environment
+from arde.adapters.language.go.go_environment import GoCaches, go_environment
 from arde.adapters.language.go.output_limits import CHECK_OUTPUT_LIMIT, GOINSPECT_REPLY_LIMIT
 from arde.adapters.language.go.timeouts import GO_BUILD_TIMEOUT_S, GOINSPECT_TIMEOUT_S
 from arde.domain.base import Frozen, describe_problems
@@ -227,9 +227,11 @@ def _make_the_folder(bin_dir: Path) -> None:
 
 class GoinspectClient:
     # Resolved here: every call runs in the folder being inspected, where a relative path could
-    # find a helper that the repo planted.
-    def __init__(self, binary: Path) -> None:
+    # find a helper that the repo planted. The helper loads packages through go list, so it gets
+    # the repo's caches as every Go command does.
+    def __init__(self, binary: Path, *, caches: GoCaches | None = None) -> None:
         self._binary = binary.resolve()
+        self._caches = caches
 
     def compare(self, old_dir: Path, new_dir: Path) -> CompareReport:
         old, new = old_dir.resolve(), new_dir.resolve()
@@ -287,7 +289,7 @@ class GoinspectClient:
             cwd=question.cwd,
             timeout_s=GOINSPECT_TIMEOUT_S,
             output=GOINSPECT_REPLY_LIMIT,
-            env=go_environment(question.cwd),
+            env=go_environment(question.cwd, self._caches),
         )
         outcome = run_child(command)
         if not outcome.succeeded:

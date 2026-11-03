@@ -5,6 +5,7 @@ command in front of a reader. Every URL, host and e-mail address must come from 
 a recorded probe body, and every shell command from the places a person runs commands from.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -440,6 +441,7 @@ def test_a_page_with_a_nul_byte_is_a_finding(tmp_path: Path) -> None:
     assert "NUL" in finding.message
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads every file")
 def test_a_page_that_cannot_be_opened_is_a_finding(tmp_path: Path) -> None:
     context = a_context(tmp_path, inventory=INVENTORY)
     page = context.output_repo / "docs" / "locked.md"

@@ -18,6 +18,7 @@ from arde.adapters.child_process import (
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES
 from arde.adapters.language.go import goinspect_client
 from arde.adapters.language.go.errors import BadPackageError, BadPatternError, GoinspectError
+from arde.adapters.language.go.go_environment import GoCaches
 from arde.adapters.language.go.goinspect_client import (
     GOINSPECT_REPLY_LIMIT,
     GOINSPECT_SOURCE,
@@ -572,6 +573,20 @@ def test_every_call_to_goinspect_runs_with_the_go_environment(
 
     [command] = recording.commands
     assert command.env == known_go_environment(folder)
+
+
+# goinspect loads packages through go list, which reads and writes the build cache.
+def test_goinspect_gets_the_caches_of_the_repo_it_reads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, folder: Path
+) -> None:
+    recording = RecordingRun()
+    monkeypatch.setattr(goinspect_client, "run_child", recording)
+    caches = GoCaches.inside(tmp_path / "workspace" / "cache")
+
+    GoinspectClient(tmp_path / "goinspect", caches=caches).declarations(folder)
+
+    [command] = recording.commands
+    assert command.env == known_go_environment(folder, caches)
 
 
 def test_the_build_of_goinspect_runs_with_the_go_environment(

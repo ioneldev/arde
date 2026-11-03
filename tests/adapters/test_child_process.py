@@ -326,12 +326,16 @@ signal.signal(signal.SIGCHLD, signal.SIG_IGN)
 pathlib.Path("leader.pid").write_text(str(os.getpid()))
 for _ in range(3000):
     if os.fork() == 0:
-        time.sleep(5)
+        time.sleep(30)
         os._exit(0)
 time.sleep(60)
 """
 TIMEOUTS_AGAINST_A_FORKING_CHILD = 20
 MOST_THAT_MAY_BE_TOO_EARLY = 10
+# Measured on Linux, in the container: fork is fast there, so the group holds hundreds of children
+# when the kill lands, and under load one group took just over 3 s to empty though every child was
+# killed. A child the kill missed would live its whole 30 s sleep, far past this wait.
+GROUP_DEATH_WAIT_S = 10
 
 
 def test_a_timeout_that_lands_while_the_child_is_forking_leaves_nothing(tmp_path: Path) -> None:
@@ -346,7 +350,7 @@ def test_a_timeout_that_lands_while_the_child_is_forking_leaves_nothing(tmp_path
             too_early += 1  # a loaded machine had not started the interpreter yet
             continue
         leader = int(pid_file.read_text())
-        assert wait_until_group_is_empty(leader), (
+        assert wait_until_group_is_empty(leader, timeout_s=GROUP_DEATH_WAIT_S), (
             f"timeout {attempt} left {live_group_members(leader)} running"
         )
 

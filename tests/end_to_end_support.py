@@ -120,4 +120,7 @@ class Arde:
             self.clients.append(client)
             return client
 
-        return replace(LOCAL_WIRING, language_adapter=lambda _: self.adapter, model_client=scripted)
+        def prepared(bin_dir: Path, *, cache_dir: Path) -> LanguageAdapter:
+            return self.adapter
+
+        return replace(LOCAL_WIRING, language_adapter=prepared, model_client=scripted)
