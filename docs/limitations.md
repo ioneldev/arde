@@ -100,10 +100,24 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 - **No detection of critical changes** that alter a project's scope or can damage a service while the tests still pass.
 - **No stored knowledge graph.** It was dropped. Only cross-repo questions such as "which services use this contract?" would reopen it.
 
+## Sources
+
+- **A local path must be the top folder of its git repo, with at least one commit.** A service in a subfolder of a larger repo is refused, and the message names the top folder. A folder that is not a git repo is refused too, with `git init` as the next action, because each run records the commit it starts from.
+- **`--branch` works only with a URL.** A local repo is copied as its working tree stands, uncommitted and untracked files included, so the branch to document is the one checked out.
+- **Submodules and repos nested inside a local repo are left out of the copy**, because git lists none of their files. A clone from a URL fetches no submodules either.
+- **A local repo is untrusted input, `.git` included.** It may be an unpacked archive. So git runs with `core.fsmonitor` off, because `git ls-files` ran the command a repo's own settings named (measured). An index entry that git itself refuses to add, such as `../x`, an absolute path or one inside `.git`, stops the run, because `git ls-files` prints whatever an index holds (measured). A path below a linked folder is left out, as git counts it deleted: copied through the link, it was read from outside and written outside the copy (measured). A file that is neither a regular file nor a link, such as a pipe, stops the run.
+- **Every link in a local repo is checked before git runs, ignored files and `.git` included.** A `packed-refs` linked to a file outside put that file's line in git's error (measured), and a link in `.git` can lead to a folder of the repo that holds a link out. So a link that leaves the repo stops the run even when git ignores it and the copy would leave it out, such as a `.env` linked to a shared file: replace it with the file, or move it out of the repo. A folder the walk cannot read stops the run too, ignored or not, and the walk reads every ignored folder, however large. A hook linked to a script inside the repo passes.
+- **A `.git` that is a file is not followed.** In a worktree or a submodule, `.git` is a file whose `gitdir:` line names a folder elsewhere, and that folder is not checked for links.
+- **Two names that are one path once case and Unicode form are ignored stop the run**, such as `A` and `a/x`, or `café` composed and decomposed. On a disk that ignores case, as macOS does by default, `a/x` would be written through a link `A`, even where the repo's own disk tells them apart. The copy also writes every file before it makes any link.
+- **A file name that is not UTF-8 is copied by its bytes.** git prints such a name escaped, and the copy decodes it. This is reasoned, not tested: macOS refuses such names, so only a Linux host can make one.
+- **A clone gets no SSH agent.** Git runs with the allow-listed environment, which leaves out `SSH_AUTH_SOCK`, and it never prompts. A key that needs a passphrase cannot be used, so use HTTPS with a credential helper, or clone the repo yourself and pass its path. This is reasoned, not tested.
+- **A URL needs a scheme, as in `https://`, or the `user@host:path` form.** Anything else is read as a local path, so `host:path` without a user is not found, and git's other transports, such as `ext::`, which runs a command, are never used.
+
 ## Workspaces
 
-- A fork has a different URL, so it gets a new workspace and a full first run.
+- A fork has a different URL, so it gets a new workspace and a full first run. The spellings of one remote share a workspace: over HTTPS or SSH, with or without a user, a password, `.git` or a trailing slash, and a local clone shares the workspace of its `origin`. A local repo with no `origin` gets a workspace per folder path, so moving it means a full first run.
 - A second branch in the same workspace counts as a change from the last successful run.
+- Each URL run clones afresh into the workspace. The workspace keeps that clone and the one before it, and removes older ones. The snapshot keeps the one before it on disk too, so a workspace holds up to two copies of each. Nothing removes the folders under `runs/`.
 - The wiki is not exported into the target repo. A later `--export-wiki` flag could write a readable one-way copy.
 
 ## The judge
