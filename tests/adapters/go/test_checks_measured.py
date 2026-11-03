@@ -1,7 +1,7 @@
 """What run_checks says about a repo, against what really ran. Each repo here is real Go."""
 
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 from shop_support import shop_profile
@@ -9,6 +9,8 @@ from shop_support import shop_profile
 from arde.adapters.child_process import ChildTimeoutError
 from arde.adapters.language.go import toolchain
 from arde.adapters.language.go.adapter import GoAdapter
+from arde.adapters.language.go.goinspect_client import GoinspectClient
+from arde.adapters.repo_links import require_no_link_leaves
 
 pytestmark = pytest.mark.integration
 
@@ -359,3 +361,50 @@ def test_a_repo_with_a_cgo_file_is_measured_like_any_other(
     assert (result.build_ok, result.test_ok, result.tests_run) == (True, True, 1)
     assert result.tests_skipped == ("example.com/ledger.TestLater",)
     assert result.tests_listed == 2
+
+
+DECLARED = "package p\n\nvar Declared = 1\n"
+
+# Each file holds a declaration, so a folder missing from goinspect's reply was passed over.
+EVERY_SKIP_SHAPE = {
+    "orders/orders.go": DECLARED,
+    "orders/lines/tax/tax.go": DECLARED,
+    "vendor/x/x.go": DECLARED,
+    "testdata/x/x.go": DECLARED,
+    "_skip/skip.go": DECLARED,
+    ".hidden/hidden.go": DECLARED,
+    "nested/go.mod": "module example.com/nested\n\ngo 1.27\n",
+    "nested/nested.go": DECLARED,
+    "nested/sub/sub.go": DECLARED,
+    "underscored_only/_x.go": DECLARED,
+    "ignore_tag_only/gen.go": "//go:build ignore\n\n" + DECLARED,
+}
+
+# Measured on Go 1.27.1. Each comes from a rule goinspect has for files and the checks walk lacks:
+# a name that starts with _, a link to no regular file, and the tag ignore. The checks walk lists
+# a folder for any name in it that ends in .go.
+ONLY_THE_CHECKS_WALK_LISTS = {
+    # go list -e names no file left out there, so ignored_files gains nothing.
+    "underscored_only",
+    # go list -e names no file left out there either, and go build ./... fails on the link.
+    "broken_link_only",
+    # go list -e names gen.go as left out, and showing such a file is why the checks walk exists.
+    "ignore_tag_only",
+}
+
+
+def test_the_checks_walk_passes_over_the_folders_goinspect_passes_over(
+    goinspect_binary: Path, tmp_path: Path
+) -> None:
+    repo = repo_of(tmp_path, EVERY_SKIP_SHAPE)
+    (repo / "broken_link_only").mkdir()
+    (repo / "broken_link_only" / "x.go").symlink_to("missing.go")
+    # A real run reaches either walk only past this gate, which keeps a link that stays inside.
+    require_no_link_leaves(repo)
+
+    checked = {PurePosixPath(folder).as_posix() for folder in toolchain._go_folders(repo).packages}
+    declarations = GoinspectClient(goinspect_binary).declarations(repo).declarations
+    read = {PurePosixPath(declaration.file).parent.as_posix() for declaration in declarations}
+
+    assert read == {".", "orders", "orders/lines/tax"}
+    assert checked == read | ONLY_THE_CHECKS_WALK_LISTS
