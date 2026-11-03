@@ -59,6 +59,12 @@ def field_is_writable(field: ResponseField) -> bool:
     return can_hold(IDENTIFIER, field.struct) and can_hold(IDENTIFIER, field.name)
 
 
+# A declaration is written as file::kind name.
+def build_files(inventory: Inventory) -> frozenset[str]:
+    """The files the service is built from, as the inventory's declarations name them."""
+    return frozenset(declaration.rpartition("::")[0] for declaration in inventory.declarations)
+
+
 # The id the inventory gives the struct's declaration, which a fact links to say which of two
 # same-named structs it means.
 def struct_declaration(field: ResponseField) -> str:

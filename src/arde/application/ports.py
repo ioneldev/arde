@@ -247,8 +247,9 @@ class EditCheckRequest(Frozen):
 # Evidence. Anyone can write anything in a comment or a string literal, planted instructions
 # included, so a quote is evidence only where it holds code.
 
-# "not source" is a file whose syntax the adapter does not read, such as a README.
-QuoteContent = Literal["code", "comment", "string literal", "not source"]
+# "not source" is a file whose syntax the adapter does not read, such as a README, and "outside
+# the build" a source file the service is not built from, such as test data.
+QuoteContent = Literal["code", "comment", "string literal", "not source", "outside the build"]
 
 
 class SourceQuote(Frozen):
@@ -260,6 +261,8 @@ class SourceQuote(Frozen):
     source: str
     # Each place the quote appears, as start and end offsets into source.
     places: tuple[tuple[int, int], ...]
+    # The files the inventory's declarations name, which are the files the service is built from.
+    build_files: frozenset[str]
 
 
 class LanguageAdapter(Protocol):
@@ -363,8 +366,9 @@ class LanguageAdapter(Protocol):
         """What the quote holds, read with the file's syntax.
 
         It is code when any of its places has something outside every comment and string literal,
-        else a comment or a string literal, and "not source" in a file whose syntax the adapter
-        does not read. It reads only the text it is given, so it opens no file and needs no gate.
+        else a comment or a string literal. It is "not source" in a file whose syntax the adapter
+        does not read, and "outside the build" in a source file that build_files does not name.
+        It reads only the text it is given, so it opens no file and needs no gate.
         """
         ...
 
