@@ -13,7 +13,7 @@ from arde.adapters.language.go.adapter import GoAdapter
 from arde.adapters.language.go.inventory_builder import RouteNotUnderstoodError
 from arde.adapters.service_runner import local_service_runner
 from arde.application.ports import ServiceConfig, ServiceHandle
-from arde.domain.inventory import INLINE_HANDLER, Inventory
+from arde.domain.inventory import INLINE_HANDLER, Inventory, Param
 from arde.domain.profile import ExtractionPattern, RepoProfile
 from arde.domain.report import ExitCode
 
@@ -93,7 +93,7 @@ def test_what_belongs_to_the_other_main_is_reported_and_is_not_in_the_inventory(
     inventory = adapter.extract_inventory(PARCELS, TRACKER)
 
     assert inventory.env_vars == ("TRACKER_PORT",)
-    assert inventory.params == ()
+    assert inventory.params == (Param(name="barcode"),)
     assert inventory.error_codes == ()
     assert [field.struct for field in inventory.response_fields] == ["Parcel", "Parcel"]
     outside = "outside main_package ./cmd/tracker"

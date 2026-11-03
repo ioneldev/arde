@@ -117,9 +117,10 @@ class DocsRequest(Frozen):
     repo: Path
     wiki: Wiki
     inventory: Inventory
-    # The topics whose facts changed since the last run. A section is written anyway when its
-    # facts came or went, or when sections.yaml or the repo does not hold it.
-    stale_topics: frozenset[Topic]
+    # The ids of the facts whose content changed since the last run. A section that rests on one
+    # is written again, and so is one whose facts came or went, or one that sections.yaml or the
+    # repo does not hold.
+    changed_fact_ids: frozenset[str]
     # What the checks found wrong with the last attempt's docs or facts, shown to every section
     # this request writes.
     repair_findings: tuple[Finding, ...] = ()
@@ -298,9 +299,12 @@ def _actions(request: DocsRequest, recorded: dict[Topic, tuple[str, ...]]) -> di
         behind = set(recorded.get(topic, ()))
         no_fact_came = own_ids <= behind
         no_fact_went = behind <= wiki_ids
+        # The recorded facts include those the agent used from other topics, so a page that
+        # states another topic's fact is written again when that fact changes.
+        none_changed = (behind | own_ids).isdisjoint(request.changed_fact_ids)
         unchanged = (
             topic in recorded
-            and topic not in request.stale_topics
+            and none_changed
             and no_fact_came
             and no_fact_went
             and _page_state(request.repo, topic) == "ours"

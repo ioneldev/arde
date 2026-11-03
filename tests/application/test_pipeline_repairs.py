@@ -40,8 +40,9 @@ from arde.domain.findings import Finding
 from arde.domain.report import ExitCode, RunReport
 
 THINGS_CODE = CodeQuote(kind="code", file="main.go", quote="func things() {}")
-# Nothing it cites was probed, so the live contract has no request to start from.
-UNPROBED_THINGS = THINGS_FACT.model_copy(update={"evidence": (THINGS_CODE,)})
+# Nothing it cites was probed, so the live contract has no request to start from. It lists no
+# response, because a code quote backs no status.
+UNPROBED_THINGS = THINGS_FACT.model_copy(update={"evidence": (THINGS_CODE,), "responses": ()})
 UNKNOWN_ADDRESS = "https://unknown.example/rules"
 CODE_FINDING = Finding(
     check="agent_edits", owner="code", subject="main.go", message="m", next_action="n"
@@ -395,7 +396,7 @@ def test_a_docs_finding_left_after_the_repair_names_the_page(tmp_path: Path) -> 
     assert [f.subject for f in report.findings] == [f"docs/business-rules.md: {UNKNOWN_ADDRESS}"]
 
 
-# On a later run, the topics explore changed in a repair are written again
+# On a later run, the sections that rest on facts explore changed in a repair are written again
 
 
 def test_a_section_whose_facts_a_repair_changed_is_written_again(tmp_path: Path) -> None:
@@ -412,16 +413,20 @@ def test_a_section_whose_facts_a_repair_changed_is_written_again(tmp_path: Path)
     )
     assert run(first).status == "success"
     # The first attempt rewords the order rule and drops the probe. The repair brings back both,
-    # so the order rule is again what the last run saved, and only the repair changed its topic.
-    # No fact comes or goes, so the overview and the change guide are kept in both attempts.
+    # so the order rule is again what the last run saved, and only the repair changed it. The
+    # overview and the change guide rest on every fact, so each attempt writes them too.
     reworded = ORDER_RULE.model_copy(update={"statement": "Things come back oldest first."})
     second = Rig(
         tmp_path=tmp_path,
         script=[
             *exploring(UNPROBED_THINGS, reworded),
+            an_overview(ORDER_RULE.id),
             writing_a_section("Oldest first.", ORDER_RULE.id),
+            a_change_guide(ORDER_RULE.id),
             *exploring(THINGS_FACT, ORDER_RULE),
+            an_overview(ORDER_RULE.id),
             writing_a_section("In the order they were added, again.", ORDER_RULE.id),
+            a_change_guide(ORDER_RULE.id),
         ],
         adapter=FakeAdapter(changed=["main.go::func things"]),
     )
@@ -429,7 +434,9 @@ def test_a_section_whose_facts_a_repair_changed_is_written_again(tmp_path: Path)
     report = run(second)
 
     assert (report.status, report.findings) == ("success", ())
-    [first_attempt, written_again] = first_turns_of(second, "docs")
+    [first_attempt, written_again] = [
+        r for r in first_turns_of(second, "docs") if assignment_of(r).startswith(BUSINESS_RULES)
+    ]
     assert assignment_of(first_attempt).startswith(BUSINESS_RULES)
     assert assignment_of(written_again).startswith(BUSINESS_RULES)
     assert REPAIR_HEADING in first_message(written_again)

@@ -7,7 +7,7 @@ from pipeline_support import ANNOTATION, MAIN, THINGS_FACT, THINGS_PROBE, FakeAd
 from arde.application.agents.docs_writer import GENERATED_MARKER, README_LINK
 from arde.application.changes import (
     SnapshotComparison,
-    changed_topics,
+    changed_fact_ids,
     changes_since_snapshot,
     paths_that_differ,
     restore_last_pages,
@@ -132,20 +132,30 @@ def test_no_page_comes_back_through_a_linked_docs_folder(tmp_path: Path) -> None
     assert not (repo / "web" / "overview.md").exists()
 
 
-def test_the_topics_of_added_removed_and_changed_facts_are_stale() -> None:
+def test_a_fact_kept_under_its_id_with_other_content_is_changed() -> None:
     reworded = THINGS_FACT.model_copy(update={"summary": "List them all"})
-    rule = THINGS_FACT.model_copy(update={"id": "x", "topic": "errors"})
 
-    assert changed_topics(WIKI, WIKI) == frozenset()
-    assert changed_topics(WIKI, Wiki(facts=(reworded,), probes=WIKI.probes)) == {"api"}
-    assert changed_topics(Wiki(facts=()), Wiki(facts=(rule,), probes=WIKI.probes)) == {"errors"}
-    assert changed_topics(Wiki(facts=(rule,), probes=WIKI.probes), Wiki(facts=())) == {"errors"}
+    assert changed_fact_ids(WIKI, WIKI) == frozenset()
+    assert changed_fact_ids(WIKI, Wiki(facts=(reworded,), probes=WIKI.probes)) == {
+        "endpoint.things"
+    }
 
 
-def test_a_fact_whose_probe_answers_anew_is_stale() -> None:
+# A section notices those from the facts it rests on.
+def test_a_fact_that_came_or_went_is_not_a_changed_one() -> None:
+    other = THINGS_FACT.model_copy(update={"id": "x", "topic": "errors"})
+    both = Wiki(facts=(THINGS_FACT, other), probes=WIKI.probes)
+
+    assert changed_fact_ids(WIKI, both) == frozenset()
+    assert changed_fact_ids(both, WIKI) == frozenset()
+
+
+def test_a_fact_whose_probe_answers_anew_is_changed() -> None:
     reanswered = THINGS_PROBE.model_copy(update={"body": '{"things":[1]}\n'})
 
-    assert changed_topics(WIKI, Wiki(facts=WIKI.facts, probes=(reanswered,))) == {"api"}
+    assert changed_fact_ids(WIKI, Wiki(facts=WIKI.facts, probes=(reanswered,))) == {
+        "endpoint.things"
+    }
 
 
 def test_paths_that_differ_names_added_removed_and_changed_files(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ from arde.adapters.language.go.goinspect_client import (
     PatternName,
     build_goinspect,
 )
+from arde.adapters.language.go.http_statuses import http_status
 from arde.adapters.language.go.inventory_builder import SourceReading, build_inventory
 from arde.adapters.language.go.makefile import make_targets_of
 from arde.adapters.language.go.quotes import quote_content
@@ -43,10 +44,22 @@ from arde.domain.profile import ExtractionPattern, RepoProfile
 DEFAULT_ENV_PATTERN = ExtractionPattern(
     kind="env", call=r"^os\.(Getenv|LookupEnv)$", args={"name": 0}
 )
+# Added for the same reason: a saved profile names the spellings the code used when Discovery
+# ran, and a handler added later that reads a request value another way would go unseen. Matching
+# is by text, and these shapes belong to net/http's request in practice.
+DEFAULT_PARAM_PATTERNS = tuple(
+    ExtractionPattern(kind="param", call=call, args={"name": 0})
+    for call in (
+        r"^[A-Za-z_]\w*\.URL\.Query\(\)\.Get$",
+        r"^[A-Za-z_]\w*\.(PathValue|FormValue|PostFormValue)$",
+        r"^[A-Za-z_]\w*\.Header\.Get$",
+    )
+)
+_DEFAULT_PATTERNS = (*DEFAULT_PARAM_PATTERNS, DEFAULT_ENV_PATTERN)
 
 
 def patterns_of(profile: RepoProfile) -> tuple[ExtractionPattern, ...]:
-    return (*profile.patterns, DEFAULT_ENV_PATTERN)
+    return (*profile.patterns, *_DEFAULT_PATTERNS)
 
 
 class GoAdapter(LanguageAdapter):
@@ -163,6 +176,9 @@ class GoAdapter(LanguageAdapter):
     def quote_content(self, quote: SourceQuote) -> QuoteContent:
         return quote_content(quote)
 
+    def http_status(self, written: str) -> int | None:
+        return http_status(written)
+
     def tool_versions(self) -> dict[str, str]:
         return tool_versions(goinspect=self._goinspect_binary, swag=self._swag)
 
@@ -174,8 +190,8 @@ def go_adapter(bin_dir: Path) -> LanguageAdapter:
 
 
 def _of_the_profile(unmatched: Iterable[PatternName]) -> tuple[PatternName, ...]:
-    default = (DEFAULT_ENV_PATTERN.kind, DEFAULT_ENV_PATTERN.call)
-    return tuple(pattern for pattern in unmatched if (pattern.kind, pattern.call) != default)
+    defaults = {(default.kind, default.call) for default in _DEFAULT_PATTERNS}
+    return tuple(pattern for pattern in unmatched if (pattern.kind, pattern.call) not in defaults)
 
 
 # An added or removed file reaches this call too, and so may a folder or a template.

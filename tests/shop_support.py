@@ -77,7 +77,7 @@ SHOP_INVENTORY = Inventory(
             roots=("(*example.com/shop/web.server).quote", "(example.com/shop/web.router).get"),
         ),
     ),
-    params=(Param(name="pieces"),),
+    params=(Param(name="pieces"), Param(name="sku")),
     error_codes=(
         ErrorCode(code="bad_pieces", status="http.StatusBadRequest"),
         ErrorCode(code="unknown_sku", status="http.StatusNotFound"),
