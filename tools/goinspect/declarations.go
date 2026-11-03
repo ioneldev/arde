@@ -108,7 +108,7 @@ func (collector *declarationCollector) addFunc(function *ast.FuncDecl) {
 	collector.add(foundDeclaration{
 		kind: "func",
 		name: functionName(function),
-		hash: fingerprint(function),
+		hash: hashOfDump(function),
 		pos:  function.Name.Pos(),
 	})
 }
@@ -130,7 +130,7 @@ func (collector *declarationCollector) addTypes(group *ast.GenDecl) {
 		collector.add(foundDeclaration{
 			kind: "type",
 			name: typeSpec.Name.Name,
-			hash: fingerprint(typeSpec),
+			hash: hashOfDump(typeSpec),
 			pos:  typeSpec.Name.Pos(),
 		})
 	}
@@ -139,7 +139,7 @@ func (collector *declarationCollector) addTypes(group *ast.GenDecl) {
 func (collector *declarationCollector) addVars(group *ast.GenDecl) {
 	for _, spec := range group.Specs {
 		valueSpec := spec.(*ast.ValueSpec)
-		hash := fingerprint(valueSpec)
+		hash := hashOfDump(valueSpec)
 		for _, name := range valueSpec.Names {
 			collector.add(foundDeclaration{kind: "var", name: name.Name, hash: hash, pos: name.Pos()})
 		}
@@ -154,7 +154,7 @@ func (collector *declarationCollector) addConsts(group *ast.GenDecl) {
 			lastValueSource = valueSpec
 		}
 		meaning := constMeaning{spec: valueSpec, valueSource: lastValueSource, iotaValue: index}
-		hash := meaning.fingerprint()
+		hash := meaning.hash()
 		for _, name := range valueSpec.Names {
 			collector.add(foundDeclaration{kind: "const", name: name.Name, hash: hash, pos: name.Pos()})
 		}
@@ -199,7 +199,7 @@ type constMeaning struct {
 	iotaValue   int
 }
 
-func (meaning constMeaning) fingerprint() string {
+func (meaning constMeaning) hash() string {
 	parts := []any{meaning.spec}
 	valueSource := meaning.valueSource
 	if valueSource == nil {
@@ -211,7 +211,7 @@ func (meaning constMeaning) fingerprint() string {
 	if mentionsIota(valueSource.Values) {
 		parts = append(parts, meaning.iotaValue)
 	}
-	return fingerprint(parts...)
+	return hashOfDump(parts...)
 }
 
 func mentionsIota(values []ast.Expr) bool {

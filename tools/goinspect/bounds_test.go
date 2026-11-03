@@ -48,7 +48,7 @@ func fieldsIn(t *testing.T, source string) []structField {
 	return report.Fields
 }
 
-func TestFingerprintIsTheHashOfTheDumpOfEachNodeInTurn(t *testing.T) {
+func TestAHashIsOfTheDumpOfEachNodeInTurn(t *testing.T) {
 	first, second := deepExpression(t, 3), deepExpression(t, 5)
 	var dump bytes.Buffer
 	for _, node := range []ast.Expr{first, second} {
@@ -58,12 +58,12 @@ func TestFingerprintIsTheHashOfTheDumpOfEachNodeInTurn(t *testing.T) {
 	}
 	sum := sha256.Sum256(dump.Bytes())
 
-	if got, want := fingerprint(first, second), hex.EncodeToString(sum[:]); got != want {
+	if got, want := hashOfDump(first, second), hex.EncodeToString(sum[:]); got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}
 }
 
-func TestFingerprintKeepsTheHashesItHadBeforeItStreamed(t *testing.T) {
+func TestHashesStayWhatTheyWereBeforeTheDumpStreamed(t *testing.T) {
 	root := writeTree(t, map[string]string{"t.go": "package p\n\nfunc F(a int) int { return a + 1 }\n"})
 	exitCode, stdout, stderr := runCommand(t, "declarations", root)
 	if exitCode != 0 || stderr != "" {
@@ -77,14 +77,14 @@ func TestFingerprintKeepsTheHashesItHadBeforeItStreamed(t *testing.T) {
 
 // The dump of a tree this deep is 72 MB, and a buffer that held it would allocate more than that as
 // it grew.
-func TestFingerprintDoesNotHoldTheDumpInMemory(t *testing.T) {
+func TestHashingDoesNotHoldTheDumpInMemory(t *testing.T) {
 	expression := deepExpression(t, 4000)
 	var dump countingWriter
 	if err := ast.Fprint(&dump, nil, expression, omitPositions); err != nil {
 		t.Fatal(err)
 	}
 
-	allocated := bytesAllocatedBy(func() { fingerprint(expression) })
+	allocated := bytesAllocatedBy(func() { hashOfDump(expression) })
 
 	if allocated >= dump.written {
 		t.Fatalf("allocated %d bytes for a dump of %d bytes", allocated, dump.written)

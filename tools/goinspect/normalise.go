@@ -37,16 +37,16 @@ func (source *parsedSource) lineOf(pos token.Pos) int {
 	return source.fileSet.PositionFor(pos, false).Line
 }
 
-// normalisedFingerprint says whether two sources mean the same thing to ARDE: it ignores
+// normalisedHash says whether two sources mean the same thing to ARDE: it ignores
 // comments, formatting, line endings and the tags ARDE adds. It is the one normaliser that both
 // compare and the declaration hashes rely on.
-func normalisedFingerprint(path string, source []byte) (string, error) {
+func normalisedHash(path string, source []byte) (string, error) {
 	parsed, err := parseSource(path, source)
 	if err != nil {
 		return "", err
 	}
 	normaliseTree(parsed.syntax)
-	return fingerprint(parsed.syntax), nil
+	return hashOfDump(parsed.syntax), nil
 }
 
 // normaliseTree is the step every command runs on syntax before it hashes anything in it. It
@@ -90,10 +90,10 @@ func presence(pos token.Pos) token.Pos {
 	return token.NoPos
 }
 
-// fingerprint hashes a dump of the nodes. Each dump closes its own braces, so joining several
+// hashOfDump hashes a dump of the nodes. Each dump closes its own braces, so joining several
 // cannot make two different lists read the same. A dump's size is its nodes times their depth, so
 // it goes straight into the hash and is never held in memory.
-func fingerprint(nodes ...any) string {
+func hashOfDump(nodes ...any) string {
 	hash := sha256.New()
 	for _, node := range nodes {
 		if err := ast.Fprint(hash, nil, node, omitPositions); err != nil {

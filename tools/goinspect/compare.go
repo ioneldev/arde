@@ -65,12 +65,12 @@ func (trees treePair) fileChanged(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	oldPrint, oldParseErr := normalisedFingerprint(path, oldSource)
-	newPrint, newParseErr := normalisedFingerprint(path, newSource)
+	oldHash, oldParseErr := normalisedHash(path, oldSource)
+	newHash, newParseErr := normalisedHash(path, newSource)
 	if oldParseErr != nil || newParseErr != nil {
 		return !bytes.Equal(oldSource, newSource), nil
 	}
-	return oldPrint != newPrint, nil
+	return oldHash != newHash, nil
 }
 
 func filesInBoth(files, others []string) []string {

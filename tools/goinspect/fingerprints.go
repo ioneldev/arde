@@ -48,7 +48,7 @@ type moduleProgram struct {
 	// instancesByOrigin lets a walk that starts at a generic function also enter the instances
 	// of it, because the concrete type behind a type parameter is known only in an instance.
 	instancesByOrigin map[*ssa.Function][]*ssa.Function
-	// hashInputs holds what hashFunctions feeds the hash for a function, so a function reached
+	// hashInputs holds what fingerprintOf feeds the hash for a function, so a function reached
 	// by many routes is rendered once. Rendering dumps the syntax through reflection, which is
 	// slow, and it is the same text for every route.
 	hashInputs map[*ssa.Function]string
@@ -56,7 +56,7 @@ type moduleProgram struct {
 
 // fingerprintRoots hashes, for each function named, everything it can reach inside the module.
 // SSA decides what is reached, and three inputs say what each reached function does, because
-// none of them is enough alone: see hashFunctions. It hashes what the functions say and not the
+// none of them is enough alone: see fingerprintOf. It hashes what the functions say and not the
 // package state they use: a package-level var or type is outside a fingerprint, and
 // `declarations` covers those. A const is inside, because SSA writes its value into every use,
 // except one used only as an array length inside a type declared in the function: SSA prints that
@@ -84,7 +84,7 @@ func fingerprintRoots(request fingerprintRequest) (fingerprintReport, error) {
 			report.WithoutBody = append(report.WithoutBody, root)
 			continue
 		}
-		report.Fingerprints[root] = module.hashFunctions(reached)
+		report.Fingerprints[root] = module.fingerprintOf(reached)
 		report.Reach[root] = namesOf(reached)
 	}
 	return report, nil
@@ -307,13 +307,13 @@ func hasFunctionWithoutBody(functions []*ssa.Function) bool {
 	})
 }
 
-// hashFunctions hashes three inputs for each function, in name order. None is enough alone:
+// fingerprintOf hashes three inputs for each function, in name order. None is enough alone:
 //   - the SSA listing shows what each name resolved to after type checking;
 //   - every constant in full, because the listing is a debug printer that cuts a string past 20
 //     bytes and prints a float to 6 digits, and because SSA writes named constants into the code;
 //   - the function's own syntax, because the listing shows a type declared inside the function
 //     by its name alone, so its fields and tags would never reach the hash.
-func (module moduleProgram) hashFunctions(functions []*ssa.Function) string {
+func (module moduleProgram) fingerprintOf(functions []*ssa.Function) string {
 	hash := sha256.New()
 	for _, function := range functions {
 		io.WriteString(hash, module.hashInputOf(function))
@@ -327,7 +327,7 @@ func (module moduleProgram) hashInputOf(function *ssa.Function) string {
 	}
 	// The NUL ends each input, so one cannot run into the next.
 	rendered := fmt.Sprintf("%s\x00%s\x00%s\x00%s\x00",
-		function.String(), listingWithoutPositions(function), exactConstantsOf(function), syntaxFingerprint(function))
+		function.String(), listingWithoutPositions(function), exactConstantsOf(function), normalisedSyntaxHash(function))
 	module.hashInputs[function] = rendered
 	return rendered
 }
@@ -370,16 +370,16 @@ func exactConstantsOf(function *ssa.Function) string {
 	return constants.String()
 }
 
-// syntaxFingerprint normalises the function's syntax in place the way `compare` and
+// normalisedSyntaxHash normalises the function's syntax in place the way `compare` and
 // `declarations` do, so comments, moved code and the tags ARDE adds move nothing in the syntax.
 // The SSA listing prints an anonymous struct type with its tags, so a tag ARDE adds to one of
 // those still moves a fingerprint. ARDE writes its tags on named structs. By now every error has
 // been reported and the build is done, so nothing else reads the tree.
-func syntaxFingerprint(function *ssa.Function) string {
+func normalisedSyntaxHash(function *ssa.Function) string {
 	syntax := function.Syntax()
 	if syntax == nil {
 		return ""
 	}
 	normaliseTree(syntax)
-	return fingerprint(syntax)
+	return hashOfDump(syntax)
 }
