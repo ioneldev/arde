@@ -32,7 +32,8 @@ it is passed over. Such a function must register its path argument alone, after 
 such as "GET ", or after its method argument and a space.
 - param: `name`. One pattern per way the service reads a request value, such as \
 ^r\\.URL\\.Query\\(\\)\\.Get$, ^r\\.PathValue$ or a local variable that holds the query, as in \
-^query\\.Get$.
+^query\\.Get$. Calls to URL.Query().Get, PathValue, FormValue, PostFormValue and Header.Get on a \
+request are read with no pattern, whatever the request is called.
 - env: `name`. os.Getenv and os.LookupEnv are read with no pattern. Write one for a function of \
 this service that wraps them.
 - error: `code` and `status`. The function that writes an error reply with a named code, with the \

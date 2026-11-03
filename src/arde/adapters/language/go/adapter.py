@@ -43,10 +43,22 @@ from arde.domain.profile import ExtractionPattern, RepoProfile
 DEFAULT_ENV_PATTERN = ExtractionPattern(
     kind="env", call=r"^os\.(Getenv|LookupEnv)$", args={"name": 0}
 )
+# Added for the same reason: a saved profile names the spellings the code used when Discovery
+# ran, and a handler added later that reads a request value another way would go unseen. Matching
+# is by text, and these shapes belong to net/http's request in practice.
+DEFAULT_PARAM_PATTERNS = tuple(
+    ExtractionPattern(kind="param", call=call, args={"name": 0})
+    for call in (
+        r"^[A-Za-z_]\w*\.URL\.Query\(\)\.Get$",
+        r"^[A-Za-z_]\w*\.(PathValue|FormValue|PostFormValue)$",
+        r"^[A-Za-z_]\w*\.Header\.Get$",
+    )
+)
+_DEFAULT_PATTERNS = (*DEFAULT_PARAM_PATTERNS, DEFAULT_ENV_PATTERN)
 
 
 def patterns_of(profile: RepoProfile) -> tuple[ExtractionPattern, ...]:
-    return (*profile.patterns, DEFAULT_ENV_PATTERN)
+    return (*profile.patterns, *_DEFAULT_PATTERNS)
 
 
 class GoAdapter(LanguageAdapter):
@@ -174,8 +186,8 @@ def go_adapter(bin_dir: Path) -> LanguageAdapter:
 
 
 def _of_the_profile(unmatched: Iterable[PatternName]) -> tuple[PatternName, ...]:
-    default = (DEFAULT_ENV_PATTERN.kind, DEFAULT_ENV_PATTERN.call)
-    return tuple(pattern for pattern in unmatched if (pattern.kind, pattern.call) != default)
+    defaults = {(default.kind, default.call) for default in _DEFAULT_PATTERNS}
+    return tuple(pattern for pattern in unmatched if (pattern.kind, pattern.call) not in defaults)
 
 
 # An added or removed file reaches this call too, and so may a folder or a template.

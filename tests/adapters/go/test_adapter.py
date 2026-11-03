@@ -147,7 +147,7 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
             roots=("(*example.com/shop/web.server).quote", "(example.com/shop/web.router).get"),
         ),
     )
-    assert inventory.params == (Param(name="pieces"),)
+    assert inventory.params == (Param(name="pieces"), Param(name="sku"))
     assert inventory.error_codes == (
         ErrorCode(code="bad_pieces", status="http.StatusBadRequest"),
         ErrorCode(code="unknown_sku", status="http.StatusNotFound"),
@@ -205,6 +205,30 @@ def test_the_default_pattern_reads_lookup_env_too(adapter: GoAdapter, shop: Path
     )
 
     assert "SHOP_SECRET" in adapter.extract_inventory(shop, shop_profile()).env_vars
+
+
+def test_the_default_param_patterns_read_the_shop_with_no_param_pattern(adapter: GoAdapter) -> None:
+    inventory = adapter.extract_inventory(SHOP, shop_profile(patterns=ROUTE_PATTERNS))
+
+    assert inventory.params == (Param(name="pieces"), Param(name="sku"))
+    assert inventory.unmatched_patterns == ()
+
+
+# Measured on a re-run: the saved profile named ^query\.Get$ alone, so a param a new handler read
+# as r.URL.Query().Get never reached the inventory, and the run still succeeded.
+@pytest.mark.parametrize(
+    "call", ["req.URL.Query().Get", "req.FormValue", "req.PostFormValue", "req.Header.Get"]
+)
+def test_a_param_read_in_a_spelling_the_profile_does_not_name_is_read(
+    adapter: GoAdapter, shop: Path, call: str
+) -> None:
+    edit(
+        shop / "web" / "handlers.go",
+        "listing(w http.ResponseWriter, _ *http.Request) {",
+        new=f'listing(w http.ResponseWriter, req *http.Request) {{\n\t_ = {call}("sort")',
+    )
+
+    assert Param(name="sort") in adapter.extract_inventory(shop, shop_profile()).params
 
 
 def test_a_pattern_that_matched_nothing_is_named_and_the_default_pattern_never_is(

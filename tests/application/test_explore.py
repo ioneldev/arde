@@ -288,7 +288,7 @@ def test_an_accepted_batch_says_how_much_is_left() -> None:
 
     accepted = str(run.tool_results()[4]["content"])
     assert accepted.startswith("Accepted 1 fact and 0 deletions.")
-    assert "18 inventory items still have no fact" in accepted
+    assert "19 inventory items still have no fact" in accepted
 
 
 # What the run carries out
