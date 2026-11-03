@@ -4,7 +4,7 @@ from typing import Literal
 
 from arde.domain.base import Frozen
 
-Owner = Literal["explore", "docs", "code"]
+Owner = Literal["discovery", "explore", "docs", "code"]
 
 
 class Finding(Frozen):

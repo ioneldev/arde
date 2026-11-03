@@ -23,8 +23,9 @@ class Tracer(Protocol):
     """Writes the run's record: structured events for the trace, free text for the debug log.
 
     Event kinds: run_start, step_start, step_end, model_call, model_error, tool_call, correction,
-    agent_end, check_result, repair, warning and run_end. The tracer stamps each event, so callers
-    pass no time. A field named summary may be any length: the tracer cuts it, after redaction.
+    agent_end, check_result, repair, warning and run_end, and prompt, the hash of an agent's system
+    prompt. The tracer stamps each event, so callers pass no time. A field named summary may be any
+    length: the tracer cuts it, after redaction.
     """
 
     def event(self, kind: str, **fields: object) -> None: ...

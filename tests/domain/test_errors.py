@@ -2,7 +2,7 @@
 
 import pytest
 
-from arde.domain.errors import ArdeError, SourceError
+from arde.domain.errors import ArdeError, DiscoveryFailed, SourceError
 from arde.domain.report import ExitCode
 
 
@@ -43,3 +43,16 @@ def test_a_source_error_is_bad_usage_and_names_its_next_action() -> None:
     assert isinstance(error, ArdeError)
     assert error.exit_code is ExitCode.BAD_USAGE
     assert error.next_action == "Check the path, then run again."
+
+
+def test_a_discovery_failure_needs_input_and_names_what_is_missing() -> None:
+    error = DiscoveryFailed(
+        "Discovery found no profile that fits the repo.",
+        missing=("port_env",),
+        next_action="Set port_env in the override file, then run again.",
+    )
+
+    assert isinstance(error, ArdeError)
+    assert error.exit_code is ExitCode.DISCOVERY_NEEDS_INPUT
+    assert error.missing == ("port_env",)
+    assert error.next_action == "Set port_env in the override file, then run again."

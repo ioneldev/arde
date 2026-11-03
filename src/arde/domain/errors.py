@@ -15,3 +15,12 @@ class SourceError(ArdeError):
 
     def __init__(self, message: str, *, next_action: str) -> None:
         super().__init__(message, next_action=next_action, exit_code=ExitCode.BAD_USAGE)
+
+
+class DiscoveryFailed(ArdeError):
+    """Discovery found no profile that fits the repo, so the run needs the owner's input."""
+
+    def __init__(self, message: str, *, missing: tuple[str, ...], next_action: str) -> None:
+        super().__init__(message, next_action=next_action, exit_code=ExitCode.DISCOVERY_NEEDS_INPUT)
+        # What the profile still lacks, one item each, for the report to list.
+        self.missing = missing

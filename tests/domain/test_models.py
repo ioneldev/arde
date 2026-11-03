@@ -165,6 +165,12 @@ def test_models_are_frozen() -> None:
         finding.message = "changed"
 
 
+def test_a_finding_can_send_the_profile_back_to_discovery() -> None:
+    finding = Finding(check="c", owner="discovery", subject="s", message="m", next_action="n")
+
+    assert finding.owner == "discovery"
+
+
 def test_unknown_fields_rejected() -> None:
     with pytest.raises(ValidationError):
         Finding(  # type: ignore[call-arg]
