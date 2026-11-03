@@ -128,10 +128,28 @@ def test_a_repo_reached_through_a_link_is_judged_from_its_real_folder(
     assert links_leaving(entrance) == ["leak"]
 
 
-# A hook linked into a shared folder is common, and nothing ARDE runs reads .git.
-def test_a_link_inside_the_git_folder_is_not_looked_at(repo: Path, secret: Path) -> None:
+# A go.work can name a module inside .git, and Go quotes that module's go.mod if it cannot parse it.
+def test_a_link_inside_the_git_folder_that_leaves_is_listed(repo: Path, secret: Path) -> None:
     (repo / ".git" / "hooks").mkdir(parents=True)
     (repo / ".git" / "hooks" / "pre-commit").symlink_to(secret)
+
+    assert links_leaving(repo) == [".git/hooks/pre-commit"]
+
+
+def test_a_link_inside_a_nested_git_folder_that_leaves_is_listed(repo: Path, secret: Path) -> None:
+    (repo / "sub" / ".git" / "dep").mkdir(parents=True)
+    (repo / "sub" / ".git" / "dep" / "go.mod").symlink_to(secret)
+
+    assert links_leaving(repo) == ["sub/.git/dep/go.mod"]
+
+
+def test_a_link_inside_the_git_folder_that_stays_inside_is_kept(repo: Path) -> None:
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "pre-commit").write_text("#!/bin/sh\n", encoding="utf-8")
+    (repo / ".git" / "hooks").mkdir(parents=True)
+    (repo / ".git" / "hooks" / "pre-commit").symlink_to(
+        Path("..") / ".." / "scripts" / "pre-commit"
+    )
 
     assert links_leaving(repo) == []
 
@@ -253,6 +271,17 @@ def a_profile() -> RepoProfile:
     return RepoProfile(main_package=".", main_file="main.go", port_env="PORT", patterns=())
 
 
+REPO_METHODS = (
+    "detects",
+    "changed_declarations old",
+    "changed_declarations new",
+    "extract_inventory",
+    "route_fingerprints",
+    "run_checks",
+    "built_service",
+)
+
+
 # The helper's path is never used: the gate stops each method before anything runs.
 def every_repo_method(repo: Path) -> dict[str, object]:
     adapter = GoAdapter(Path("unused"))
@@ -267,18 +296,7 @@ def every_repo_method(repo: Path) -> dict[str, object]:
     }
 
 
-@pytest.mark.parametrize(
-    "method",
-    [
-        "detects",
-        "changed_declarations old",
-        "changed_declarations new",
-        "extract_inventory",
-        "route_fingerprints",
-        "run_checks",
-        "built_service",
-    ],
-)
+@pytest.mark.parametrize("method", REPO_METHODS)
 def test_every_adapter_method_that_takes_a_repo_stops_at_a_link_that_leaves_it(
     repo: Path, secret: Path, method: str
 ) -> None:
@@ -287,4 +305,18 @@ def test_every_adapter_method_that_takes_a_repo_stops_at_a_link_that_leaves_it(
     with pytest.raises(LinkLeavesRepoError) as stopped:
         every_repo_method(repo)[method]()  # type: ignore[operator]
 
+    assert FAKE_SECRET not in str(stopped.value)
+
+
+@pytest.mark.parametrize("method", REPO_METHODS)
+def test_every_adapter_method_stops_at_a_link_inside_the_git_folder_that_leaves_the_repo(
+    repo: Path, secret: Path, method: str
+) -> None:
+    (repo / ".git" / "dep").mkdir(parents=True)
+    (repo / ".git" / "dep" / "go.mod").symlink_to(secret)
+
+    with pytest.raises(LinkLeavesRepoError) as stopped:
+        every_repo_method(repo)[method]()  # type: ignore[operator]
+
+    assert ".git/dep/go.mod" in str(stopped.value)
     assert FAKE_SECRET not in str(stopped.value)

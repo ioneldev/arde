@@ -551,8 +551,7 @@ def test_a_full_profile_checks_its_port_variable_too() -> None:
         RepoProfile(**{**PROFILE_FIELDS, "port_env": "APP PORT"})
 
 
-# The links gate does not walk .git, so a package there is the one way past it. Go passes over a
-# folder with a leading dot anyway, so no real service lives in one.
+# Go passes over a folder with a leading dot, so no real service lives in one.
 @pytest.mark.parametrize(
     "value",
     [

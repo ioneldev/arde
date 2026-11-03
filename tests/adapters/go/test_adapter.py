@@ -486,6 +486,51 @@ def test_an_edit_behind_a_link_moves_a_declaration_of_the_link(
     assert adapter.changed_declarations(shop, edited) == ["web/extra.go::func behindTheLink"]
 
 
+# One token per line, as the body of a real private key is, so Go would quote every line whole.
+FAKE_KEY_LINES = tuple(f"FAKEKEYBODYLINE{number:02d}" for number in range(25))
+
+
+def a_workspace_that_uses_a_module_inside_git(shop: Path, *, secret: Path) -> None:
+    secret.write_text("\n".join(("-----BEGIN FAKE KEY-----", *FAKE_KEY_LINES)), encoding="utf-8")
+    (shop / "go.work").write_text("go 1.22\n\nuse (\n\t.\n\t./.git/dep\n)\n", encoding="utf-8")
+    (shop / ".git" / "dep").mkdir(parents=True)
+    (shop / ".git" / "dep" / "go.mod").symlink_to(secret)
+
+
+def outcome_text(call: Callable[[], object]) -> tuple[str, str]:
+    try:
+        return "returned", repr(call())
+    except ArdeError as error:
+        return type(error).__name__, f"{error} {error.next_action}"
+
+
+def test_a_workspace_that_uses_a_module_inside_git_stops_at_the_gate_and_quotes_no_secret(
+    adapter: GoAdapter, shop: Path, tmp_path: Path
+) -> None:
+    a_workspace_that_uses_a_module_inside_git(shop, secret=tmp_path / "fake_key.pem")
+
+    def built() -> Path:
+        with adapter.built_service(shop, shop_profile()) as binary:
+            return binary
+
+    outcomes = {
+        "extract_inventory": outcome_text(lambda: adapter.extract_inventory(shop, shop_profile())),
+        "route_fingerprints": outcome_text(lambda: hashes_of(adapter, shop, routes=())),
+        "run_checks": outcome_text(lambda: adapter.run_checks(shop, shop_profile())),
+        "built_service": outcome_text(built),
+        "changed_declarations": outcome_text(lambda: adapter.changed_declarations(shop, shop)),
+    }
+
+    quoted = {
+        name: [line for line in FAKE_KEY_LINES if line in text]
+        for name, (_, text) in outcomes.items()
+    }
+    assert {name: kind for name, (kind, _) in outcomes.items()} == dict.fromkeys(
+        outcomes, "LinkLeavesRepoError"
+    ), quoted
+    assert not any(quoted.values())
+
+
 def test_a_go_file_that_does_not_parse_stops_the_run_and_names_it(
     adapter: GoAdapter, shop: Path
 ) -> None:

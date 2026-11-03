@@ -51,7 +51,10 @@ def require_no_link_leaves(repo: Path) -> None:
 
 
 def links_leaving(repo: Path) -> list[str]:
-    """The path from the root of every link whose real path is outside the repo's real path."""
+    """The path from the root of every link whose real path is outside the repo's real path.
+
+    .git is walked like any folder: a go.work can name a module inside it.
+    """
     root = os.path.realpath(repo)
     found: list[str] = []
     for folder, subfolders, files in os.walk(root, onerror=_stop_the_walk):
@@ -59,8 +62,6 @@ def links_leaving(repo: Path) -> list[str]:
             path = os.path.join(folder, name)
             if os.path.islink(path) and not is_inside(os.path.realpath(path), root):
                 found.append(os.path.relpath(path, root))
-        # A clone cannot place a link in .git, and a hook linked to a shared folder is common.
-        subfolders[:] = [name for name in subfolders if name != ".git"]
     return sorted(found)
 
 

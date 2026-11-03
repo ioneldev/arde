@@ -142,7 +142,7 @@ _ALL_PACKAGES = "./..."
 
 
 # A folder that starts with a dot is out of the build tool's reach, so no real service lives in
-# one, and .git is the one folder the repo-links gate does not walk.
+# one, and a model has no reason to name one.
 def _require_no_hidden_folder(package: str) -> str:
     after_the_leading_dot = package.replace("\\", "/").split("/")[1:]
     if package != _ALL_PACKAGES and any(part.startswith(".") for part in after_the_leading_dot):
