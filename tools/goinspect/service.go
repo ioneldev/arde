@@ -76,7 +76,7 @@ func findMainPackage(root, mainPackage string) (*packages.Package, error) {
 // repo, and a better main_package would not fix it.
 func namesNothing(entry *packages.Package) bool {
 	return len(entry.Errors) > 0 && !slices.ContainsFunc(entry.Errors, func(problem packages.Error) bool {
-		return problem.Pos != "" && problem.Pos != "-"
+		return problem.Pos != ""
 	})
 }
 

@@ -583,6 +583,16 @@ def test_a_build_that_matched_no_packages_built_nothing_and_is_not_ok(
     assert "matched no packages" in result.output
 
 
+def test_a_list_that_fails_when_nothing_was_built_is_no_error_either(
+    monkeypatch: pytest.MonkeyPatch, repo: Path
+) -> None:
+    (repo / "main.go").write_text("package main\n", encoding="utf-8")
+    empty = ChildOutcome(exit_code=0, stdout="", stderr=NOTHING_BUILT)
+    use(monkeypatch, StandInGo(build=empty, ignored_files=outcome(1)))
+
+    assert run_checks(repo, shop_profile()).ignored_files == ()
+
+
 # A compiler warning quotes source, so a repo can put these words on a line of its own making.
 @pytest.mark.parametrize(
     "stderr",

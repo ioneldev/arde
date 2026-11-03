@@ -22,6 +22,7 @@ from arde.adapters.child_process import (
     ChildStartError,
     ChildTimeoutError,
     OutputLimit,
+    read_tail,
     run_child,
 )
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES
@@ -223,7 +224,7 @@ def test_the_output_in_a_timeout_is_short_and_shows_no_control_character(tmp_pat
     assert len(message.encode()) <= 2 * MESSAGE_TAIL_BYTES
 
 
-def test_a_timeout_does_not_read_the_whole_of_what_the_child_printed(tmp_path: Path) -> None:
+def test_a_child_that_printed_megabytes_times_out_with_a_short_message(tmp_path: Path) -> None:
     code = "import time\nprint('y' * 5_000_000, flush=True)\ntime.sleep(60)\n"
     command = python_command(code, cwd=tmp_path, timeout_s=2)
 
@@ -232,6 +233,21 @@ def test_a_timeout_does_not_read_the_whole_of_what_the_child_printed(tmp_path: P
 
     assert "yyy" in str(stopped.value)
     assert len(str(stopped.value).encode()) <= 2 * MESSAGE_TAIL_BYTES
+
+
+# A hung child can have written gigabytes, and only the end of them is ever wanted.
+def test_the_tail_of_a_file_is_read_and_nothing_before_it(tmp_path: Path) -> None:
+    with (tmp_path / "output").open("wb+") as file:
+        file.write(b"the start" + b"x" * 1000 + b"the end")
+
+        assert read_tail(file, 7) == "the end"
+
+
+def test_the_tail_of_a_file_shorter_than_the_limit_is_the_whole_file(tmp_path: Path) -> None:
+    with (tmp_path / "output").open("wb+") as file:
+        file.write(b"short")
+
+        assert read_tail(file, 100) == "short"
 
 
 GRANDCHILD_THAT_KEEPS_THE_OUTPUT_OPEN = """

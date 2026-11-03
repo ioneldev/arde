@@ -2,8 +2,8 @@
 
 Output goes to temporary files, not pipes. A pipe stays open as long as any process holds its
 end, so a grandchild that outlived the child would keep the caller waiting after the timeout.
-A file has no such end, and it is read back afterwards with a limit, so a chatty child costs disk
-and never memory.
+A file has no such end, and it is read back afterwards with a limit, so a chatty child costs disk,
+and memory only up to that limit.
 """
 
 import contextlib

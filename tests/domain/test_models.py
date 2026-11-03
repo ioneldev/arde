@@ -564,6 +564,7 @@ def test_a_full_profile_checks_its_port_variable_too() -> None:
         ".//.hidden",
         "./cmd/./api",
         "./.git\\x",
+        "./cmd\\.hidden",
         "./cmd/...",
         "./.../api",
     ],

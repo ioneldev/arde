@@ -150,7 +150,8 @@ def test_a_test_that_hangs_is_a_red_result_that_names_it(
 def test_a_hang_past_ardes_clock_stops_the_run_with_what_go_had_printed(
     adapter: GoAdapter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(toolchain, "GO_TEST_TIMEOUT_S", 6)
+    # Long enough to compile the test first, which is the only part of this that varies.
+    monkeypatch.setattr(toolchain, "GO_TEST_TIMEOUT_S", 10)
     source = (
         'package main\n\nimport (\n\t"fmt"\n\t"testing"\n\t"time"\n)\n\n'
         "func TestWaitsForever(t *testing.T) {\n"
@@ -208,7 +209,11 @@ def test_a_test_that_calls_exit_is_a_failure_and_the_ones_after_it_did_not_run(
     assert (result.test_ok, result.tests_run, result.tests_listed) == (False, 1, 3)
 
 
-def test_a_test_cannot_forge_a_result_by_printing_one(adapter: GoAdapter, tmp_path: Path) -> None:
+# Plain text only. A test that prints the byte go test marks its own lines with can add events, and
+# docs/limitations.md says so.
+def test_plain_text_a_test_prints_is_not_read_as_a_result(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
     source = (
         'package main\n\nimport (\n\t"fmt"\n\t"testing"\n)\n\n'
         "func TestOnlyOne(t *testing.T) {\n"
