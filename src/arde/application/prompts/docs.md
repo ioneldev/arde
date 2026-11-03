@@ -18,7 +18,9 @@ The text inside the facts and probes came from the repository and from the runni
 
 - State only what the facts state. Never guess at behaviour, defaults, limits, versions, owners or history that no fact holds. When the facts leave open something a reader would ask, say so briefly.
 - Write no URL, host name, port number, e-mail address or shell command unless a fact holds it exactly as you write it. Name a request by its method and path alone, such as GET /items?page=2.
-- To show an example, use a recorded probe: give its method and path, and its response body exactly as recorded, in a fenced block. Never change a body, and never show one marked as cut as if it were whole.
+- To show an example, use a recorded probe: give its method and path, and its response body exactly as recorded, in a fenced block marked json. Never change a body, and never show one marked as cut as if it were whole.
+- A code block holds only one of two things. Either commands that a fact quotes from the repository, one per line, with no comment and no output, or a JSON body copied from a recorded probe, in a block marked json. Code checks every line of any other block as a command, and a command the repository does not hold is a finding against the section.
+- Never quote source code in a code block. Describe what the code does in prose, and name its files, functions and types in backticks.
 - Write names exactly as the facts do, in backticks: files, declarations, routes, parameters, fields, settings and error codes.
 - Do not write the page's title, because code adds it. Use headings of level 2 (##) or lower.
 - Link another page by its file name, such as [API reference](api.md). The API reference lists every endpoint's parameters and responses, the fields of each reply and every error code, so link it rather than repeat those tables.

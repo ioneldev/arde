@@ -344,3 +344,33 @@ def test_a_secret_read_from_a_file_with_a_trailing_newline_is_still_redacted(
     event = trace_lines(run_dir)[0]
     assert event["k"] == f"key {REDACTED}"
     assert event["other"] == "two  spaces"
+
+
+def test_a_report_comes_back_with_every_secret_replaced(run_dir: Path) -> None:
+    from arde.domain.findings import Finding
+    from arde.domain.report import ExitCode, RunReport
+
+    finding = Finding(
+        check="c", owner="code", subject=SECRET, message=f"saw {SECRET}", next_action="n"
+    )
+    report = RunReport(
+        status="failed",
+        exit_code=ExitCode.CHECKS_FAILED,
+        message=f"the key {SECRET} was refused",
+        next_action=f"replace {SECRET}",
+        findings=(finding,),
+        warnings=(SECRET,),
+        exemptions=(),
+        change_labels=(),
+        cost_usd=0.5,
+        duration_s=1.0,
+        per_role={},
+        changed_paths=(),
+        run_dir=str(run_dir),
+    )
+
+    redacted = tracer_in(run_dir).redacted_report(report)
+
+    assert SECRET not in redacted.model_dump_json()
+    assert redacted.message == f"the key {REDACTED} was refused"
+    assert redacted.exit_code == ExitCode.CHECKS_FAILED

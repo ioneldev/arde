@@ -98,6 +98,24 @@ def one_line(text: str, limit: int) -> str:
     return " ".join(_UNPRINTABLE_CHARACTER.sub(" ", text[:limit]).split())
 
 
+# Every unprintable character but the line break and tab that a tool's own messages are laid out
+# with. An escape sequence can rewrite a terminal's title or clear the screen, and hide a failure.
+_SHOWN_ESCAPED = re.compile(f"(?![\\t\\n])[{UNPRINTABLE_CHARACTERS}]")
+
+
+def visible_text(text: str) -> str:
+    """The whole text, with each unprintable character written out as \\xNN up to U+00FF, as
+    \\uNNNN up to U+FFFF and as \\UNNNNNNNN past it."""
+    return _SHOWN_ESCAPED.sub(_written_out, text)
+
+
+def _written_out(character: re.Match[str]) -> str:
+    code = ord(character[0])
+    if code <= 0xFF:
+        return f"\\x{code:02x}"
+    return f"\\u{code:04x}" if code <= 0xFFFF else f"\\U{code:08x}"
+
+
 # The code point and where it is, because the character itself cannot be seen.
 def _require_no_refused_character(text: str) -> str:
     refused = _REFUSED_CHARACTER.search(text)

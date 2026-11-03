@@ -29,4 +29,13 @@ class RunReport(Frozen):
     duration_s: float
     per_role: dict[str, RoleTotals]
     changed_paths: tuple[str, ...]
+    # Empty when the run stopped before it had a folder, as on bad input.
     run_dir: str
+    # Where the repo came from, and the commit the run started from.
+    source: str = ""
+    revision: str = ""
+    # Where to read the result: the workspace clone for a URL, the output copy for a local path.
+    result_dir: str = ""
+    # The branch and commit that hold the result in the workspace clone, for a URL source.
+    branch: str | None = None
+    commit: str | None = None

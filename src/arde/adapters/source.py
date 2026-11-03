@@ -14,7 +14,6 @@ import stat
 import tempfile
 import unicodedata
 from pathlib import Path
-from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from arde.adapters.child_env import child_environment
@@ -28,6 +27,7 @@ from arde.adapters.child_process import (
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text
 from arde.adapters.repo_links import require_no_link_leaves
 from arde.adapters.workspace import Workspace
+from arde.application.ports import ResolvedSource, ResultCommit, SourceControl
 from arde.domain.base import Frozen, printable_name
 from arde.domain.errors import SourceError
 
@@ -66,17 +66,6 @@ _AUTOCRLF = ("-c", "core.autocrlf=true")
 class SourceRequest(Frozen):
     repo: str
     branch: str | None
-
-
-class ResolvedSource(Frozen):
-    kind: Literal["url", "local"]
-    # The URL or path the repo came from, with no user name or password, as a trace may show it.
-    origin: str
-    repo_id: str
-    # The folder to copy from: the user's own repo, or the clone in the workspace.
-    root: Path
-    # The commit the tree was taken from. A local tree may hold uncommitted work on top of it.
-    revision: str
 
 
 def resolve_source(request: SourceRequest, workspace_home: Path) -> ResolvedSource:
@@ -406,6 +395,74 @@ def ensure_git_eol_config(repo: Path) -> tuple[str, ...]:
         if line_endings == _LF_IN_INDEX_CRLF_IN_TREE:
             return _AUTOCRLF
     return ()
+
+
+# Committing a run's result in the workspace clone
+
+# ARDE's own identity, and none of the user's settings that would sign the commit or run a hook,
+# so the commit needs nothing from the machine it runs on and runs no program the user set up.
+_COMMIT_SETTINGS = (
+    "-c",
+    "user.name=ARDE",
+    "-c",
+    "user.email=arde@localhost",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    f"core.hooksPath={os.devnull}",
+)
+
+
+def commit_result(commit: ResultCommit) -> str:
+    """Commits the paths on a new branch at the clone's current commit, and returns its id."""
+    _ask(("checkout", "--quiet", "-b", commit.branch), repo=commit.clone)
+    try:
+        for path in commit.paths:
+            _put_into_clone(path, commit=commit)
+    except OSError as error:
+        raise SourceError(
+            "Cannot write the run's result into the workspace clone: "
+            f"{printable_name(describe_os_error(error))}.",
+            next_action="Check that you can write under ARDE_HOME, then run again.",
+        ) from error
+    # --force, because the result is ARDE's own files, which a repo may list in .gitignore.
+    if commit.paths:
+        _ask(("add", "--all", "--force", "--", *commit.paths), repo=commit.clone)
+    message = ("-m", commit.message)
+    _ask((*_COMMIT_SETTINGS, "commit", "--quiet", "--allow-empty", *message), repo=commit.clone)
+    return _head_commit(commit.clone)
+
+
+# The clone may hold a link to a folder inside it, and a file written through it would land in
+# that folder instead.
+def _put_into_clone(path: str, *, commit: ResultCommit) -> None:
+    _require_plain_path(path)
+    written, target = commit.output / path, commit.clone / path
+    if _behind_a_link(commit.clone, path) or target.is_symlink():
+        raise SourceError(
+            f"{printable_name(path)} is behind a link in the workspace clone, so ARDE writes no "
+            "result through it.",
+            next_action="Replace the link with the folder or file it stands for, then run again.",
+        )
+    if not os.path.lexists(written):
+        target.unlink(missing_ok=True)
+    elif os.path.islink(written):
+        _copy_link(written, target)
+    else:
+        _copy_file(written, target)
+
+
+class GitSourceControl(SourceControl):
+    def copy_source(self, source: ResolvedSource, dest: Path) -> None:
+        copy_tree(source, dest)
+
+    def commit_result(self, commit: ResultCommit) -> str:
+        return commit_result(commit)
+
+
+# The return type is the static proof that GitSourceControl satisfies the port.
+def git_source_control() -> SourceControl:
+    return GitSourceControl()
 
 
 # Repo ids

@@ -577,3 +577,12 @@ def test_a_readme_that_is_a_link_gets_no_docs_link_and_a_warning(tmp_path: Path)
         "file it stands for to get one.",
     )
     assert source.read_text(encoding="utf-8") == "package main\n"
+
+
+def test_the_prompt_keeps_code_blocks_to_repo_commands_and_probe_json() -> None:
+    prompt = (Path(__file__).parents[2] / "src/arde/application/prompts/docs.md").read_text()
+
+    assert "in a block marked json" in prompt
+    assert "one per line, with no comment" in prompt
+    assert "Never quote source code in a code block" in prompt
+    assert "name its files, functions and types in backticks" in prompt

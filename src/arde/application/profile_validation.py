@@ -103,7 +103,7 @@ def validate_profile(candidate: ProfileCandidate, deps: PipelineDeps) -> list[Fi
     try:
         with deps.adapter.built_service(repo, profile) as binary:
             inventory = read_inventory(repo, profile, adapter=deps.adapter)
-            _refuse_an_oversized(inventory)
+            refuse_an_oversized(inventory)
             with deps.service_runner.running(_service_config(candidate, binary=binary)) as service:
                 return _routes_that_answer_like_a_missing_path(
                     inventory.routes, service=service, client=deps.service_client
@@ -114,7 +114,8 @@ def validate_profile(candidate: ProfileCandidate, deps: PipelineDeps) -> list[Fi
         return [_start_finding(error, profile=profile)]
 
 
-def _refuse_an_oversized(inventory: Inventory) -> None:
+def refuse_an_oversized(inventory: Inventory) -> None:
+    """Raises InventoryTooLarge when the inventory is past what ARDE shows an agent."""
     size = len(inventory.model_dump_json().encode("utf-8"))
     if size > MAX_INVENTORY_BYTES:
         raise InventoryTooLarge(size)

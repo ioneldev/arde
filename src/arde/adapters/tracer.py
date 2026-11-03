@@ -10,6 +10,7 @@ from pathlib import Path
 from pydantic import BaseModel, SecretStr
 
 from arde.application.ports import Tracer
+from arde.domain.report import RunReport
 
 REDACTED = "[REDACTED]"
 _SUMMARY_FIELD = "summary"
@@ -41,6 +42,10 @@ class JsonlTracer(Tracer):
 
     def debug(self, text: str) -> None:
         _append_line(self._debug_path, f"{_now()} {self._redact_text(text)}")
+
+    def redacted_report(self, report: RunReport) -> RunReport:
+        """The report with every secret replaced, as report.json and the console may show it."""
+        return RunReport.model_validate(self._redacted(report))
 
     # Walks the values before they become JSON, because JSON escaping would change a secret that
     # holds a quote or a backslash and the plain text would no longer match.
