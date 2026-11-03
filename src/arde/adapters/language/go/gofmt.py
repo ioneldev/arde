@@ -1,5 +1,6 @@
 """gofmt, which lays out Go source the way every Go repo's format check expects."""
 
+import re
 import tempfile
 from pathlib import Path
 
@@ -7,9 +8,12 @@ from arde.adapters.child_env import child_environment
 from arde.adapters.child_process import ChildCommand, run_child
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text
 from arde.adapters.language.go.errors import GoCommandError
-from arde.adapters.language.go.output_limits import GOFMT_OUTPUT_LIMIT
-from arde.adapters.language.go.timeouts import GOFMT_TIMEOUT_S
+from arde.adapters.language.go.output_limits import GOFMT_LIST_LIMIT, GOFMT_OUTPUT_LIMIT
+from arde.adapters.language.go.timeouts import GOFMT_LIST_TIMEOUT_S, GOFMT_TIMEOUT_S
 from arde.domain.base import printable_name
+
+# How gofmt names a file it cannot parse: its path, then the line and column of the error.
+_PARSE_ERROR = re.compile(r"(.+?\.go):\d+:\d+: ")
 
 
 def formatted(source: str, *, shown_as: str) -> str:
@@ -39,3 +43,33 @@ def formatted(source: str, *, shown_as: str) -> str:
             ),
         )
     return outcome.stdout
+
+
+def unformatted_files(repo: Path) -> set[str]:
+    """Each Go file, from the repo root, that gofmt -l . lists or cannot parse.
+
+    That is how a repo's own format check runs it, so it reaches the folders the build leaves out,
+    vendor and testdata among them. A file that does not parse fails such a check too.
+    """
+    command = ChildCommand(
+        argv=("gofmt", "-l", "."),
+        cwd=repo,
+        timeout_s=GOFMT_LIST_TIMEOUT_S,
+        output=GOFMT_LIST_LIMIT,
+        env=child_environment(),
+    )
+    outcome = run_child(command)
+    complaints = [line for line in outcome.stderr.splitlines() if line.strip()]
+    parse_errors = [_PARSE_ERROR.match(line) for line in complaints]
+    # Anything else, such as a file it cannot open, leaves the list short of that file.
+    if None in parse_errors or (not outcome.succeeded and not complaints):
+        raise _cannot_list(outcome.stderr)
+    return set(outcome.stdout.splitlines()) | {found[1] for found in parse_errors if found}
+
+
+def _cannot_list(stderr: str) -> GoCommandError:
+    return GoCommandError(
+        "gofmt cannot read every Go file of the repo: "
+        f"{bounded_text(stderr.strip(), MESSAGE_TAIL_BYTES)}",
+        next_action="Run gofmt -l . in the repo to see why, fix what it names, then run again.",
+    )

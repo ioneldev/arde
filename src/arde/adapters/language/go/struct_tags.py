@@ -41,6 +41,12 @@ def retagged(tag: str, ardes_pairs: Sequence[str]) -> str | None:
     return tag if kept == pairs else " ".join(kept)
 
 
+def persons_pairs(tag: str) -> list[str] | None:
+    """The pairs of the tag that ARDE does not add, in order, or None when ARDE cannot read it."""
+    pairs = _pairs_of(tag)
+    return None if pairs is None else [pair for pair in pairs if not is_added_by_arde(pair)]
+
+
 # goinspect reads a value with Go's own unquoting. A value with no backslash reads the same either
 # way, so a tag with one is left to the person rather than read by a second, partial copy of Go.
 def _pairs_of(tag: str) -> list[str] | None:

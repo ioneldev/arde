@@ -17,3 +17,6 @@ TEST_EVENTS_LIMIT = OutputLimit(max_bytes=64 * 1024 * 1024, when_longer="keep_ta
 
 # gofmt prints the whole file it lays out, and half of one is of no use.
 GOFMT_OUTPUT_LIMIT = OutputLimit(max_bytes=64 * 1024 * 1024, when_longer="fail")
+
+# A list of file names, where a cut one would hide a file.
+GOFMT_LIST_LIMIT = OutputLimit(max_bytes=16 * 1024 * 1024, when_longer="fail")

@@ -13,6 +13,8 @@ GO_LIST_TIMEOUT_S = 120
 GO_ENV_TIMEOUT_S = 30
 # Laying out one source file.
 GOFMT_TIMEOUT_S = 60
+# Reading every Go file of the repo, much as a build does, to list the ones gofmt would change.
+GOFMT_LIST_TIMEOUT_S = GO_BUILD_TIMEOUT_S
 # A profile's extra command can be anything, so it gets as long as the tests do.
 EXTRA_TEST_COMMAND_TIMEOUT_S = GO_TEST_TIMEOUT_S
 # swag parses every Go file of the repo, much as a build does.
