@@ -31,6 +31,7 @@ FunctionText = Annotated[SingleLine, Field(max_length=FUNCTION_LIMIT)]
 DeclarationText = Annotated[SingleLine, Field(max_length=DECLARATION_LIMIT)]
 PatternText = Annotated[SingleLine, Field(max_length=PATTERN_LIMIT)]
 RouteKeyText = Annotated[SingleLine, Field(max_length=ROUTE_KEY_LIMIT)]
+HashText = Annotated[str, Field(pattern=r"^(?:[0-9a-f]{64})?$")]
 CodeText = Annotated[ErrorCodeName, Field(max_length=NAME_LIMIT)]
 
 # What Route.handler holds when the registration gives no plain name to show, such as a function
@@ -55,6 +56,9 @@ class Route(Frozen):
     # factory, the middleware and a function handed over as a value. The fingerprint covers them
     # all. Empty when no function fits, and kept when the anchor is shared.
     roots: tuple[FunctionText, ...] = ()
+    # A hash of the constants the handler expression holds, such as the 5 in paged(5, h), or empty
+    # when it holds none. The fingerprint covers it, because no root's code holds those constants.
+    constants_hash: HashText = ""
     # The other routes whose different handlers resolve to the function that would be this
     # route's anchor. One comment block would merge their operations in the spec, so none of
     # them has a handler_id.

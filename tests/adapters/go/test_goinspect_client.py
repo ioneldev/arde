@@ -603,6 +603,7 @@ ROUTES_REPLY = {
             "handler_line": 30,
             "roots": ["(*example.com/depot.desk).list", "example.com/depot.logged"],
             "handler_identity": "5e",
+            "constants_hash": "",
         }
     ],
     "stripped_prefixes": [{"file": "web/files.go", "line": 4}],

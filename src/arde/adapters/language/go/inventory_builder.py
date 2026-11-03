@@ -429,6 +429,7 @@ def _route(site: RouteSite, *, method: str, path: str) -> Route:
             handler_file=site.handler_file,
             handler_line=site.handler_line,
             roots=site.roots,
+            constants_hash=site.constants_hash,
         )
     except ValidationError as error:
         problem = describe_problems(error, whole="the route")

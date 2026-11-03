@@ -70,6 +70,9 @@ type routeSite struct {
 	// HandlerIdentity is a hash of what the handler holds: two sites with one anchor and a
 	// different identity register different handlers.
 	HandlerIdentity string `json:"handler_identity"`
+	// ConstantsHash is a hash of the constants the handler holds, which the route's fingerprint
+	// covers, or empty when it holds none.
+	ConstantsHash string `json:"constants_hash"`
 }
 
 // wrapperCall is a call inside a function that a pattern of the same kind matches. It hands on what
@@ -630,7 +633,9 @@ func (call routeCall) otherPositions() []int {
 
 // siteAt leaves the path to the caller, which knows what the call registers.
 func (reader routeReader) siteAt(call routeCall, handler handlerReading) routeSite {
-	site := routeSite{callMatch: reader.matchAt(call), Roots: []string{}, HandlerIdentity: handler.identity}
+	site := routeSite{
+		callMatch: reader.matchAt(call), Roots: []string{}, HandlerIdentity: handler.identity, ConstantsHash: handler.constants,
+	}
 	reader.nameTheAnchor(&site, handler)
 	return site
 }

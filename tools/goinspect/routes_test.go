@@ -26,6 +26,7 @@ type siteOutput struct {
 	Roots       []string          `json:"roots"`
 	// HandlerIdentity is what the handler holds, whatever its spelling.
 	HandlerIdentity string `json:"handler_identity"`
+	ConstantsHash   string `json:"constants_hash"`
 }
 
 type placeOutput struct {
@@ -2219,5 +2220,36 @@ func TestRoutesStopsAtAnEmptyMethod(t *testing.T) {
 	output := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns})
 	if want := []unreadSiteOutput{{File: "main.go", Line: 11, Problem: "method is empty"}}; !reflect.DeepEqual(output.UnreadSites, want) {
 		t.Errorf("another module's router: got %+v", output.UnreadSites)
+	}
+}
+
+// SSA writes a constant into the code of the function that holds the registration, which no route's
+// hash covers, so the route's own hash takes the constants its handler holds.
+func TestRoutesHashesTheConstantsAHandlerHolds(t *testing.T) {
+	source := `package main
+
+import "net/http"
+
+func paged(size int, next http.Handler) http.Handler { return next }
+
+func main() {
+	first := http.HandlerFunc(parcels)
+	http.HandleFunc("/bare", parcels)
+	http.Handle("/converted", http.HandlerFunc(parcels))
+	http.Handle("/five", paged(5, first))
+	http.Handle("/nine", paged(9, first))
+	http.Handle("/five-again", paged(2+3, first))
+}
+` + handlerFuncs
+	constants := map[string]string{}
+	for _, site := range sitesOfSource(t, source) {
+		constants[site.Literals["path"]] = site.ConstantsHash
+	}
+
+	if constants["/bare"] != "" || constants["/converted"] != "" {
+		t.Errorf("a handler with no constant must hash none, got %v", constants)
+	}
+	if constants["/five"] == "" || constants["/five"] == constants["/nine"] || constants["/five"] != constants["/five-again"] {
+		t.Errorf("got %v", constants)
 	}
 }

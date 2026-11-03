@@ -1359,6 +1359,25 @@ def test_a_route_with_several_roots_hashes_their_fingerprints_together(
     assert combined == expected
 
 
+def test_a_route_whose_handler_holds_constants_hashes_apart_from_its_root_alone(
+    adapter: GoAdapter, shop: Path
+) -> None:
+    five, nine = "5" * 64, "9" * 64
+    routes = [
+        a_route("GET", "/a", handler="s.listing", handler_id=LISTING),
+        a_route("GET", "/b", handler="s.listing", handler_id=LISTING).model_copy(
+            update={"constants_hash": five}
+        ),
+        a_route("GET", "/c", handler="s.listing", handler_id=LISTING).model_copy(
+            update={"constants_hash": nine}
+        ),
+    ]
+
+    hashes = adapter.route_fingerprints(shop, routes, main_package=".").hashes
+
+    assert len({hashes["GET /a"], hashes["GET /b"], hashes["GET /c"]}) == 3
+
+
 def test_a_route_with_several_roots_has_no_fingerprint_when_one_names_no_function(
     adapter: GoAdapter,
 ) -> None:

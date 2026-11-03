@@ -94,6 +94,17 @@ def a_route(**changes: object) -> Route:
     return Route.model_validate({**GOOD_MODELS[Route], **changes})
 
 
+@pytest.mark.parametrize("constants_hash", ["", "0" * 64])
+def test_a_route_holds_no_constants_hash_or_one_digest(constants_hash: str) -> None:
+    assert a_route(constants_hash=constants_hash).constants_hash == constants_hash
+
+
+@pytest.mark.parametrize("constants_hash", ["5", "G" * 64, "0" * 65, "0" * 64 + "\n"])
+def test_a_route_refuses_a_constants_hash_that_is_no_digest(constants_hash: str) -> None:
+    with pytest.raises(ValidationError, match="constants_hash"):
+        a_route(constants_hash=constants_hash)
+
+
 def test_a_routes_key_is_its_method_and_path() -> None:
     assert a_route(method="POST", path="/orders/{id}").key == "POST /orders/{id}"
 

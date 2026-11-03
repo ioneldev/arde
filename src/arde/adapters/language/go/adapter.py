@@ -99,14 +99,14 @@ class GoAdapter(LanguageAdapter):
         self, repo: Path, routes: Sequence[Route], *, main_package: str
     ) -> RouteHashes:
         require_no_link_leaves(repo)
-        roots, unhashed = _roots_per_key(routes)
-        every_root = sorted({root for of_one_key in roots.values() for root in of_one_key})
+        hashed, unhashed = _hashed_route_per_key(routes)
+        every_root = sorted({root for route in hashed.values() for root in route.roots})
         reply = self._goinspect.fingerprints(repo, every_root, main_package=main_package)
         hashes: dict[str, str] = {}
-        for key, of_the_key in roots.items():
-            missing = [root for root in of_the_key if root not in reply.fingerprints]
+        for key, route in hashed.items():
+            missing = [root for root in route.roots if root not in reply.fingerprints]
             if not missing:
-                hashes[key] = _fingerprint_of(of_the_key, reply.fingerprints)
+                hashes[key] = _fingerprint_of(route, reply.fingerprints)
             elif any(root in reply.without_body for root in missing):
                 unhashed[key] = "no body"
             else:
@@ -141,32 +141,40 @@ def _is_go_source(path: Path) -> bool:
 
 # Two routes can share a key: "GET /{$}" and "GET /" both read as "GET /", and one path can sit on
 # two muxes. A hash of one handler would then stand for both, and an edit to the other would not
-# move it. Only the functions decide, so one function under two names still counts as one.
-def _roots_per_key(
+# move it. Only the functions and the handler's constants decide, so one function under two names
+# still counts as one.
+def _hashed_route_per_key(
     routes: Sequence[Route],
-) -> tuple[dict[str, tuple[str, ...]], dict[str, UnhashedReason]]:
+) -> tuple[dict[str, Route], dict[str, UnhashedReason]]:
     routes_by_key: dict[str, list[Route]] = {}
     for route in routes:
         routes_by_key.setdefault(route.key, []).append(route)
-    roots: dict[str, tuple[str, ...]] = {}
+    hashed: dict[str, Route] = {}
     unhashed: dict[str, UnhashedReason] = {}
     for key, sharing in routes_by_key.items():
         route = sharing[0]
-        if len({(other.handler_id or other.handler, other.roots) for other in sharing}) > 1:
+        if len({_what_is_hashed(other) for other in sharing}) > 1:
             unhashed[key] = "shared key"
         elif route.roots:
-            roots[key] = route.roots
+            hashed[key] = route
         else:
             unhashed[key] = "inline" if route.handler == INLINE_HANDLER else "no function"
-    return roots, unhashed
+    return hashed, unhashed
 
 
-# A route with one root keeps that root's own fingerprint, so a route whose handler names one
-# function hashes as it always has. Several roots hash their ids and fingerprints together.
-def _fingerprint_of(roots: tuple[str, ...], fingerprints: Mapping[str, str]) -> str:
-    if len(roots) == 1:
-        return fingerprints[roots[0]]
+def _what_is_hashed(route: Route) -> tuple[str, tuple[str, ...], str]:
+    return (route.handler_id or route.handler, route.roots, route.constants_hash)
+
+
+# A route with one root and no constant keeps that root's own fingerprint, so a route whose
+# handler is one function's name hashes as it always has. Otherwise the roots' ids and fingerprints
+# and the hash of the handler's constants are hashed together.
+def _fingerprint_of(route: Route, fingerprints: Mapping[str, str]) -> str:
+    if len(route.roots) == 1 and not route.constants_hash:
+        return fingerprints[route.roots[0]]
     combined = hashlib.sha256()
-    for root in sorted(roots):
+    for root in sorted(route.roots):
         combined.update(f"{root}\x00{fingerprints[root]}\x00".encode())
+    if route.constants_hash:
+        combined.update(f"constants\x00{route.constants_hash}\x00".encode())
     return combined.hexdigest()

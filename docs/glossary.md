@@ -2,7 +2,7 @@
 
 Terms as ARDE uses them.
 
-**Anchor**: The one function a route's docs belong on, held in `Route.handler_id`: the handler when every call around it only wraps it, or else the outermost factory of the service that makes it. A route with no single such function has none, and gets facts and docs but no comment block.
+**Anchor**: The one function a route's docs belong on, held in `Route.handler_id`: the handler when every call around it only wraps it, or else the outermost factory of the service that makes it. A route with no single such function has none, and gets facts and docs but no comment block. Neither has a route whose different handler resolves to the same function as another route's, and `Route.shares_anchor_with` names those routes.
 
 **Directive**: A comment that a compiler or a tool reads, such as `//go:build`, `//go:embed`, a cgo preamble or an example's `// Output:` line. Changing one can change behaviour, so the comment-only rule never takes one out of the comparison: it takes out only ordinary comment lines, a whole line that starts `// ` and is none of these, and the tags ARDE adds. A line like `//go:build` has no space after the slashes, which is how most directives are written. The Go tools also read `// +build`, `// #cgo` and `// Output:` with a space, so those are directives too.
 
@@ -24,6 +24,6 @@ Terms as ARDE uses them.
 
 **Workspace**: The folder ARDE keeps for one target repo under `ARDE_HOME`. It holds the profile, the wiki, the snapshot and one folder per run. Deleting it makes the next run a full first run.
 
-**Fingerprint**: A hash of every function a route's handler names, its roots in `Route.roots`, and of everything those reach in the call graph. The roots are the factory, the middleware and the handler alike. It changes when any of them changes, so an edit deep in a helper flags every route that uses it. A route with one root keeps that root's own hash.
+**Fingerprint**: A hash of every function a route's handler names, its roots in `Route.roots`, and of everything those reach in the call graph. The roots are the factory, the middleware and the handler alike. It changes when any of them changes, so an edit deep in a helper flags every route that uses it. It also covers the constants the handler expression holds, in `Route.constants_hash`. A route with one root and no constant keeps that root's own hash.
 
 **Repair round**: One pass of sending a failed check's findings to the agent that owns the fix, then running the checks again. A run gets at most two.

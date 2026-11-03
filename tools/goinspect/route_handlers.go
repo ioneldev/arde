@@ -31,6 +31,8 @@ type handlerReading struct {
 	// identity is what the handler holds, so that two routes sharing an anchor can tell whether
 	// they share a handler.
 	identity string
+	// constants is a hash of the constants the handler holds, or empty when it holds none.
+	constants string
 }
 
 // handlerReader follows a registration's handler through what the type checker knows.
@@ -77,7 +79,8 @@ func (reader handlerReader) read(registered registration) handlerReading {
 		return handlerReading{}
 	}
 	innermost := reader.innermost(handler)
-	reading := handlerReading{isMount: reader.isMount(innermost), identity: reader.identityOf(registered.parts())}
+	held := reader.heldBy(registered.parts())
+	reading := handlerReading{isMount: reader.isMount(innermost), identity: held.identity, constants: held.constants}
 	if slices.ContainsFunc(registered.parts(), holdsAFunctionLiteral) {
 		return reading
 	}
@@ -92,12 +95,19 @@ func (reader handlerReader) read(registered registration) handlerReading {
 	return reading
 }
 
-// identityOf tells handlers apart by what they hold and not by how they are written: each function
-// by its id, each variable by where it is declared and each constant by its value, in order. So
-// listItems and http.HandlerFunc(listItems) read the same, and logged(listItems) and
-// logged(listOrders) do not.
-func (reader handlerReader) identityOf(parts []ast.Expr) string {
-	identity := sha256.New()
+// heldByAHandler is what a handler holds. Its identity tells handlers apart by that and not by how
+// they are written: each function by its id, each variable by where it is declared and each
+// constant by its value, in order. So listItems and http.HandlerFunc(listItems) read the same, and
+// logged(listItems) and logged(listOrders) do not. The constants alone go into the route's hash,
+// because SSA writes them into the code of the function that holds the registration, which no
+// route's hash covers, so paged(5, h) and paged(9, h) would hash the same.
+type heldByAHandler struct {
+	identity  string
+	constants string
+}
+
+func (reader handlerReader) heldBy(parts []ast.Expr) heldByAHandler {
+	identity, constants, holdsAConstant := sha256.New(), sha256.New(), false
 	for _, part := range parts {
 		ast.Inspect(part, func(node ast.Node) bool {
 			expression, isExpression := node.(ast.Expr)
@@ -106,6 +116,8 @@ func (reader handlerReader) identityOf(parts []ast.Expr) string {
 			}
 			if value := reader.info.Types[expression].Value; value != nil {
 				fmt.Fprintf(identity, "constant %s\x00", value.ExactString())
+				fmt.Fprintf(constants, "%s\x00", value.ExactString())
+				holdsAConstant = true
 				return false
 			}
 			if identifier, isIdentifier := expression.(*ast.Ident); isIdentifier {
@@ -114,7 +126,11 @@ func (reader handlerReader) identityOf(parts []ast.Expr) string {
 			return true
 		})
 	}
-	return hex.EncodeToString(identity.Sum(nil))
+	held := heldByAHandler{identity: hex.EncodeToString(identity.Sum(nil))}
+	if holdsAConstant {
+		held.constants = hex.EncodeToString(constants.Sum(nil))
+	}
+	return held
 }
 
 // identityOfAName leaves out a type and a package, which hold no part of the handler.

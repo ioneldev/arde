@@ -109,6 +109,8 @@ class RouteSite(CallMatch):
     # A hash of what the handler holds: the functions it names, the variables it reads and the
     # constants it passes. Two sites with one anchor and two identities register two handlers.
     handler_identity: str
+    # A hash of the constants the handler holds, such as the 5 in paged(5, h), or "" for none.
+    constants_hash: str
 
 
 class SourcePlace(Frozen):

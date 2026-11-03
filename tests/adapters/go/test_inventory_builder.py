@@ -69,6 +69,7 @@ def a_site(
         handler_line=None,
         roots=(),
         handler_identity="",
+        constants_hash="",
     )
 
 
@@ -320,6 +321,7 @@ def test_a_route_keeps_where_it_is_registered_and_what_resolved_its_handler() ->
         handler_line=30,
         roots=("(*example.com/depot.desk).list", "example.com/depot.logged"),
         handler_identity="3f",
+        constants_hash="a" * 64,
     )
 
     assert routes_of(site) == (
@@ -333,6 +335,7 @@ def test_a_route_keeps_where_it_is_registered_and_what_resolved_its_handler() ->
             handler_file="web/desk.go",
             handler_line=30,
             roots=("(*example.com/depot.desk).list", "example.com/depot.logged"),
+            constants_hash="a" * 64,
         ),
     )
 

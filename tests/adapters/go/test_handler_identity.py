@@ -539,3 +539,39 @@ def test_a_mux_behind_middleware_or_through_its_serve_method_is_a_mount_and_no_r
     routes = routes_by_key(adapter, a_service(tmp_path, MOUNTS))
 
     assert sorted(routes) == ["GET /a/x", "GET /b/x", "GET /c/x", "GET /d/x", "GET /e/x"]
+
+
+# The reviewer's h4: the page size is a constant at the registration, in no function's code.
+PAGED = """package main
+
+import (
+	"net/http"
+	"os"
+)
+
+func paged(size int, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Page-Size", string(rune('0'+size)))
+		next.ServeHTTP(w, r)
+	})
+}
+
+func orders(w http.ResponseWriter, r *http.Request) { w.Write([]byte("orders")) }
+
+func main() {
+	mux := http.NewServeMux()
+	mux.Handle("GET /orders", paged(5, http.HandlerFunc(orders)))
+	mux.HandleFunc("GET /plain", orders)
+	http.ListenAndServe(":"+os.Getenv("PORT"), mux)
+}
+"""
+
+
+def test_an_edit_to_a_constant_the_handler_holds_moves_its_route(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(tmp_path, PAGED)
+
+    moved = moved_by(adapter, repo, old="paged(5,", new="paged(9,")
+
+    assert moved == {"GET /orders"}
