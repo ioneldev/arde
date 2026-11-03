@@ -187,22 +187,22 @@ class GoinspectClient:
         arguments = ("compare", "--old", str(old), "--new", str(new))
         return self._ask(_Question(arguments, CompareReply, cwd=old))
 
-    def declarations(self, root: Path) -> DeclarationsReply:
-        resolved = root.resolve()
+    def declarations(self, repo: Path) -> DeclarationsReply:
+        resolved = repo.resolve()
         return self._ask(
             _Question(("declarations", str(resolved)), DeclarationsReply, cwd=resolved)
         )
 
-    def matches(self, root: Path, patterns: Sequence[ExtractionPattern]) -> MatchReply:
-        resolved = root.resolve()
+    def matches(self, repo: Path, patterns: Sequence[ExtractionPattern]) -> MatchReply:
+        resolved = repo.resolve()
         with _json_file(_as_plain_data(patterns)) as patterns_file:
             arguments = ("match", "--patterns", str(patterns_file), str(resolved))
             return self._ask(_Question(arguments, MatchReply, cwd=resolved))
 
     def routes(
-        self, root: Path, patterns: Sequence[ExtractionPattern], *, main_package: str
+        self, repo: Path, patterns: Sequence[ExtractionPattern], *, main_package: str
     ) -> RoutesReply:
-        resolved = root.resolve()
+        resolved = repo.resolve()
         with _json_file(_as_plain_data(patterns)) as patterns_file:
             arguments = (
                 "routes",
@@ -216,11 +216,11 @@ class GoinspectClient:
 
     # A file, because an id can hold a comma: (*example.com/x.pair[K, V]).serve.
     def fingerprints(
-        self, root: Path, roots: Sequence[str], *, main_package: str
+        self, repo: Path, roots: Sequence[str], *, main_package: str
     ) -> FingerprintsReply:
         if not roots:
             return FingerprintsReply(fingerprints={}, reach={}, unresolved=(), without_body=())
-        resolved = root.resolve()
+        resolved = repo.resolve()
         with _json_file(list(roots)) as roots_file:
             arguments = (
                 "fingerprints",

@@ -69,8 +69,8 @@ READ_A_CONSTANT_PATH = (
     f"{DO_NOT_NARROW} If the path is computed or comes from a table, this repo cannot be "
     "documented yet: report that."
 )
-USE_A_PATH_PATTERN = (
-    "ARDE reads route patterns of the form [METHOD ]/path, with no host. Register the route "
+REGISTER_A_PLAIN_PATH = (
+    "ARDE reads a registered path of the form [METHOD ]/path, with no host. Register the route "
     f"that way, then run again. {DO_NOT_NARROW}"
 )
 PREFIXES_ARE_NOT_RESOLVED = (
@@ -268,15 +268,15 @@ def _route_order(route: Route) -> tuple[str, str, str, str, str, int]:
 
 
 def _route_from(site: RouteSite) -> Route:
-    pattern = site.literals.get("path")
-    if pattern is None:
+    registered = site.literals.get("path")
+    if registered is None:
         raise RouteNotUnderstoodError(site, _unknown_path(site), next_action=READ_A_CONSTANT_PATH)
-    method, path = _split_pattern(pattern, callee=site.callee)
+    method, path = _method_and_path(registered, callee=site.callee)
     if not path.startswith("/"):
         raise RouteNotUnderstoodError(
             site,
             f"the path `{one_line(path, _SHOWN_LENGTH)}` must start with /, after any method",
-            next_action=USE_A_PATH_PATTERN,
+            next_action=REGISTER_A_PLAIN_PATH,
         )
     return _route(site, method=method, path=path.removesuffix("{$}"))
 
@@ -306,13 +306,14 @@ def _route(site: RouteSite, *, method: str, path: str) -> Route:
         raise RouteNotUnderstoodError(site, problem, next_action=USE_A_READABLE_ROUTE) from None
 
 
-# The method is the start of the pattern, as in "GET /items", or else the last part of the call,
-# as in r.GET("/items"). A call that names no verb, such as mux.HandleFunc, accepts any method.
-def _split_pattern(pattern: str, *, callee: str) -> tuple[str, str]:
-    with_method = _METHOD_THEN_PATH.fullmatch(pattern)
+# The method is the start of the registered path, as in "GET /items", or else the last part of the
+# call, as in r.GET("/items"). A call that names no verb, such as mux.HandleFunc, accepts any
+# method.
+def _method_and_path(registered: str, *, callee: str) -> tuple[str, str]:
+    with_method = _METHOD_THEN_PATH.fullmatch(registered)
     if with_method:
         return with_method.group(1), with_method.group(2)
-    return _verb_ending(callee), pattern
+    return _verb_ending(callee), registered
 
 
 def _verb_ending(callee: str) -> str:
