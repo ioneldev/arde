@@ -144,12 +144,15 @@ func main() {
 """
 
 
-def test_a_factory_that_falls_back_on_a_handler_is_the_anchor(
+# It reads like middleware, so the docs go on the fallback. For one route that leaves the spec
+# right, because swag reads only the comment above the function.
+def test_a_single_route_whose_factory_falls_back_on_a_handler_anchors_at_the_fallback(
     adapter: GoAdapter, tmp_path: Path
 ) -> None:
     route = routes_by_key(adapter, a_service(tmp_path, PAGES))["GET /"]
 
-    assert (route.handler, route.handler_id) == ("spa", "example.com/served.spa")
+    assert (route.handler, route.handler_id) == ("notFound", "example.com/served.notFound")
+    assert route.roots == ("example.com/served.notFound", "example.com/served.spa")
 
 
 def test_a_mux_given_to_a_function_that_does_not_serve_it_is_a_route_of_that_function(
@@ -359,3 +362,125 @@ def test_a_value_that_serves_requests_itself_is_anchored_at_its_serve_method(
 
     serve = "(*example.com/served.itemsHandler).ServeHTTP"
     assert (route.handler, route.handler_id, route.roots) == ("itemsHandler", serve, (serve,))
+
+
+# The reviewer's h1, in both spellings, and h3: two routes, one anchor and two handlers.
+def logging(*, call: str) -> str:
+    return f"""package main
+
+import (
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+)
+
+func logged(next http.HandlerFunc) http.HandlerFunc {{
+	return func(w http.ResponseWriter, r *http.Request) {{
+		log.Println(r.Method, r.URL.Path)
+		{call}
+	}}
+}}
+
+func listItems(w http.ResponseWriter, r *http.Request)  {{ fmt.Fprint(w, "items") }}
+func listOrders(w http.ResponseWriter, r *http.Request) {{ fmt.Fprint(w, "orders") }}
+
+func main() {{
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /items", logged(listItems))
+	mux.HandleFunc("GET /orders", logged(listOrders))
+	http.ListenAndServe(":"+os.Getenv("PORT"), mux)
+}}
+"""
+
+
+@pytest.mark.parametrize("call", ["next(w, r)", "next.ServeHTTP(w, r)"])
+def test_middleware_anchors_each_route_at_its_own_handler_in_either_spelling(
+    adapter: GoAdapter, tmp_path: Path, call: str
+) -> None:
+    routes = routes_by_key(adapter, a_service(tmp_path, logging(call=call)))
+
+    assert routes["GET /items"].handler_id == "example.com/served.listItems"
+    assert routes["GET /orders"].handler_id == "example.com/served.listOrders"
+
+
+def test_middleware_that_keeps_its_handler_in_a_struct_anchors_at_the_handler(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    route = routes_by_key(adapter, a_service(tmp_path, HANDLER_TYPES))["GET /orders"]
+
+    assert route.handler_id == "example.com/served.listOrders"
+
+
+TWO_APPS = """package main
+
+import (
+	"net/http"
+	"os"
+	"strings"
+)
+
+func spa(pages map[string]string, fallback http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			fallback.ServeHTTP(w, r)
+			return
+		}
+		w.Write([]byte(pages["index"]))
+	})
+}
+
+func notFound(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }
+
+func main() {
+	mux := http.NewServeMux()
+	mux.Handle("GET /", spa(map[string]string{"index": "shop"}, http.HandlerFunc(notFound)))
+	mux.Handle("GET /admin/", spa(map[string]string{"index": "admin"}, http.HandlerFunc(notFound)))
+	mux.Handle("GET /help", http.HandlerFunc(notFound))
+	mux.HandleFunc("GET /missing", notFound)
+	http.ListenAndServe(":"+os.Getenv("PORT"), mux)
+}
+"""
+
+
+def test_routes_whose_different_handlers_share_an_anchor_get_none_and_name_each_other(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    routes = routes_by_key(adapter, a_service(tmp_path, TWO_APPS))
+
+    assert {key: route.handler_id for key, route in routes.items()} == {
+        "GET /": None,
+        "GET /admin/": None,
+        "GET /help": None,
+        "GET /missing": None,
+    }
+    assert routes["GET /"].shares_anchor_with == ("GET /admin/", "GET /help", "GET /missing")
+    assert routes["GET /admin/"].shares_anchor_with == ("GET /", "GET /help", "GET /missing")
+
+
+ONE_HANDLER_TWICE = """package main
+
+import (
+	"net/http"
+	"os"
+)
+
+func notFound(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }
+
+func main() {
+	mux := http.NewServeMux()
+	mux.Handle("GET /help", http.HandlerFunc(notFound))
+	mux.HandleFunc("GET /missing", notFound)
+	http.ListenAndServe(":"+os.Getenv("PORT"), mux)
+}
+"""
+
+
+def test_one_handler_at_two_paths_keeps_its_anchor(adapter: GoAdapter, tmp_path: Path) -> None:
+    routes = routes_by_key(adapter, a_service(tmp_path, ONE_HANDLER_TWICE))
+
+    assert {key: route.handler_id for key, route in routes.items()} == {
+        "GET /help": "example.com/served.notFound",
+        "GET /missing": "example.com/served.notFound",
+    }
+    assert routes["GET /help"].shares_anchor_with == ()

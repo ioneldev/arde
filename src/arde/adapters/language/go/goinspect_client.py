@@ -106,6 +106,9 @@ class RouteSite(CallMatch):
     # Every function of the module the handler names, which the route's fingerprint covers. Empty
     # when there is no handler_id.
     roots: tuple[str, ...]
+    # A hash of what the handler holds: the functions it names, the variables it reads and the
+    # constants it passes. Two sites with one anchor and two identities register two handlers.
+    handler_identity: str
 
 
 class SourcePlace(Frozen):

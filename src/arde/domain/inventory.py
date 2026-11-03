@@ -19,6 +19,7 @@ DROPPED_LIMIT = 500
 FUNCTION_LIMIT = 1000
 DECLARATION_LIMIT = FILE_LIMIT + NAME_LIMIT + 10
 PATTERN_LIMIT = 600
+ROUTE_KEY_LIMIT = NAME_LIMIT + 1 + PATH_LIMIT
 
 NameText = Annotated[SingleLine, Field(max_length=NAME_LIMIT)]
 TypeText = Annotated[SingleLine, Field(max_length=TYPE_LIMIT)]
@@ -29,6 +30,7 @@ DroppedLine = Annotated[SingleLine, Field(max_length=DROPPED_LIMIT)]
 FunctionText = Annotated[SingleLine, Field(max_length=FUNCTION_LIMIT)]
 DeclarationText = Annotated[SingleLine, Field(max_length=DECLARATION_LIMIT)]
 PatternText = Annotated[SingleLine, Field(max_length=PATTERN_LIMIT)]
+RouteKeyText = Annotated[SingleLine, Field(max_length=ROUTE_KEY_LIMIT)]
 CodeText = Annotated[ErrorCodeName, Field(max_length=NAME_LIMIT)]
 
 # What Route.handler holds when the registration gives no plain name to show, such as a function
@@ -45,14 +47,18 @@ class Route(Frozen):
     line: int
     # The one function the route's docs belong on, and where it is declared: the handler, or the
     # factory that makes it. None when no single function fits, as with a function written in
-    # place, a local variable or a field.
+    # place, a local variable or a field, or when shares_anchor_with names other routes.
     handler_id: FunctionText | None = None
     handler_file: FileText | None = None
     handler_line: int | None = None
     # Every function of the service the handler expression names, handler_id among them: the
     # factory, the middleware and a function handed over as a value. The fingerprint covers them
-    # all. Empty when handler_id is None.
+    # all. Empty when no function fits, and kept when the anchor is shared.
     roots: tuple[FunctionText, ...] = ()
+    # The other routes whose different handlers resolve to the function that would be this
+    # route's anchor. One comment block would merge their operations in the spec, so none of
+    # them has a handler_id.
+    shares_anchor_with: tuple[RouteKeyText, ...] = ()
 
     @property
     def key(self) -> str:

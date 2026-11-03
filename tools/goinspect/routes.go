@@ -63,6 +63,9 @@ type routeSite struct {
 	HandlerFile *string  `json:"handler_file"`
 	HandlerLine *int     `json:"handler_line"`
 	Roots       []string `json:"roots"`
+	// HandlerIdentity is a hash of what the handler holds: two sites with one anchor and a
+	// different identity register different handlers.
+	HandlerIdentity string `json:"handler_identity"`
 }
 
 // wrapperCall is a call inside a function that a pattern of the same kind matches. It hands on what
@@ -559,7 +562,7 @@ func (call routeCall) otherPositions() []int {
 
 // siteAt leaves the path to the caller, which knows what the call registers.
 func (reader routeReader) siteAt(call routeCall, handler handlerReading) routeSite {
-	site := routeSite{callMatch: reader.matchAt(call), Roots: []string{}}
+	site := routeSite{callMatch: reader.matchAt(call), Roots: []string{}, HandlerIdentity: handler.identity}
 	reader.nameTheAnchor(&site, handler)
 	return site
 }

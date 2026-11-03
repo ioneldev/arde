@@ -24,6 +24,8 @@ type siteOutput struct {
 	HandlerFile *string           `json:"handler_file"`
 	HandlerLine *int              `json:"handler_line"`
 	Roots       []string          `json:"roots"`
+	// HandlerIdentity is what the handler holds, whatever its spelling.
+	HandlerIdentity string `json:"handler_identity"`
 }
 
 type placeOutput struct {
@@ -678,11 +680,11 @@ func TestRoutesAnchorsAtTheFactoryAndRootsAtEveryFunctionTheHandlerNames(t *test
 		"a factory given a dependency": {
 			"handleList(d, renderError)", "handleList", "handleList", []string{"handleList", "renderError"},
 		},
-		"a factory that calls its handler itself": {
-			"spa(parcels)", "spa", "spa", []string{"parcels", "spa"},
+		"a function that falls back on its handler": {
+			"spa(parcels)", "parcels", "parcels", []string{"parcels", "spa"},
 		},
 		"an adapter that calls a handler that returns an error": {
-			"adapted(d.failing)", "adapted", "adapted", []string{"(*example.com/depot.desk).failing", "adapted"},
+			"adapted(d.failing)", "(*example.com/depot.desk).failing", "d.failing", []string{"(*example.com/depot.desk).failing", "adapted"},
 		},
 		"a function given two handlers": {
 			"either(parcels, depots)", "either", "either", []string{"depots", "either", "parcels"},
@@ -1984,6 +1986,114 @@ func TestRoutesAnchorsAValueThatServesItselfAtItsServeHTTP(t *testing.T) {
 		}
 		if !reflect.DeepEqual(site.Roots, test.wantRoots) {
 			t.Errorf("%s: roots %v, want %v", name, site.Roots, test.wantRoots)
+		}
+	}
+}
+
+// Middleware serves through the handler it is given however it is written, so each spelling anchors
+// at the handler inside, and a function that only looks at its handler is a factory.
+func TestRoutesAnchorsAtTheHandlerInsideMiddlewareHoweverItServesThroughIt(t *testing.T) {
+	cases := map[string]struct {
+		argument   string
+		wantAnchor string
+	}{
+		"calling it":                    {"called(parcels)", "parcels"},
+		"calling its ServeHTTP":         {"served(http.HandlerFunc(parcels))", "parcels"},
+		"taking its ServeHTTP":          {"passed(http.HandlerFunc(parcels))", "parcels"},
+		"handing its ServeHTTP on":      {"handedOn(http.HandlerFunc(parcels))", "parcels"},
+		"keeping it in a handler":       {"secured(http.HandlerFunc(parcels))", "parcels"},
+		"keeping it in a handler value": {"kept(http.HandlerFunc(parcels))", "parcels"},
+		"only looking at it":            {"described(http.HandlerFunc(parcels))", "described"},
+	}
+
+	for name, test := range cases {
+		source := `package main
+
+import (
+	"fmt"
+	"net/http"
+)
+
+func called(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { next(w, r) }
+}
+
+func served(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+}
+
+func passed(next http.Handler) http.Handler { return http.HandlerFunc(next.ServeHTTP) }
+
+func timed(next http.HandlerFunc) http.HandlerFunc { return next }
+
+func handedOn(next http.Handler) http.Handler { return timed(next.ServeHTTP) }
+
+type headerMiddleware struct{ next http.Handler }
+
+func (m *headerMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) { m.next.ServeHTTP(w, r) }
+
+func secured(next http.Handler) http.Handler { return &headerMiddleware{next: next} }
+
+type plainMiddleware struct{ next http.Handler }
+
+func (m plainMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) { m.next.ServeHTTP(w, r) }
+
+func kept(next http.Handler) http.Handler { return plainMiddleware{next} }
+
+func described(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, next) })
+}
+
+func main() {
+	http.Handle("/x", ` + test.argument + `)
+}
+` + handlerFuncs
+		site := onlySite(t, source)
+
+		if site.HandlerID == nil || *site.HandlerID != depotID(test.wantAnchor) {
+			t.Errorf("%s: anchor %v, want %s", name, site.HandlerID, test.wantAnchor)
+		}
+	}
+}
+
+// Two routes that share an anchor share their docs, so the handlers must be told apart by what
+// they hold: the functions they name, the variables they read and the constants they pass.
+func TestRoutesGivesTwoSpellingsOfOneHandlerOneIdentity(t *testing.T) {
+	source := `package main
+
+import "net/http"
+
+func logged(next http.HandlerFunc) http.HandlerFunc { return next }
+
+func paged(size int, next http.Handler) http.Handler { return next }
+
+func main() {
+	first, second := http.HandlerFunc(parcels), http.HandlerFunc(depots)
+	http.HandleFunc("/bare", parcels)
+	http.Handle("/converted", http.HandlerFunc(parcels))
+	http.HandleFunc("/logged-parcels", logged(parcels))
+	http.HandleFunc("/logged-depots", logged(depots))
+	http.Handle("/five", paged(5, first))
+	http.Handle("/nine", paged(9, first))
+	http.Handle("/five-again", paged(2+3, first))
+	http.Handle("/second", paged(5, second))
+}
+` + handlerFuncs
+	identity := map[string]string{}
+	for _, site := range sitesOfSource(t, source) {
+		identity[site.Literals["path"]] = site.HandlerIdentity
+	}
+
+	same := [][2]string{{"/bare", "/converted"}, {"/five", "/five-again"}}
+	different := [][2]string{{"/bare", "/logged-parcels"}, {"/logged-parcels", "/logged-depots"}, {"/five", "/nine"}, {"/five", "/second"}}
+	for _, pair := range same {
+		if identity[pair[0]] != identity[pair[1]] || identity[pair[0]] == "" {
+			t.Errorf("%s and %s: want one identity, got %v", pair[0], pair[1], identity)
+		}
+	}
+	for _, pair := range different {
+		if identity[pair[0]] == identity[pair[1]] {
+			t.Errorf("%s and %s: want two identities", pair[0], pair[1])
 		}
 	}
 }

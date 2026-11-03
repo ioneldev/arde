@@ -142,7 +142,8 @@ class NoRoutesError(ProfileProblem):
 
 def build_inventory(reading: SourceReading) -> Inventory:
     _stop_where_a_path_changes(reading.service)
-    routes = _one_row_per_route(_route_from(site) for site in reading.service.sites)
+    rows = _one_row_per_route(_ReadRoute.of(site) for site in reading.service.sites)
+    routes = _without_anchors_shared_by_accident(rows)
     if not routes:
         raise NoRoutesError
     scope = _Scope.of(reading)
@@ -309,15 +310,59 @@ def _of_kind(matches: Iterable[CallMatch], kind: str) -> list[CallMatch]:
     return [match for match in matches if match.kind == kind]
 
 
-# One handler registered twice under one key is one route, at its first place. Two functions under
+class _ReadRoute(NamedTuple):
+    route: Route
+    # What the handler holds, so that two spellings of one handler compare equal.
+    identity: str
+
+    @classmethod
+    def of(cls, site: RouteSite) -> "_ReadRoute":
+        return cls(_route_from(site), site.handler_identity)
+
+
+# One handler registered twice under one key is one route, at its first place. Two handlers under
 # one key stay two rows, so a mounted router's routes do not merge away, and so do two handlers
 # with one anchor and different middleware, whose fingerprints differ.
-def _one_row_per_route(routes: Iterable[Route]) -> tuple[Route, ...]:
-    rows: dict[tuple[str, str, str, tuple[str, ...]], Route] = {}
-    for route in sorted(routes, key=_route_order):
+def _one_row_per_route(read: Iterable[_ReadRoute]) -> list[_ReadRoute]:
+    rows: dict[tuple[str, str, str, tuple[str, ...], str], _ReadRoute] = {}
+    for one in sorted(read, key=lambda one: _route_order(one.route)):
+        route = one.route
         handler = route.handler_id or route.handler
-        rows.setdefault((route.method, route.path, handler, route.roots), route)
-    return tuple(rows.values())
+        rows.setdefault((route.method, route.path, handler, route.roots, one.identity), one)
+    return list(rows.values())
+
+
+# One comment block on the shared function would merge every such route into one operation in the
+# spec, so when handlers that differ resolve to one anchor, none of them keeps it. One handler at
+# two paths keeps it. The roots stay, because the hash does not need an anchor.
+def _without_anchors_shared_by_accident(rows: list[_ReadRoute]) -> tuple[Route, ...]:
+    by_anchor: dict[str, list[_ReadRoute]] = {}
+    for row in rows:
+        if row.route.handler_id is not None:
+            by_anchor.setdefault(row.route.handler_id, []).append(row)
+    return tuple(
+        _without_its_anchor(row, sharing=by_anchor[row.route.handler_id])
+        if row.route.handler_id is not None
+        and _hold_different_handlers(by_anchor[row.route.handler_id])
+        else row.route
+        for row in rows
+    )
+
+
+def _hold_different_handlers(sharing: list[_ReadRoute]) -> bool:
+    return len({row.identity for row in sharing}) > 1
+
+
+def _without_its_anchor(row: _ReadRoute, *, sharing: list[_ReadRoute]) -> Route:
+    others = sorted({other.route.key for other in sharing if other is not row})
+    return row.route.model_copy(
+        update={
+            "handler_id": None,
+            "handler_file": None,
+            "handler_line": None,
+            "shares_anchor_with": tuple(others),
+        }
+    )
 
 
 def _route_order(route: Route) -> tuple[str, str, str, str, str, int]:

@@ -68,6 +68,7 @@ def a_site(
         handler_file=None,
         handler_line=None,
         roots=(),
+        handler_identity="",
     )
 
 
@@ -318,6 +319,7 @@ def test_a_route_keeps_where_it_is_registered_and_what_resolved_its_handler() ->
         handler_file="web/desk.go",
         handler_line=30,
         roots=("(*example.com/depot.desk).list", "example.com/depot.logged"),
+        handler_identity="3f",
     )
 
     assert routes_of(site) == (
@@ -369,6 +371,41 @@ def test_two_functions_at_one_key_stay_two_routes_even_when_their_text_is_the_sa
     found = routes_of(resolved_site("GET /x", "a.List"), resolved_site("GET /x", "b.List"))
 
     assert [route.handler_id for route in found] == ["a.List", "b.List"]
+
+
+def handled_by_not_found(path: str, *, holding: str, line: int = 1) -> RouteSite:
+    site = resolved_site(path, "a.notFound", line=line, roots=("a.notFound", "a.spa"))
+    return site.model_copy(update={"handler_identity": holding})
+
+
+# Their docs would merge into one operation in the spec, so neither gets the anchor, and the hash,
+# which needs no anchor, keeps its roots.
+def test_routes_whose_handlers_differ_and_share_an_anchor_have_none_and_name_each_other() -> None:
+    routes = routes_of(
+        handled_by_not_found("GET /", holding="shop"),
+        handled_by_not_found("GET /admin/", holding="admin", line=2),
+    )
+
+    assert [
+        (route.key, route.handler_id, route.handler_file, route.handler_line, route.roots)
+        for route in routes
+    ] == [
+        ("GET /", None, None, None, ("a.notFound", "a.spa")),
+        ("GET /admin/", None, None, None, ("a.notFound", "a.spa")),
+    ]
+    assert [route.shares_anchor_with for route in routes] == [("GET /admin/",), ("GET /",)]
+
+
+def test_one_handler_at_two_paths_keeps_its_anchor() -> None:
+    routes = routes_of(
+        handled_by_not_found("GET /a", holding="same"),
+        handled_by_not_found("GET /b", holding="same", line=2),
+    )
+
+    assert [(route.handler_id, route.shares_anchor_with) for route in routes] == [
+        ("a.notFound", ()),
+        ("a.notFound", ()),
+    ]
 
 
 def test_the_order_of_routes_does_not_depend_on_the_order_of_the_sites() -> None:

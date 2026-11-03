@@ -2,9 +2,13 @@ package main
 
 import (
 	"cmp"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
+	"io"
 	"slices"
 )
 
@@ -24,6 +28,9 @@ type handlerReading struct {
 	anchor  handlerRoot
 	roots   []*types.Func
 	isMount bool
+	// identity is what the handler holds, so that two routes sharing an anchor can tell whether
+	// they share a handler.
+	identity string
 }
 
 // handlerReader follows a registration's handler through what the type checker knows.
@@ -70,7 +77,7 @@ func (reader handlerReader) read(registered registration) handlerReading {
 		return handlerReading{}
 	}
 	innermost := reader.innermost(handler)
-	reading := handlerReading{isMount: reader.isMount(innermost)}
+	reading := handlerReading{isMount: reader.isMount(innermost), identity: reader.identityOf(registered.parts())}
 	if slices.ContainsFunc(registered.parts(), holdsAFunctionLiteral) {
 		return reading
 	}
@@ -83,6 +90,44 @@ func (reader handlerReader) read(registered registration) handlerReading {
 		reading.roots = sortedByID(slices.Concat(named, reader.methodsHandedToAnInterface(registered)))
 	}
 	return reading
+}
+
+// identityOf tells handlers apart by what they hold and not by how they are written: each function
+// by its id, each variable by where it is declared and each constant by its value, in order. So
+// listItems and http.HandlerFunc(listItems) read the same, and logged(listItems) and
+// logged(listOrders) do not.
+func (reader handlerReader) identityOf(parts []ast.Expr) string {
+	identity := sha256.New()
+	for _, part := range parts {
+		ast.Inspect(part, func(node ast.Node) bool {
+			expression, isExpression := node.(ast.Expr)
+			if !isExpression {
+				return true
+			}
+			if value := reader.info.Types[expression].Value; value != nil {
+				fmt.Fprintf(identity, "constant %s\x00", value.ExactString())
+				return false
+			}
+			if identifier, isIdentifier := expression.(*ast.Ident); isIdentifier {
+				io.WriteString(identity, reader.identityOfAName(identifier))
+			}
+			return true
+		})
+	}
+	return hex.EncodeToString(identity.Sum(nil))
+}
+
+// identityOfAName leaves out a type and a package, which hold no part of the handler.
+func (reader handlerReader) identityOfAName(identifier *ast.Ident) string {
+	switch named := reader.info.Uses[identifier].(type) {
+	case *types.Func:
+		return "function " + functionID(named) + "\x00"
+	case *types.Var:
+		return "variable " + reader.service.packages[0].Fset.Position(named.Pos()).String() + "\x00"
+	case *types.Builtin, *types.Nil:
+		return named.Name() + "\x00"
+	}
+	return ""
 }
 
 // alsoRootedAt adds functions to the roots of a handler that has an anchor. One with no anchor has
@@ -135,7 +180,7 @@ func (reader handlerReader) wrappedBy(call *ast.CallExpr) (ast.Expr, bool) {
 	if !reader.service.holds(target) {
 		return wrapped, true
 	}
-	return wrapped, reader.bodies.passesOn(target, parameterAt(target, positions[0]))
+	return wrapped, reader.bodies.wraps(target, parameterAt(target, positions[0]))
 }
 
 func (reader handlerReader) handlerPositionsOf(call *ast.CallExpr) []int {
@@ -191,14 +236,20 @@ func (reader handlerReader) serveMethodOfAValue(innermost ast.Expr) handlerRoot 
 // nameOfAValue shows a composite literal by its type, as `itemsHandler` for &itemsHandler{...}, and
 // anything else as it is written.
 func nameOfAValue(value ast.Expr) ast.Expr {
-	expression := ast.Unparen(value)
-	if address, isAddress := expression.(*ast.UnaryExpr); isAddress && address.Op == token.AND {
-		expression = ast.Unparen(address.X)
-	}
-	if literal, isLiteral := expression.(*ast.CompositeLit); isLiteral && literal.Type != nil {
+	if literal := compositeBehind(value); literal != nil && literal.Type != nil {
 		return literal.Type
 	}
 	return value
+}
+
+// compositeBehind is the composite literal an expression is, or takes the address of.
+func compositeBehind(expression ast.Expr) *ast.CompositeLit {
+	expression = ast.Unparen(expression)
+	if address, isAddress := expression.(*ast.UnaryExpr); isAddress && address.Op == token.AND {
+		expression = ast.Unparen(address.X)
+	}
+	literal, _ := expression.(*ast.CompositeLit)
+	return literal
 }
 
 // methodsHandedToAnInterface is every method of each module type the handler hands to an
@@ -462,33 +513,77 @@ func (service loadedService) functionBodies() functionBodies {
 	return bodies
 }
 
-// passesOn is true when the function's body calls ServeHTTP on the parameter, or passes it to a
-// call whose result serves requests, as middleware does. A function that calls the parameter
-// itself, as one that falls back on it does, is a factory with a dependency.
-func (bodies functionBodies) passesOn(function *types.Func, parameter *types.Var) bool {
+// wraps is true when the function's body serves through the handler it is given, whatever the
+// spelling: it calls it, calls or takes its ServeHTTP, passes it to a call whose result serves
+// requests, or keeps it in a handler of the module that it returns. Middleware written any of
+// these ways reads the same, so the route's docs go on the handler inside.
+func (bodies functionBodies) wraps(function *types.Func, parameter *types.Var) bool {
 	body, isDeclared := bodies[function]
 	if !isDeclared || parameter == nil {
 		return false
 	}
 	found := false
 	ast.Inspect(body.block, func(node ast.Node) bool {
-		if call, isCall := node.(*ast.CallExpr); isCall {
-			found = found || body.servesThrough(call, parameter) || body.handsOn(call, parameter)
+		switch node := node.(type) {
+		case *ast.SelectorExpr:
+			found = found || body.isServeMethodOf(node, parameter)
+		case *ast.CallExpr:
+			found = found || body.refersTo(node.Fun, parameter) || body.handsOn(node, parameter)
+		case *ast.ReturnStmt:
+			found = found || slices.ContainsFunc(node.Results, func(result ast.Expr) bool {
+				return bodies.isAHandlerHolding(body, result, parameter)
+			})
 		}
 		return !found
 	})
 	return found
 }
 
-func (body functionBody) servesThrough(call *ast.CallExpr, parameter *types.Var) bool {
-	selector, isSelector := ast.Unparen(call.Fun).(*ast.SelectorExpr)
-	return isSelector && selector.Sel.Name == "ServeHTTP" && body.refersTo(selector.X, parameter)
+func (body functionBody) isServeMethodOf(selector *ast.SelectorExpr, parameter *types.Var) bool {
+	return selector.Sel.Name == "ServeHTTP" && body.refersTo(selector.X, parameter)
+}
+
+// standsFor is true for the parameter, and for its ServeHTTP taken as a value, which serves the same
+// requests.
+func (body functionBody) standsFor(expression ast.Expr, parameter *types.Var) bool {
+	selector, isSelector := ast.Unparen(expression).(*ast.SelectorExpr)
+	return body.refersTo(expression, parameter) || isSelector && body.isServeMethodOf(selector, parameter)
 }
 
 func (body functionBody) handsOn(call *ast.CallExpr, parameter *types.Var) bool {
 	return isHandlerType(body.info.TypeOf(call)) && slices.ContainsFunc(call.Args, func(argument ast.Expr) bool {
-		return body.refersTo(argument, parameter)
+		return body.standsFor(argument, parameter)
 	})
+}
+
+// isAHandlerHolding is true for a composite literal, or its address, of a module type that serves
+// requests and keeps the parameter in one of its elements.
+func (bodies functionBodies) isAHandlerHolding(body functionBody, result ast.Expr, parameter *types.Var) bool {
+	held := compositeBehind(result)
+	if held == nil || !bodies.servesRequests(body.info.TypeOf(held)) {
+		return false
+	}
+	return slices.ContainsFunc(held.Elts, func(element ast.Expr) bool {
+		if pair, isPair := element.(*ast.KeyValueExpr); isPair {
+			element = pair.Value
+		}
+		return body.standsFor(element, parameter)
+	})
+}
+
+// servesRequests is true for a type of the module whose ServeHTTP, on the value or its pointer, has
+// the handler's shape.
+func (bodies functionBodies) servesRequests(valueType types.Type) bool {
+	if valueType == nil {
+		return false
+	}
+	method, _, _ := types.LookupFieldOrMethod(valueType, true, nil, "ServeHTTP")
+	serve, isMethod := method.(*types.Func)
+	if !isMethod || !hasTheHandlersShape(serve.Signature()) {
+		return false
+	}
+	_, isOfTheModule := bodies[serve.Origin()]
+	return isOfTheModule
 }
 
 // firstWriteTo is where the function's body, its closures included, first writes one of the

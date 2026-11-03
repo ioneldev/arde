@@ -602,6 +602,7 @@ ROUTES_REPLY = {
             "handler_file": "web/desk.go",
             "handler_line": 30,
             "roots": ["(*example.com/depot.desk).list", "example.com/depot.logged"],
+            "handler_identity": "5e",
         }
     ],
     "stripped_prefixes": [{"file": "web/files.go", "line": 4}],
@@ -635,6 +636,7 @@ def test_routes_hand_over_the_patterns_and_the_main_package_and_read_the_reply(
     assert site.handler_id == "(*example.com/depot.desk).list"
     assert (site.handler_file, site.handler_line) == ("web/desk.go", 30)
     assert site.roots == ("(*example.com/depot.desk).list", "example.com/depot.logged")
+    assert site.handler_identity == "5e"
     assert reply.stripped_prefixes == (SourcePlace(file="web/files.go", line=4),)
     assert reply.unread_sites == (
         UnreadSite(
