@@ -12,7 +12,7 @@ Terms as ARDE uses them.
 
 **Inline handler**: A route whose handler is a function written in place, or another expression with no plain name to show. The inventory stores it as `(inline)`. A handler that holds a function written in place anywhere, even as an argument to a factory, has no anchor and no fingerprint, because that function has no id to hash, so the stale rule counts it as changed on every run.
 
-**Inventory**: The routes, params, error codes, response fields, env vars and make targets that code extracts from the source using the profile's patterns. It is computed on every run and never stored, so an agent cannot invent an item that is not in it. A call that matched a pattern but gave nothing, because an argument was missing, empty or not a string literal, is listed in its `dropped` lines, so a missing item can be told from a call that was never found.
+**Inventory**: The routes, params, error codes, response fields, env vars and make targets that code extracts from the source using the profile's patterns. It is computed on every run and never stored, so an agent cannot invent an item that is not in it. A call that matched a pattern but gave nothing is listed in its `dropped` lines: an argument was missing, empty or not a string literal, the call lies outside `main_package`, or it registers a route in a file this build leaves out. So a missing item can be told from a call that was never found.
 
 **Profile**: What discovery learns about how to build, run and read one repo: the main package, the port variable, the main file for `swag`, and the patterns that find routes, params and error codes. It is stored, reused, and re-validated on every run.
 
