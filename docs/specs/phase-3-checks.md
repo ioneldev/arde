@@ -11,7 +11,8 @@ This spec says what this phase delivers and how we know it's done. The reasoning
 | 18 | Agent-edit and behaviour checks | Done |
 | 19 | Contract checks: spec, wiki and the live service, with the grounding rule | Done |
 | 21 | Repair loop, one round | Done |
-| 20, 22, 23 | Docs checks, blind judge, write-back | Moved: 20 folds into 19 where cheap; 22 and 23 go to DESIGN.md as "one more week" |
+| 22 | Blind judge | Done: added back by ruling R139, and tested with scripted replies only |
+| 20, 23 | Docs checks, write-back | Moved: 20 folds into 19 where cheap; 23 goes to DESIGN.md as "one more week" |
 
 ## Purpose
 
@@ -25,6 +26,7 @@ Prove that a run changed no behaviour and invented nothing, and give the agents 
   - Every route, param and field in the spec exists in the inventory, and every inventory item is in the spec.
   - Each documented enum value, boundary and default is requested from the running service.
 - **Repair loop:** findings an agent owns go back to that agent once. Code findings stop at once.
+- **Blind judge:** once the code checks pass, an agent that reads only the docs and the spec predicts each reply before code sends the request. A mismatch that a fresh re-test confirms is a finding for explore, then docs.
 
 ## How we know it's done
 
@@ -35,4 +37,4 @@ Prove that a run changed no behaviour and invented nothing, and give the agents 
 
 ## Not in this phase
 
-The blind judge, write-back to a local repo, and the docs checks beyond what the contract check covers. These are in DESIGN.md's "one more week".
+Write-back to a local repo, and the docs checks beyond what the contract check covers. These are in DESIGN.md's "one more week". The blind judge was cut from the scope for 2026-11-03, then added back by ruling R139.

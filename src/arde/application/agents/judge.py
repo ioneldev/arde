@@ -147,7 +147,10 @@ def run_judge(request: JudgeRequest, deps: PipelineDeps) -> JudgeResult:
     noise: list[Mismatch] = []
     for mismatch in _one_per_request(mismatches):
         retest = RetestRequest(docs=request.docs, service=request.service, mismatch=mismatch)
-        (confirmed if retest_mismatch(retest, deps) else noise).append(mismatch)
+        if retest_mismatch(retest, deps):
+            confirmed.append(mismatch)
+        else:
+            noise.append(mismatch)
     return JudgeResult(
         findings=tuple(_finding(mismatch) for mismatch in confirmed),
         confirmed=tuple(confirmed),
@@ -164,35 +167,42 @@ def retest_mismatch(request: RetestRequest, deps: PipelineDeps) -> bool:
     """
     tracer = deps.agents.tracer
     asked = request.mismatch.prediction.request
+    fresh = _fresh_prediction(request.docs, asked=asked, deps=deps)
+    _trace_prediction(fresh, tracer=tracer, retest=True)
+    reply = deps.service_client.send_request(request.service, asked)
+    return _confirms(request.mismatch, fresh=fresh, reply=reply, tracer=tracer)
+
+
+def _fresh_prediction(docs: JudgeDocs, *, asked: HttpRequest, deps: PipelineDeps) -> Prediction:
     spec = AgentSpec(
         role=ROLE,
         config=deps.models[ROLE],
         system=SYSTEM_PROMPT,
-        user=_retest_message(request.docs, asked),
+        user=_retest_message(docs, asked),
         tools=(Tool(definition=_CALCULATE_TOOL, handler=_calculate),),
         submit=SubmitTool(definition=_PREDICT_TOOL, validate=_fresh_expectation),
     )
     expected = run_agent(spec, deps.agents)
-    prediction = Prediction(
+    return Prediction(
         method=asked.method,
         path_and_query=asked.path_and_query,
         status=expected.status,
         fields=expected.fields,
     )
-    _trace_prediction(prediction, tracer=tracer, retest=True)
-    reply = deps.service_client.send_request(request.service, asked)
-    mismatch = compare_prediction(prediction, reply)
-    if prediction.status != "unknown" and mismatch is None:
-        tracer.event(
-            "judge_noise", role=ROLE, request=_named(asked), detail=request.mismatch.detail
-        )
+
+
+def _confirms(first: Mismatch, *, fresh: Prediction, reply: ProbeRecord, tracer: Tracer) -> bool:
+    asked = _named(fresh.request)
+    mismatch = compare_prediction(fresh, reply)
+    if fresh.status != "unknown" and mismatch is None:
+        tracer.event("judge_noise", role=ROLE, request=asked, detail=first.detail)
         return False
     detail = (
         mismatch.detail
         if mismatch is not None
         else f"status: predicted unknown, the service answered {reply.status}"
     )
-    tracer.event("judge_confirmed", role=ROLE, request=_named(asked), detail=detail)
+    tracer.event("judge_confirmed", role=ROLE, request=asked, detail=detail)
     return True
 
 
@@ -260,7 +270,9 @@ _FINISH_TOOL = ToolDef(
         "lists what is left."
     ),
     input_schema=strict_tool_schema(_Finish),
-    strict=True,
+    # No run has sent strict tool use an object with no properties, a refused schema would stop
+    # the run, and code checks the empty input anyway.
+    strict=False,
 )
 
 _PREDICT_TOOL = ToolDef(

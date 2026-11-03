@@ -193,10 +193,17 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 
 ## The judge
 
-- It cannot test rules that have no HTTP effect.
-- An arithmetic slip looks like a mismatch, and a lucky guess passes.
+- **No real model has run it.** The API account's limit was reached when it was built, so every test scripts the model's replies, and there has been no `make eval` run. Its catch rate, how often a re-test clears real noise, and what it costs on a real service are unknown.
+- It cannot test rules that have no HTTP effect. On a later run it must try only the routes, params and error codes that the changed facts link, so a changed rule fact that links only declarations is not judged, and a run that changed no such fact runs no judge.
+- An arithmetic slip looks like a mismatch, and a lucky guess passes. A prediction counts as one only for the status and the fields the judge chose to predict, so a judge that predicts little proves little.
+- The prompt asks the judge to predict what the docs state even after a reply has shown otherwise. A model that learns from the replies instead hides a gap in the docs, and nothing in code can tell.
 - An error code is exempt as unreachable only if the wiki holds an `unreachable` fact with code evidence. A wrong claim of unreachable is a known limit.
-- It is not built yet. The [plan](superpowers/plans/2026-11-01-arde.md) leaves it out of the scope for 2026-11-03, so these are the limits of the design, and its catch rate is unknown.
+- **It sends GET and HEAD alone, with no headers.** A route of another method, its params, a header param, and an error code that only such routes return are exempt, each listed in `RunReport.exemptions`. The console summary does not print the exemptions; `report.json` and `--json` hold them.
+- **What a request tries is read from its method and path alone.** A route is tried by a request of its own method, or any for `ANY`, whose path matches the pattern with a wildcard matching one segment, so a subtree route such as `GET /` is tried only by `/`, and a HEAD does not try a GET route. A query or form param is tried by a request to its route whose query names it. An error code is tried by a reply of status 400 or above whose body holds the code as a whole word.
+- **A field is named by a dotted path of keys and array indexes**, so a key that holds a dot cannot be predicted. Values are compared with their JSON type: `true` is not `1`, and `"1"` is not `1`. Numbers are compared as Python reads JSON, so two numbers that differ only past a float's precision compare equal.
+- The judge is told the names of the items it must try. Each is in the API reference, which code renders from the same facts, so the list adds no name the docs do not hold.
+- **A re-test sends the request again.** A reply that changes between the two, such as one that holds the time, can confirm a mismatch or clear one by chance. Each distinct request is re-tested once, as a fresh agent run that reads every page again, so a judge with many mismatches costs as many runs.
+- A run whose last wiki holds facts is judged as a later run even when its snapshot is gone and every page is written again.
 
 ## Cost
 
@@ -225,6 +232,7 @@ Move an item out of this list when a test or a measurement covers it. What the r
 ## Known costs
 
 - Behaviour runs the repo's build, vet and tests again on the output copy, once per attempt.
+- The judge runs on every attempt whose code checks pass, on up to 30 turns, with every page and the spec in its first message, and each request it predicts wrong costs a re-test that reads them all again.
 - Any changed fact rewrites the overview and the change guide, which costs two docs-agent calls on every re-run that changes a fact.
 - **A one-line edit can make most of the wiki stale.** A fact goes stale when a declaration, route or file it links changed, and field facts link the route that replies with their struct. Measured on `catalog-poc`: changing one error message in the product handler staled 37 of 60 facts, and Explore submits each again. The answers stay right; the cost is time and tokens.
 - **A workspace keeps only the last two clones.** An older run's result branch goes with its clone, so a result to keep is exported right after its run.

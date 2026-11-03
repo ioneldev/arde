@@ -10,6 +10,8 @@ Terms as ARDE uses them.
 
 **Baseline**: The repo's own build, vet and tests on the input copy, before any edit or paid call. A red baseline stops the run.
 
+**Blind judge**: The agent that tests whether the docs are good, not only valid. It reads the pages the run wrote and the spec, and nothing else, and predicts each reply of the running "after" service before code sends the request. Code compares, and refuses its `finish` until its requests have tried every required item. A mismatch that a re-test confirms is a finding owned by explore.
+
 **Boundary case**: One value a live check sends for a param, with whether the spec says the service takes it.
 
 **Closed schema**: A schema that refuses every key it doesn't list, at every depth. Plain validation accepts an undocumented field.
@@ -19,6 +21,8 @@ Terms as ARDE uses them.
 **Directive**: A comment that a compiler or a tool reads, such as `//go:build`, `//go:embed`, a cgo preamble or an example's `// Output:` line. Changing one can change behaviour, so the comment-only rule never takes one out of the comparison: it takes out only ordinary comment lines, a whole line that starts `// ` and is none of these, and the tags ARDE adds. A line like `//go:build` has no space after the slashes, which is how most directives are written. The Go tools also read `// +build`, `// #cgo` and `// Output:` with a space, so those are directives too.
 
 **Evidence**: What a fact rests on. It is a code quote that holds code, not only a comment or one string literal, from a source file the language adapter reads, or a citation of a probe made in the same run.
+
+**Exemption**: A required item the judge is excused from, with the reason, listed in `RunReport.exemptions`: an error code that an `unreachable` fact covers, a route the judge cannot send because its method is not GET or HEAD, its params, and a header param.
 
 **Fact**: One checked statement about the target service, with an id, evidence (a code quote or a citation of a recorded request and response) and links to the declarations, routes or files it depends on. Facts are what the docs agent writes from.
 
@@ -32,9 +36,15 @@ Terms as ARDE uses them.
 
 **Manifest**: The comment lines ARDE wrote into the repo on the last run, by file, kept in `render_manifest.yaml`. A comment above a field carries no mark that tells it from a person's, so the next render removes the lines the manifest lists before it writes again.
 
+**Mismatch**: A prediction of the judge that the reply proves wrong: another status, or a predicted field that is absent or holds another value or JSON type. An `unknown` status on a request that tries a required item counts as one.
+
 **Profile**: What discovery learns about how to build, run and read one repo: the main package, the port variable, the main file for `swag`, and the patterns that find routes, params and error codes. It is stored, reused, and re-validated on every run. The owner corrects a value in `profile.override.yaml`, the only source of `extra_test_commands`. Commands Discovery finds go in `reported_test_commands`, saved and never run.
 
 **Repair round**: One pass of sending a failed check's findings to the agent that owns the fix, then running the checks again. A run gets one by default.
+
+**Required item**: What the judge's requests must try before it may finish: a route, by a request to it; a param of an endpoint, by a request to its route that sets it; an error code, by a reply that carries it; and a request a judge got wrong in the last attempt, by sending it again as written. On a first run every item is required, and on a later run only those the facts that changed or came link.
+
+**Re-test**: A fresh judge context, shown only the same docs and spec and the one request, that predicts a mismatched request again. Code sends the request again and compares: a right prediction clears the mismatch as noise, kept in the trace, and a wrong or `unknown` one confirms it.
 
 **Run folder**: `runs/<run id>/` in the workspace: the input and output copies, the service logs, `report.json`, and `trace/` with `trace.jsonl` and `debug.log`. A URL run commits on the branch `arde/run-<run id>`.
 

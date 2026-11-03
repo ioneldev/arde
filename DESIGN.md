@@ -13,7 +13,8 @@ resolve source → copy into a workspace → baseline go build, vet, test (red b
 → Explore agent builds the wiki of facts, probing the running "before" service
 → code renders annotations and tags from facts → swag generates the spec
 → Docs agent writes each narrative section from facts; code renders the reference tables
-→ code checks → findings go to their owner, one repair round → commit on a new branch in the workspace clone
+→ code checks → blind judge predicts replies from the docs alone
+→ findings go to their owner, one repair round → commit on a new branch in the workspace clone
 ```
 
 | Step | Kind | Sees | Tools |
@@ -24,6 +25,7 @@ resolve source → copy into a workspace → baseline go build, vet, test (red b
 | Render, swag | code | facts | — |
 | Docs | agent | facts only, never source | `submit_section` |
 | Checks | code | input and output copies, both services, spec, wiki | — |
+| Judge | agent | the pages and the spec only, and the running "after" service | `predict_and_call`, `calculate`, `note_clarity`, `finish` |
 
 Why split this way: Discovery answers "how do I build, run and read this repo" once, and its profile is reused. Explore answers "what does this service do", and starts after the inventory exists, so its schema can list the real routes and names. Docs sees facts only, so every sentence traces to a checked fact.
 
@@ -32,6 +34,7 @@ Why split this way: Discovery answers "how do I build, run and read this repo" o
 - **Discovery:** the file tree and what it chooses to read, plus ARDE's own notes on Go. Small and once per repo.
 - **Explore:** a frozen system prompt (cached) asking about classes of behaviour any HTTP service has: responses no handler writes, validation order, input decoding, defaults, repeated params, rounding, what gets logged. Run-specific context (profile, inventory, current wiki) goes in the first user message. It reads code on demand rather than receiving the repo.
 - **Docs:** one call per section, with the facts that section uses. No tools to read code.
+- **Judge:** the pages and the spec in its first message, with the items it must try. No tool reads the code, the wiki or a probe, and each re-test is a fresh context with the same pages and one request.
 - Repo text reaching a model is bounded and escaped. No prompt names a behaviour of one repo; an architecture test fails the build if `catalog-poc`'s identifiers appear in ARDE's code or prompts.
 
 ## Verification
@@ -42,9 +45,9 @@ Deterministic, by code:
 - **Evidence:** a fact needs a quote that exists in a source file and holds code (not only a comment), or a probe that was really recorded. Each response status needs a probe that returned it, or an error code the code sends with it.
 - **Docs grounding:** every URL, host and shell command in the docs exists in the repo (README, Makefile, Dockerfile, CI) or a recorded response.
 
-By a model: nothing decides pass or fail. A blind judge that predicts responses from the docs alone is designed but not built (below).
+By a model, scored by code: **the blind judge.** The checks above prove the docs valid; the judge tests whether they are good. Once they pass, a fresh agent that sees only the pages, the spec and the running "after" service predicts each reply (status, and fields at dotted paths) in the same tool call as the request, so code records the prediction before the request goes out. Code compares exactly, and refuses `finish` until every route, param and reachable error code has been tried; on a re-run, only those the changed facts link. A mismatch is re-tested once by a fresh context with the same docs and that one request: right, and it stays in the trace as noise; wrong again, and it is a finding. No model can dismiss one. Clarity notes never block. An error code is exempt only through an `unreachable` fact with code evidence, and every exemption is in the report. `--skip-judge` turns it off, and the report says so. No real model has run it yet, so its catch rate is unknown.
 
-When a check fails: each finding has an owner. Explore findings go back to Explore, then Docs rewrites; docs findings go to Docs; code findings stop the run at once. One repair round, then the run exits 1 with a report, and nothing is committed.
+When a check fails: each finding has an owner. Explore findings, the judge's included, go back to Explore, then Docs rewrites; docs findings go to Docs; code findings stop the run at once. One repair round, then the run exits 1 with a report, and nothing is committed.
 
 ## Prompt injection
 
@@ -66,7 +69,6 @@ Measured on `catalog-poc` (Opus 5.5, prompt caching): a first run costs about $1
 ## One more week
 
 - **Skip and narrow re-runs further:** stop with no model call when nothing changed (today Explore still makes one call), let a classifier decide when a change is comments only, and re-validate a stale fact's evidence in code before asking Explore, since one edited line can stale most facts linked to a busy handler.
-- **Blind judge:** an agent that sees only the docs, the spec and the running service, predicts each response before code sends it, and blocks on a confirmed mismatch. This measures whether the docs are *good*, not just valid.
 - **Run on every merge request:** a container so the one command runs anywhere, the re-run above on the MR's head against the target branch's snapshot, and the result posted as a commit or a review on the MR.
 - **Routes that change data:** extract request bodies by type (the `Decode` target's struct, as replies are read now), back a success status with a quote that writes it (`w.WriteHeader(http.StatusCreated)`), and allow POST, PUT and DELETE probes only when the owner opts in and the service runs with throwaway state. Today such routes get params and errors but no success reply or request body.
 - **Monorepo scale:** per-service profiles, inventory and explore scoped to the services a change touches, and a fact store keyed by declaration.
