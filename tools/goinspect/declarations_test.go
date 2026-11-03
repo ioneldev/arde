@@ -513,6 +513,21 @@ func TestEachVarNameKeepsItsOwnLine(t *testing.T) {
 	}
 }
 
+func TestEachConstNameKeepsItsOwnLine(t *testing.T) {
+	source := "package p\n" + // 1
+		"\n" + // 2
+		"const (\n" + // 3
+		"\tfirst,\n" + // 4
+		"\tsecond = 1, 2\n" + // 5
+		")\n"
+
+	lines := declarationLines(inspectOneFile(t, source))
+
+	if want := map[string]int{"first": 4, "second": 5}; !reflect.DeepEqual(lines, want) {
+		t.Fatalf("got %v, want %v", lines, want)
+	}
+}
+
 func TestEachFieldNameKeepsItsOwnLine(t *testing.T) {
 	source := "package p\n" + // 1
 		"\n" + // 2
