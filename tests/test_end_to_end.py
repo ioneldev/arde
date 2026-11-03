@@ -151,10 +151,13 @@ def a_repair_that_sets_the_maximum_to(maximum: int) -> list[LLMResponse]:
     ]
 
 
+# On a first run every attempt writes every section, the overview first and the change guide last.
 def writing_the_shop_sections() -> list[LLMResponse]:
     return [
+        writing_a_section("What the shop is.", NO_DISCOUNT.id),
         writing_a_section(NO_DISCOUNT_SECTION, NO_DISCOUNT.id),
         writing_a_section(PORT_SECTION, PORT_RULE.id),
+        writing_a_section("How to change the shop safely.", NO_DISCOUNT.id),
     ]
 
 

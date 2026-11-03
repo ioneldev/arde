@@ -18,8 +18,11 @@ from pipeline_support import (
     FakeAdapter,
     FakeRunner,
     Rig,
+    a_change_guide,
+    an_overview,
     exploring,
     submitting_the_profile,
+    summarising,
 )
 
 from arde.application.pipeline import run_pipeline
@@ -32,7 +35,7 @@ from arde.application.ports import (
 )
 from arde.application.repair import REPAIR_HEADING
 from arde.application.wiki_store import load_wiki
-from arde.domain.facts import CodeQuote, Links, RuleFact
+from arde.domain.facts import CodeQuote, Fact, Links, RuleFact
 from arde.domain.findings import Finding
 from arde.domain.report import ExitCode, RunReport
 
@@ -77,8 +80,20 @@ def first_message(request: LLMRequest) -> str:
     return content
 
 
-def requests_after(rig: Rig, count: int) -> list[LLMRequest]:
-    return rig.llm.requests[count:]
+def agent_of(request: LLMRequest) -> str:
+    names = tool_names(request)
+    return (
+        "discovery" if "submit_profile" in names else "explore" if "add_facts" in names else "docs"
+    )
+
+
+# Every agent run starts with one message, the run's context.
+def first_turns_of(rig: Rig, agent: str) -> list[LLMRequest]:
+    return [r for r in rig.llm.requests if agent_of(r) == agent and len(r.messages) == 1]
+
+
+def assignment_of(request: LLMRequest) -> str:
+    return first_message(request).split("\n\n", 1)[0]
 
 
 def steps_and_rounds(rig: Rig) -> list[str]:
@@ -92,8 +107,14 @@ def steps_and_rounds(rig: Rig) -> list[str]:
 # An explore finding goes to explore, then to docs, and the checks run again
 
 
+# Each attempt writes the overview and the change guide, which rest on every fact, so an attempt
+# whose only fact is the endpoint has those two sections to write.
+def an_attempt(fact: Fact, *, injections: tuple[str, ...] = ()) -> list[LLMResponse]:
+    return [*exploring(fact, injections=injections), *summarising(fact.id)]
+
+
 def an_explore_repair(tmp_path: Path, **changes: object) -> Rig:
-    script = [submitting_the_profile(), *exploring(UNPROBED_THINGS), *exploring(THINGS_FACT)]
+    script = [submitting_the_profile(), *an_attempt(UNPROBED_THINGS), *an_attempt(THINGS_FACT)]
     return Rig(tmp_path=tmp_path, script=script, **changes)  # type: ignore[arg-type]
 
 
@@ -119,8 +140,8 @@ def test_the_explore_repair_starts_from_this_runs_wiki_and_sees_the_findings(
 
     run(rig)
 
-    [repair, *_] = requests_after(rig, 4)
-    assert "add_facts" in tool_names(repair)
+    [first, repair] = first_turns_of(rig, "explore")
+    assert REPAIR_HEADING not in first_message(first)
     _, context, heading, findings = first_message(repair).split("\n\n")
     shown = json.loads(context)
     assert [fact["evidence"] for fact in shown["wiki"]] == [[THINGS_CODE.model_dump(mode="json")]]
@@ -220,7 +241,13 @@ def test_a_file_the_last_attempts_service_wrote_is_not_committed(tmp_path: Path)
     report = run(rig)
 
     assert report.status == "success"
-    assert report.changed_paths == ("docs/api.md", "docs/openapi.json", "main.go")
+    assert report.changed_paths == (
+        "docs/api.md",
+        "docs/change-guide.md",
+        "docs/openapi.json",
+        "docs/overview.md",
+        "main.go",
+    )
     [commit] = rig.source_control.commits
     assert commit.paths == report.changed_paths
 
@@ -241,11 +268,12 @@ class FailingAfter:
 
 def test_a_repair_that_fails_stops_every_service_and_reports_the_round(tmp_path: Path) -> None:
     rig = an_explore_repair(tmp_path, runner=WatchingRunner())
-    rig.llm = FailingAfter([submitting_the_profile(), *exploring(UNPROBED_THINGS)])  # type: ignore[assignment]
+    rig.llm = FailingAfter([submitting_the_profile(), *an_attempt(UNPROBED_THINGS)])  # type: ignore[assignment]
 
     report = run(rig)
 
     assert (report.status, report.message) == ("failed", "Anthropic is overloaded")
+    assert agent_of(rig.llm.requests[-1]) == "explore"
     assert isinstance(rig.runner, WatchingRunner)
     assert rig.runner.running_now == []
     assert [r.number for r in report.repair_rounds] == [1]
@@ -255,8 +283,8 @@ def test_a_repair_that_fails_stops_every_service_and_reports_the_round(tmp_path:
 def test_a_warning_both_attempts_give_is_reported_once(tmp_path: Path) -> None:
     script = [
         submitting_the_profile(),
-        *exploring(UNPROBED_THINGS, injections=("main.go:2",)),
-        *exploring(THINGS_FACT, injections=("main.go:2",)),
+        *an_attempt(UNPROBED_THINGS, injections=("main.go:2",)),
+        *an_attempt(THINGS_FACT, injections=("main.go:2",)),
     ]
     rig = Rig(tmp_path=tmp_path, script=script)
 
@@ -268,14 +296,26 @@ def test_a_warning_both_attempts_give_is_reported_once(tmp_path: Path) -> None:
 # A docs finding goes to docs alone
 
 
+# On a first run the docs repair writes every section again, each with the findings in view.
+def writing_the_sections(business_rules: str) -> list[LLMResponse]:
+    return [
+        an_overview(ORDER_RULE.id),
+        writing_a_section(business_rules, ORDER_RULE.id),
+        a_change_guide(ORDER_RULE.id),
+    ]
+
+
 def a_docs_repair(tmp_path: Path, *, repaired_section: str, **changes: object) -> Rig:
     script = [
         submitting_the_profile(),
         *exploring(THINGS_FACT, ORDER_RULE),
-        writing_a_section(f"Read {UNKNOWN_ADDRESS} before you add things.", ORDER_RULE.id),
-        writing_a_section(repaired_section, ORDER_RULE.id),
+        *writing_the_sections(f"Read {UNKNOWN_ADDRESS} before you add things."),
+        *writing_the_sections(repaired_section),
     ]
     return Rig(tmp_path=tmp_path, script=script, **changes)  # type: ignore[arg-type]
+
+
+BUSINESS_RULES = 'Write the section "business-rules"'
 
 
 def test_a_docs_finding_is_repaired_by_docs_alone(tmp_path: Path) -> None:
@@ -284,10 +324,18 @@ def test_a_docs_finding_is_repaired_by_docs_alone(tmp_path: Path) -> None:
     report = run(rig)
 
     assert (report.status, report.findings) == ("success", ())
-    [repair] = requests_after(rig, 5)
-    assert tool_names(repair) == {"submit_section"}
-    assert REPAIR_HEADING in first_message(repair)
-    assert f"docs/business-rules.md: {UNKNOWN_ADDRESS}" in first_message(repair)
+    assert [agent_of(r) for r in rig.llm.requests] == [
+        "discovery",
+        *["explore"] * 3,
+        *["docs"] * 3,
+        *["docs"] * 3,
+    ]
+    sections = first_turns_of(rig, "docs")
+    first, repair = sections[:3], sections[3:]
+    assert not any(REPAIR_HEADING in first_message(r) for r in first)
+    assert all(REPAIR_HEADING in first_message(r) for r in repair)
+    [business_rules] = [r for r in repair if assignment_of(r).startswith(BUSINESS_RULES)]
+    assert f"docs/business-rules.md: {UNKNOWN_ADDRESS}" in first_message(business_rules)
     page = Path(report.run_dir) / "output" / "docs" / "business-rules.md"
     assert "in the order they were added" in page.read_text()
     assert UNKNOWN_ADDRESS not in page.read_text()
@@ -302,7 +350,7 @@ def test_a_docs_finding_is_repaired_by_docs_alone(tmp_path: Path) -> None:
 def test_a_code_finding_stops_the_run_with_no_model_call_even_beside_an_explore_one(
     tmp_path: Path,
 ) -> None:
-    script = [submitting_the_profile(), *exploring(UNPROBED_THINGS)]
+    script = [submitting_the_profile(), *an_attempt(UNPROBED_THINGS)]
     adapter = FakeAdapter(edit_findings=[CODE_FINDING])
     rig = Rig(tmp_path=tmp_path, script=script, adapter=adapter, kind="url")
 
@@ -320,7 +368,11 @@ def test_a_code_finding_stops_the_run_with_no_model_call_even_beside_an_explore_
 
 
 def test_findings_left_after_the_last_round_exit_1_and_commit_nothing(tmp_path: Path) -> None:
-    script = [submitting_the_profile(), *exploring(UNPROBED_THINGS), *exploring(UNPROBED_THINGS)]
+    script = [
+        submitting_the_profile(),
+        *an_attempt(UNPROBED_THINGS),
+        *an_attempt(UNPROBED_THINGS),
+    ]
     rig = Rig(tmp_path=tmp_path, script=script, kind="url")
 
     report = run(rig)
@@ -352,13 +404,16 @@ def test_a_section_whose_facts_a_repair_changed_is_written_again(tmp_path: Path)
         script=[
             submitting_the_profile(),
             *exploring(THINGS_FACT, ORDER_RULE, PORT_RULE),
+            an_overview(ORDER_RULE.id),
             writing_a_section("Things come back in the order they were added.", ORDER_RULE.id),
             writing_a_section("Set THINGS_PORT to choose the port.", PORT_RULE.id),
+            a_change_guide(ORDER_RULE.id),
         ],
     )
     assert run(first).status == "success"
     # The first attempt rewords the order rule and drops the probe. The repair brings back both,
     # so the order rule is again what the last run saved, and only the repair changed its topic.
+    # No fact comes or goes, so the overview and the change guide are kept in both attempts.
     reworded = ORDER_RULE.model_copy(update={"statement": "Things come back oldest first."})
     second = Rig(
         tmp_path=tmp_path,
@@ -374,8 +429,10 @@ def test_a_section_whose_facts_a_repair_changed_is_written_again(tmp_path: Path)
     report = run(second)
 
     assert (report.status, report.findings) == ("success", ())
-    [written_again] = [r for r in requests_after(second, 4) if "submit_section" in tool_names(r)]
-    assert '"business-rules"' in first_message(written_again)
+    [first_attempt, written_again] = first_turns_of(second, "docs")
+    assert assignment_of(first_attempt).startswith(BUSINESS_RULES)
+    assert assignment_of(written_again).startswith(BUSINESS_RULES)
+    assert REPAIR_HEADING in first_message(written_again)
     docs = Path(report.run_dir) / "output" / "docs"
     assert "again" in (docs / "business-rules.md").read_text()
     assert "Set THINGS_PORT" in (docs / "configuration.md").read_text()
