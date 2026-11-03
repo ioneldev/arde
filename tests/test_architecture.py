@@ -57,15 +57,15 @@ def test_the_scanned_package_exists() -> None:
 
 
 def test_domain_imports_no_adapters() -> None:
-    assert import_violations(SOURCE_ROOT, "domain", DOMAIN_MAY_NOT_IMPORT) == []
+    assert import_violations(SOURCE_ROOT, "domain", forbidden=DOMAIN_MAY_NOT_IMPORT) == []
 
 
 def test_application_imports_no_adapters() -> None:
-    assert import_violations(SOURCE_ROOT, "application", APPLICATION_MAY_NOT_IMPORT) == []
+    assert import_violations(SOURCE_ROOT, "application", forbidden=APPLICATION_MAY_NOT_IMPORT) == []
 
 
 def test_checks_import_no_adapters() -> None:
-    assert import_violations(SOURCE_ROOT, "checks", CHECKS_MAY_NOT_IMPORT) == []
+    assert import_violations(SOURCE_ROOT, "checks", forbidden=CHECKS_MAY_NOT_IMPORT) == []
 
 
 def test_go_specifics_stay_in_go_adapter() -> None:
@@ -95,14 +95,14 @@ def test_product_code_names_no_target_repo() -> None:
 )
 @pytest.mark.parametrize("file", ["tests/test_new_eval.py", "src/arde/application/pipeline.py"])
 def test_reading_the_plain_key_is_reported(tmp_path: Path, file: str, source: str) -> None:
-    write(tmp_path, file, f"{source}\n")
+    write(tmp_path, file, text=f"{source}\n")
 
     assert key_reads(tmp_path) == [f"{file}: reads the API key"]
 
 
 @pytest.mark.parametrize("file", KEY_READERS)
 def test_a_listed_file_may_read_the_plain_key(tmp_path: Path, file: str) -> None:
-    write(tmp_path, file, "plain = secret.get_secret_value()\n")
+    write(tmp_path, file, text="plain = secret.get_secret_value()\n")
 
     assert key_reads(tmp_path) == []
 
@@ -116,7 +116,7 @@ def test_a_listed_file_may_read_the_plain_key(tmp_path: Path, file: str) -> None
     ],
 )
 def test_naming_the_variable_without_reading_it_is_accepted(tmp_path: Path, source: str) -> None:
-    write(tmp_path, "tests/test_new.py", f"{source}\n")
+    write(tmp_path, "tests/test_new.py", text=f"{source}\n")
 
     assert key_reads(tmp_path) == []
 
@@ -134,41 +134,43 @@ def test_naming_the_variable_without_reading_it_is_accepted(tmp_path: Path, sour
     ],
 )
 def test_domain_importing_an_adapter_is_reported(tmp_path: Path, source: str) -> None:
-    write(tmp_path, "arde/domain/bad.py", source)
+    write(tmp_path, "arde/domain/bad.py", text=source)
 
-    violations = import_violations(tmp_path, "domain", DOMAIN_MAY_NOT_IMPORT)
+    violations = import_violations(tmp_path, "domain", forbidden=DOMAIN_MAY_NOT_IMPORT)
 
     assert violations == ["arde/domain/bad.py: imports arde.adapters"]
 
 
 def test_a_relative_import_is_resolved_from_a_nested_package(tmp_path: Path) -> None:
-    write(tmp_path, "arde/domain/nested/bad.py", "from ...adapters import llm")
+    write(tmp_path, "arde/domain/nested/bad.py", text="from ...adapters import llm")
 
-    violations = import_violations(tmp_path, "domain", DOMAIN_MAY_NOT_IMPORT)
+    violations = import_violations(tmp_path, "domain", forbidden=DOMAIN_MAY_NOT_IMPORT)
 
     assert violations == ["arde/domain/nested/bad.py: imports arde.adapters"]
 
 
 def test_domain_importing_application_is_reported(tmp_path: Path) -> None:
-    write(tmp_path, "arde/domain/bad.py", "from arde.application import pipeline")
+    write(tmp_path, "arde/domain/bad.py", text="from arde.application import pipeline")
 
-    violations = import_violations(tmp_path, "domain", DOMAIN_MAY_NOT_IMPORT)
+    violations = import_violations(tmp_path, "domain", forbidden=DOMAIN_MAY_NOT_IMPORT)
 
     assert violations == ["arde/domain/bad.py: imports arde.application"]
 
 
 def test_application_importing_an_adapter_is_reported(tmp_path: Path) -> None:
-    write(tmp_path, "arde/application/bad.py", "from arde.adapters.workspace import Workspace")
+    write(tmp_path, "arde/application/bad.py", text="from arde.adapters.workspace import Workspace")
 
-    violations = import_violations(tmp_path, "application", APPLICATION_MAY_NOT_IMPORT)
+    violations = import_violations(tmp_path, "application", forbidden=APPLICATION_MAY_NOT_IMPORT)
 
     assert violations == ["arde/application/bad.py: imports arde.adapters"]
 
 
 def test_a_check_importing_an_adapter_is_reported(tmp_path: Path) -> None:
-    write(tmp_path, "arde/checks/spec_valid.py", "from arde.adapters.tracer import JsonlTracer")
+    write(
+        tmp_path, "arde/checks/spec_valid.py", text="from arde.adapters.tracer import JsonlTracer"
+    )
 
-    violations = import_violations(tmp_path, "checks", CHECKS_MAY_NOT_IMPORT)
+    violations = import_violations(tmp_path, "checks", forbidden=CHECKS_MAY_NOT_IMPORT)
 
     assert violations == ["arde/checks/spec_valid.py: imports arde.adapters"]
 
@@ -184,9 +186,9 @@ def test_a_check_importing_an_adapter_is_reported(tmp_path: Path) -> None:
 def test_no_inner_layer_may_import_the_cli(
     tmp_path: Path, layer: str, forbidden: tuple[str, ...]
 ) -> None:
-    write(tmp_path, f"arde/{layer}/bad.py", "from arde.cli import main")
+    write(tmp_path, f"arde/{layer}/bad.py", text="from arde.cli import main")
 
-    violations = import_violations(tmp_path, layer, forbidden)
+    violations = import_violations(tmp_path, layer, forbidden=forbidden)
 
     assert violations == [f"arde/{layer}/bad.py: imports arde.cli"]
 
@@ -195,24 +197,24 @@ def test_allowed_imports_are_accepted(tmp_path: Path) -> None:
     write(
         tmp_path,
         "arde/domain/ok.py",
-        "import pydantic\nfrom arde.domain.base import Frozen\nfrom . import base\n",
+        text="import pydantic\nfrom arde.domain.base import Frozen\nfrom . import base\n",
     )
     write(
         tmp_path,
         "arde/application/ok.py",
-        "from arde.application import ports\nfrom arde.domain import facts\n",
+        text="from arde.application import ports\nfrom arde.domain import facts\n",
     )
 
-    assert import_violations(tmp_path, "domain", DOMAIN_MAY_NOT_IMPORT) == []
-    assert import_violations(tmp_path, "application", APPLICATION_MAY_NOT_IMPORT) == []
+    assert import_violations(tmp_path, "domain", forbidden=DOMAIN_MAY_NOT_IMPORT) == []
+    assert import_violations(tmp_path, "application", forbidden=APPLICATION_MAY_NOT_IMPORT) == []
 
 
 def test_a_layer_with_no_folder_or_no_files_has_no_violations(tmp_path: Path) -> None:
     (tmp_path / "arde").mkdir()
-    assert import_violations(tmp_path, "domain", DOMAIN_MAY_NOT_IMPORT) == []
+    assert import_violations(tmp_path, "domain", forbidden=DOMAIN_MAY_NOT_IMPORT) == []
 
     (tmp_path / "arde" / "domain").mkdir()
-    assert import_violations(tmp_path, "domain", DOMAIN_MAY_NOT_IMPORT) == []
+    assert import_violations(tmp_path, "domain", forbidden=DOMAIN_MAY_NOT_IMPORT) == []
 
 
 @pytest.mark.parametrize(
@@ -246,14 +248,14 @@ def test_a_layer_with_no_folder_or_no_files_has_no_violations(tmp_path: Path) ->
 def test_go_specific_shapes_outside_the_go_adapter_are_reported(
     tmp_path: Path, source: str, name: str
 ) -> None:
-    write(tmp_path, "arde/application/pipeline.py", f"{source}\n")
+    write(tmp_path, "arde/application/pipeline.py", text=f"{source}\n")
 
     assert go_specific_leaks(tmp_path) == [f"arde/application/pipeline.py: mentions {name}"]
 
 
 def test_go_specific_shapes_inside_the_go_adapter_are_accepted(tmp_path: Path) -> None:
     source = "swag_version = 1\nclass GoinspectRunner: ...\ndef gofmt_check(): ...\n"
-    write(tmp_path, str(GO_ADAPTER / "runner.py"), source)
+    write(tmp_path, str(GO_ADAPTER / "runner.py"), text=source)
 
     assert go_specific_leaks(tmp_path) == []
 
@@ -279,26 +281,26 @@ def test_go_specific_shapes_inside_the_go_adapter_are_accepted(tmp_path: Path) -
 def test_words_of_the_language_outside_the_go_adapter_are_reported(
     tmp_path: Path, file: str, text: str, name: str
 ) -> None:
-    write(tmp_path, file, f"{text}\n")
+    write(tmp_path, file, text=f"{text}\n")
 
     assert go_specific_leaks(tmp_path) == [f"{file}: mentions {name}"]
 
 
 def test_a_prompt_is_scanned_for_the_commands_too(tmp_path: Path) -> None:
-    write(tmp_path, "arde/application/prompts/explore.md", "Run go test ./... first.\n")
+    write(tmp_path, "arde/application/prompts/explore.md", text="Run go test ./... first.\n")
 
     assert go_specific_leaks(tmp_path) == ["arde/application/prompts/explore.md: mentions go test"]
 
 
 def test_a_file_of_another_kind_is_not_scanned(tmp_path: Path) -> None:
-    write(tmp_path, "arde/application/data.txt", "go.mod\n")
+    write(tmp_path, "arde/application/data.txt", text="go.mod\n")
 
     assert go_specific_leaks(tmp_path) == []
 
 
 @pytest.mark.parametrize("file", ["guidance.md", "guidance.py"])
 def test_the_language_may_name_itself_inside_the_go_adapter(tmp_path: Path, file: str) -> None:
-    write(tmp_path, str(GO_ADAPTER / file), "go.mod omitempty oneOf go test\n")
+    write(tmp_path, str(GO_ADAPTER / file), text="go.mod omitempty oneOf go test\n")
 
     assert go_specific_leaks(tmp_path) == []
 
@@ -316,7 +318,7 @@ def test_the_language_may_name_itself_inside_the_go_adapter(tmp_path: Path, file
     ],
 )
 def test_names_that_only_contain_the_letters_are_not_reported(tmp_path: Path, source: str) -> None:
-    write(tmp_path, "arde/checks/spec_valid.py", f"{source}\n")
+    write(tmp_path, "arde/checks/spec_valid.py", text=f"{source}\n")
 
     assert go_specific_leaks(tmp_path) == []
 
@@ -336,13 +338,13 @@ def test_names_that_only_contain_the_letters_are_not_reported(tmp_path: Path, so
 def test_a_product_file_naming_the_target_repo_is_reported(
     tmp_path: Path, file: str, word: str
 ) -> None:
-    write(tmp_path, file, f"a note about {word} here\n")
+    write(tmp_path, file, text=f"a note about {word} here\n")
 
     assert target_repo_leaks(tmp_path) == [f"{file}: mentions {word}"]
 
 
 def test_the_words_are_matched_whatever_their_case(tmp_path: Path) -> None:
-    write(tmp_path, "src/arde/prompts/explore.md", "Look at the Catalog and WRITEERROR.\n")
+    write(tmp_path, "src/arde/prompts/explore.md", text="Look at the Catalog and WRITEERROR.\n")
 
     assert target_repo_leaks(tmp_path) == [
         "src/arde/prompts/explore.md: mentions catalog",
@@ -363,7 +365,7 @@ def test_the_words_are_matched_whatever_their_case(tmp_path: Path) -> None:
 def test_test_data_and_everything_outside_the_product_may_name_the_target_repo(
     tmp_path: Path, file: str
 ) -> None:
-    write(tmp_path, file, "catalog envOr writeError fxRates\n")
+    write(tmp_path, file, text="catalog envOr writeError fxRates\n")
 
     assert target_repo_leaks(tmp_path) == []
 
@@ -384,7 +386,7 @@ def test_a_file_that_is_not_utf8_is_still_scanned(tmp_path: Path) -> None:
     assert target_repo_leaks(tmp_path) == ["src/arde/prompts/odd.md: mentions fxRates"]
 
 
-def import_violations(source_root: Path, layer: str, forbidden: tuple[str, ...]) -> list[str]:
+def import_violations(source_root: Path, layer: str, *, forbidden: tuple[str, ...]) -> list[str]:
     layer_dir = source_root / "arde" / layer
     return [
         f"{label(path, source_root)}: imports {package}"
@@ -496,7 +498,7 @@ def label(path: Path, source_root: Path) -> str:
     return path.relative_to(source_root).as_posix()
 
 
-def write(root: Path, relative: str, text: str) -> Path:
+def write(root: Path, relative: str, *, text: str) -> Path:
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")

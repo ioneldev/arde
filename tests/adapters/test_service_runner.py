@@ -992,7 +992,7 @@ def test_the_grace_is_five_seconds() -> None:
 
 
 def assert_the_log_is_refused(
-    runner: ServiceRunner, config: ServiceConfig, started: list[subprocess.Popen[bytes]]
+    runner: ServiceRunner, config: ServiceConfig, *, started: list[subprocess.Popen[bytes]]
 ) -> None:
     with pytest.raises(ServiceStartError) as failed, runner.running(config):
         pytest.fail("the body must not run when the log cannot be used")
@@ -1011,7 +1011,7 @@ def test_a_symlink_at_the_log_path_is_refused_and_its_target_left_alone(
     config = config_for(stand_in(tmp_path, SERVES), tmp_path)
     config.log.symlink_to(precious)
 
-    assert_the_log_is_refused(runner, config, started)
+    assert_the_log_is_refused(runner, config, started=started)
 
     assert precious.read_text() == "keep me\n"
     assert stat.S_IMODE(precious.stat().st_mode) == 0o644
@@ -1024,7 +1024,7 @@ def test_a_dangling_symlink_at_the_log_path_is_refused_and_creates_nothing(
     config = config_for(stand_in(tmp_path, SERVES), tmp_path)
     config.log.symlink_to(target)
 
-    assert_the_log_is_refused(runner, config, started)
+    assert_the_log_is_refused(runner, config, started=started)
 
     assert not target.exists()
 
@@ -1035,7 +1035,7 @@ def test_a_fifo_at_the_log_path_is_refused_and_does_not_hang(
     config = config_for(stand_in(tmp_path, SERVES), tmp_path)
     os.mkfifo(config.log)
 
-    assert_the_log_is_refused(runner, config, started)
+    assert_the_log_is_refused(runner, config, started=started)
 
 
 def test_a_fifo_with_a_reader_at_the_log_path_is_refused(
@@ -1045,7 +1045,7 @@ def test_a_fifo_with_a_reader_at_the_log_path_is_refused(
     os.mkfifo(config.log)
     reader = os.open(config.log, os.O_RDONLY | os.O_NONBLOCK)
     try:
-        assert_the_log_is_refused(runner, config, started)
+        assert_the_log_is_refused(runner, config, started=started)
     finally:
         os.close(reader)
 
@@ -1056,7 +1056,7 @@ def test_a_folder_at_the_log_path_is_refused(
     config = config_for(stand_in(tmp_path, SERVES), tmp_path)
     config.log.mkdir()
 
-    assert_the_log_is_refused(runner, config, started)
+    assert_the_log_is_refused(runner, config, started=started)
 
 
 def test_a_log_the_service_deletes_cannot_replace_the_error_about_the_service(

@@ -183,7 +183,7 @@ class AnthropicClient(LLMClient):
         try:
             return schema.model_validate_json(response.text), response
         except ValidationError as error:
-            raise _reply_broke_the_schema(schema, error, response) from None
+            raise _reply_broke_the_schema(schema, error, response=response) from None
 
     # Every call streams, because the SDK refuses a large max_tokens on a call that does not.
     #
@@ -429,7 +429,7 @@ def _no_value_in_reply(schema: type[BaseModel], response: LLMResponse) -> ParseF
 
 
 def _reply_broke_the_schema(
-    schema: type[BaseModel], error: ValidationError, response: LLMResponse
+    schema: type[BaseModel], error: ValidationError, *, response: LLMResponse
 ) -> ParseFailed:
     return ParseFailed(
         f"The model's reply broke a rule of {schema.__name__}: "

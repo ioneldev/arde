@@ -64,46 +64,48 @@ def test_every_env_file_stays_out_of_git_except_the_example() -> None:
 
 
 def test_a_link_to_a_missing_file_is_reported(tmp_path: Path) -> None:
-    page = write(tmp_path, "README.md", "See [the guide](docs/guide.md).")
+    page = write(tmp_path, "README.md", text="See [the guide](docs/guide.md).")
 
     assert broken_links([page], tmp_path) == ["README.md: link to docs/guide.md does not exist"]
 
 
 def test_a_link_to_an_existing_file_is_accepted(tmp_path: Path) -> None:
-    write(tmp_path, "docs/guide.md", "# Guide")
-    page = write(tmp_path, "README.md", "See [the guide](docs/guide.md).")
+    write(tmp_path, "docs/guide.md", text="# Guide")
+    page = write(tmp_path, "README.md", text="See [the guide](docs/guide.md).")
 
     assert broken_links([page], tmp_path) == []
 
 
 def test_links_are_resolved_from_the_folder_of_the_page(tmp_path: Path) -> None:
-    write(tmp_path, "docs/glossary.md", "# Glossary")
-    page = write(tmp_path, "docs/decisions/0001.md", "[terms](../glossary.md)")
+    write(tmp_path, "docs/glossary.md", text="# Glossary")
+    page = write(tmp_path, "docs/decisions/0001.md", text="[terms](../glossary.md)")
 
     assert broken_links([page], tmp_path) == []
 
 
 def test_a_fragment_does_not_hide_a_missing_file(tmp_path: Path) -> None:
-    page = write(tmp_path, "README.md", "[x](docs/guide.md#install)")
+    page = write(tmp_path, "README.md", text="[x](docs/guide.md#install)")
 
     assert broken_links([page], tmp_path) == ["README.md: link to docs/guide.md does not exist"]
 
 
 @pytest.mark.parametrize("target", ["https://example.com", "mailto:a@b.c", "#section"])
 def test_external_links_and_anchors_are_not_checked(tmp_path: Path, target: str) -> None:
-    page = write(tmp_path, "README.md", f"[x]({target})")
+    page = write(tmp_path, "README.md", text=f"[x]({target})")
 
     assert broken_links([page], tmp_path) == []
 
 
 def test_link_syntax_inside_code_is_not_a_link(tmp_path: Path) -> None:
-    page = write(tmp_path, "README.md", "Use `[x](nope.md)` like this:\n\n```\n[y](nope.md)\n```\n")
+    page = write(
+        tmp_path, "README.md", text="Use `[x](nope.md)` like this:\n\n```\n[y](nope.md)\n```\n"
+    )
 
     assert broken_links([page], tmp_path) == []
 
 
 def test_a_backticked_path_that_does_not_exist_is_reported(tmp_path: Path) -> None:
-    page = write(tmp_path, "AGENTS.md", "The renderer is `src/arde/render.py`.")
+    page = write(tmp_path, "AGENTS.md", text="The renderer is `src/arde/render.py`.")
 
     assert missing_repo_paths([page], tmp_path) == [
         "AGENTS.md: `src/arde/render.py` does not exist"
@@ -111,36 +113,36 @@ def test_a_backticked_path_that_does_not_exist_is_reported(tmp_path: Path) -> No
 
 
 def test_a_backticked_file_or_folder_that_exists_is_accepted(tmp_path: Path) -> None:
-    write(tmp_path, "src/arde/domain/models.py", "")
-    page = write(tmp_path, "AGENTS.md", "`src/arde/domain/models.py` and `src/arde/domain/`.")
+    write(tmp_path, "src/arde/domain/models.py", text="")
+    page = write(tmp_path, "AGENTS.md", text="`src/arde/domain/models.py` and `src/arde/domain/`.")
 
     assert missing_repo_paths([page], tmp_path) == []
 
 
 def test_a_path_inside_a_backticked_command_is_checked(tmp_path: Path) -> None:
-    page = write(tmp_path, "AGENTS.md", "Run `cd tools/goinspect && go test ./...`.")
+    page = write(tmp_path, "AGENTS.md", text="Run `cd tools/goinspect && go test ./...`.")
 
     assert missing_repo_paths([page], tmp_path) == ["AGENTS.md: `tools/goinspect` does not exist"]
 
 
 def test_backticked_text_that_is_not_a_repo_path_is_ignored(tmp_path: Path) -> None:
-    page = write(tmp_path, "AGENTS.md", "Run `make check`, set `ARDE_HOME`, read `~/docs/x`.")
+    page = write(tmp_path, "AGENTS.md", text="Run `make check`, set `ARDE_HOME`, read `~/docs/x`.")
 
     assert missing_repo_paths([page], tmp_path) == []
 
 
 def test_a_docs_page_missing_from_the_index_is_reported(tmp_path: Path) -> None:
-    write(tmp_path, "docs/index.md", "[glossary](glossary.md)")
-    write(tmp_path, "docs/glossary.md", "# Glossary")
-    write(tmp_path, "docs/decisions/0001-x.md", "# X")
+    write(tmp_path, "docs/index.md", text="[glossary](glossary.md)")
+    write(tmp_path, "docs/glossary.md", text="# Glossary")
+    write(tmp_path, "docs/decisions/0001-x.md", text="# X")
 
     assert pages_missing_from_index(tmp_path) == ["docs/decisions/0001-x.md"]
 
 
 def test_every_page_linked_from_the_index_is_accepted(tmp_path: Path) -> None:
-    write(tmp_path, "docs/index.md", "[g](glossary.md) [x](decisions/0001-x.md)")
-    write(tmp_path, "docs/glossary.md", "# Glossary")
-    write(tmp_path, "docs/decisions/0001-x.md", "# X")
+    write(tmp_path, "docs/index.md", text="[g](glossary.md) [x](decisions/0001-x.md)")
+    write(tmp_path, "docs/glossary.md", text="# Glossary")
+    write(tmp_path, "docs/decisions/0001-x.md", text="# X")
 
     assert pages_missing_from_index(tmp_path) == []
 
@@ -160,29 +162,29 @@ def test_the_wiki_covers_exactly_the_listed_locations(tmp_path: Path) -> None:
         "docs/decisions/nested/deep.md",
     ]
     for relative in covered + out_of_scope:
-        write(tmp_path, relative, "# Page")
+        write(tmp_path, relative, text="# Page")
 
     assert [label(page, tmp_path) for page in wiki_files(tmp_path)] == covered
 
 
 def test_pages_outside_the_listed_locations_need_no_index_entry(tmp_path: Path) -> None:
-    write(tmp_path, "docs/index.md", "# Index")
-    write(tmp_path, "docs/superpowers/plans/plan.md", "# Plan")
-    write(tmp_path, "docs/research/spike/notes.md", "# Notes")
-    write(tmp_path, "docs/guides/setup.md", "# Setup")
+    write(tmp_path, "docs/index.md", text="# Index")
+    write(tmp_path, "docs/superpowers/plans/plan.md", text="# Plan")
+    write(tmp_path, "docs/research/spike/notes.md", text="# Notes")
+    write(tmp_path, "docs/guides/setup.md", text="# Setup")
 
     assert pages_missing_from_index(tmp_path) == []
 
 
 def test_a_phase_spec_missing_from_the_index_is_reported(tmp_path: Path) -> None:
-    write(tmp_path, "docs/index.md", "# Index")
-    write(tmp_path, "docs/specs/phase-1.md", "# Phase 1")
+    write(tmp_path, "docs/index.md", text="# Index")
+    write(tmp_path, "docs/specs/phase-1.md", text="# Phase 1")
 
     assert pages_missing_from_index(tmp_path) == ["docs/specs/phase-1.md"]
 
 
 def test_a_broken_link_in_a_phase_spec_is_reported(tmp_path: Path) -> None:
-    write(tmp_path, "docs/specs/phase-1.md", "See [the plan](../plans/ghost.md).")
+    write(tmp_path, "docs/specs/phase-1.md", text="See [the plan](../plans/ghost.md).")
 
     assert broken_links(wiki_files(tmp_path), tmp_path) == [
         "docs/specs/phase-1.md: link to ../plans/ghost.md does not exist"
@@ -190,13 +192,13 @@ def test_a_broken_link_in_a_phase_spec_is_reported(tmp_path: Path) -> None:
 
 
 def test_a_future_path_in_a_phase_spec_is_accepted(tmp_path: Path) -> None:
-    write(tmp_path, "docs/specs/phase-1.md", "Adds `src/arde/domain/` and `tools/goinspect/`.")
+    write(tmp_path, "docs/specs/phase-1.md", text="Adds `src/arde/domain/` and `tools/goinspect/`.")
 
     assert missing_repo_paths(path_checked_files(tmp_path), tmp_path) == []
 
 
 def test_the_same_future_path_in_a_decision_is_reported(tmp_path: Path) -> None:
-    write(tmp_path, "docs/decisions/0001-x.md", "Adds `src/arde/domain/`.")
+    write(tmp_path, "docs/decisions/0001-x.md", text="Adds `src/arde/domain/`.")
 
     assert missing_repo_paths(path_checked_files(tmp_path), tmp_path) == [
         "docs/decisions/0001-x.md: `src/arde/domain/` does not exist"
@@ -272,7 +274,7 @@ def label(page: Path, root: Path) -> str:
     return page.relative_to(root).as_posix()
 
 
-def write(root: Path, relative: str, text: str) -> Path:
+def write(root: Path, relative: str, *, text: str) -> Path:
     page = root / relative
     page.parent.mkdir(parents=True, exist_ok=True)
     page.write_text(text, encoding="utf-8")

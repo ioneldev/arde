@@ -167,7 +167,7 @@ GOOD_MODELS: dict[type[BaseModel], dict[str, object]] = {
 }
 
 
-def model_with(model: type[BaseModel], field: str, value: str) -> BaseModel:
+def model_with(model: type[BaseModel], field: str, *, value: str) -> BaseModel:
     return model.model_validate({**GOOD_MODELS[model], field: value})
 
 
@@ -177,17 +177,17 @@ def test_no_field_read_from_a_repo_holds_a_control_character(
     model: type[BaseModel], field: str, limit: int, text: str
 ) -> None:
     with pytest.raises(ValidationError):
-        model_with(model, field, text)
+        model_with(model, field, value=text)
 
 
 @pytest.mark.parametrize(("model", "field", "limit"), FIELD_LIMITS)
 def test_a_field_read_from_a_repo_holds_text_up_to_its_limit_and_no_more(
     model: type[BaseModel], field: str, limit: int
 ) -> None:
-    assert getattr(model_with(model, field, "x" * limit), field) == "x" * limit
+    assert getattr(model_with(model, field, value="x" * limit), field) == "x" * limit
 
     with pytest.raises(ValidationError):
-        model_with(model, field, "x" * (limit + 1))
+        model_with(model, field, value="x" * (limit + 1))
 
 
 @pytest.mark.parametrize(
