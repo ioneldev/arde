@@ -483,13 +483,50 @@ func TestDeclarationLinesAreTheLinesInTheFile(t *testing.T) {
 		"\r\n" + // 5
 		"var second = 1\r\n" // 6
 
-	report := inspectOneFile(t, source)
+	lines := declarationLines(inspectOneFile(t, source))
 
+	if want := map[string]int{"First": 4, "second": 6}; !reflect.DeepEqual(lines, want) {
+		t.Fatalf("got %v, want %v", lines, want)
+	}
+}
+
+func declarationLines(report declarationReport) map[string]int {
 	lines := map[string]int{}
 	for _, d := range report.Declarations {
 		lines[d.Name] = d.Line
 	}
-	if want := map[string]int{"First": 4, "second": 6}; !reflect.DeepEqual(lines, want) {
+	return lines
+}
+
+func TestEachVarNameKeepsItsOwnLine(t *testing.T) {
+	source := "package p\n" + // 1
+		"\n" + // 2
+		"var (\n" + // 3
+		"\tfirst,\n" + // 4
+		"\tsecond = 1, 2\n" + // 5
+		")\n"
+
+	lines := declarationLines(inspectOneFile(t, source))
+
+	if want := map[string]int{"first": 4, "second": 5}; !reflect.DeepEqual(lines, want) {
+		t.Fatalf("got %v, want %v", lines, want)
+	}
+}
+
+func TestEachFieldNameKeepsItsOwnLine(t *testing.T) {
+	source := "package p\n" + // 1
+		"\n" + // 2
+		"type Range struct {\n" + // 3
+		"\tLow,\n" + // 4
+		"\tHigh int\n" + // 5
+		"}\n"
+
+	lines := map[string]int{}
+	for _, field := range inspectOneFile(t, source).Fields {
+		lines[field.Name] = field.Line
+	}
+
+	if want := map[string]int{"Low": 4, "High": 5}; !reflect.DeepEqual(lines, want) {
 		t.Fatalf("got %v, want %v", lines, want)
 	}
 }
