@@ -113,6 +113,8 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 
 ## Facts
 
+- **The default param patterns match by text.** The Go adapter reads `URL.Query().Get`, `PathValue`, `FormValue`, `PostFormValue` and `Header.Get` on any one identifier with no pattern. A request held in a struct field, as in `s.req.URL.Query().Get`, is not read, and a `Header.Get` on an HTTP response the service reads as a client is listed as a param.
+- **Each response status needs its own evidence.** A status must be returned by a probe the fact cites, or, at 400 or above, be the status of an error code the response lists. An error code's status counts only when the source writes it as a number or as a `net/http` constant named through `http`; a variable, a call or another import name needs a cited probe.
 - **A code quote proves only that the code exists, not that it supports the fact.** Quotes match with each run of whitespace read as one space, from the first 1 MiB of a file.
 - **Only Go source the service is built from (the files the inventory's declarations name), its module files at the repo root and the root Makefile make reads count as source.** Test data, vendored code, build-ignored files, other programs, `*.mk` files, a README, YAML or a Dockerfile are never evidence. In the Makefile, a line is free text from its first `#` or quote through its continued lines. A quoted path must be written as `list_files` writes it.
 - **A probe proves only what the service returned.** Planted text in a reply can still back a rule.
@@ -206,18 +208,18 @@ Measured against the live API on 2026-11-02, with Opus 5.5.
 
 ## Not tested yet
 
-As of the Phase 2 and 3 task reports, which ran every agent against scripted replies. Move an item out of this list when a test or a measurement covers it.
+Move an item out of this list when a test or a measurement covers it. What the real runs on `catalog-poc` and the hostile fixture measured is in [the first real runs](decisions/first-real-run.md).
 
-- Linux, Windows and amd64 hosts. The container was tried only on Docker for Mac (arm64).
-- The agents on a real model: how the prompts of Discovery, Explore and the docs agent work, whether the API accepts the `submit_profile`, `add_facts` and `submit_section` schemas, and what a repair costs. The API client itself has been run live.
-- A full run end to end. The end-to-end tests run the pipeline on `tests/fixtures/shop` with scripted replies, but no-config onboarding on a real repo is a claim, not a result. The one measurement is from before the routes rework: 3 of 10 real plain `net/http` samples stopped with no way past, on a path no profile could reach. Two held it in a const, which `goinspect routes` now reads, and the third, `net/http/pprof`, adds a variable prefix to it, which still stops the run. That figure is not re-measured, because `routes` compiles what it reads and third-party code is not compiled here.
-- The `make eval` test that runs the real models on `tests/fixtures/hostile`. It is written and collected, and has not been run.
+- Linux, Windows and amd64 hosts. Every run so far was on macOS (arm64). There is no container yet.
+- No-config onboarding beyond `catalog-poc` and the fixtures. The one measurement on other real services is from before the routes rework: 3 of 10 plain `net/http` samples stopped with no way past. That figure is not re-measured, because `routes` compiles what it reads and third-party code is not compiled here.
+- A repair round on a real model. Every real run so far passed its checks with no repair, or stopped before the repair loop was built.
 - A SIGTERM sent to `uv run` rather than to `arde`. The signal test runs `tests/scripted_arde.py` as a process of its own, and `uv run` may not pass the signal on.
-- Run cost. The estimate of about $3 per first run with prompt caching rests on a review, not a measurement.
 
 ## Known costs
 
-- The container image is about 980 MB, because it holds both the Go and Python toolchains.
 - Behaviour runs the repo's build, vet and tests again on the output copy, once per attempt.
+- Any changed fact rewrites the overview and the change guide, which costs two docs-agent calls on every re-run that changes a fact.
+- **A one-line edit can make most of the wiki stale.** A fact goes stale when a declaration, route or file it links changed, and field facts link the route that replies with their struct. Measured on `catalog-poc`: changing one error message in the product handler staled 37 of 60 facts, and Explore submits each again. The answers stay right; the cost is time and tokens.
+- **A workspace keeps only the last two clones.** An older run's result branch goes with its clone, so a result to keep is exported right after its run.
 - `swag` v2.0.0-rc6 is a pre-release. It is pinned, and the run's checks would surface a bad spec.
 - The first build of `swag` needs the network, unless the Go module cache already holds its modules. `tools/swag/go.sum` holds the hash of every module the build needs, so Go refuses a download that does not match. The binary prints its version as v2.0.0, because that is the string rc6 carries.
