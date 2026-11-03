@@ -244,6 +244,24 @@ class EditCheckRequest(Frozen):
     manifest: RenderManifest
 
 
+# Evidence. Anyone can write anything in a comment or a string literal, planted instructions
+# included, so a quote is evidence only where it holds code.
+
+# "not source" is a file whose syntax the adapter does not read, such as a README.
+QuoteContent = Literal["code", "comment", "string literal", "not source"]
+
+
+class SourceQuote(Frozen):
+    """Where a quote appears in one file of the repo."""
+
+    # From the repo root. Its name says which syntax the file is written in.
+    file: str
+    # The file's text, with each CRLF line ending read as LF.
+    source: str
+    # Each place the quote appears, as start and end offsets into source.
+    places: tuple[tuple[int, int], ...]
+
+
 class LanguageAdapter(Protocol):
     """Everything ARDE knows about one language. Each method holds an idiom of that language.
 
@@ -338,6 +356,15 @@ class LanguageAdapter(Protocol):
         annotation, a line the manifest lists, or an empty comment. A source file added or
         removed, a change to code, and a change to a file the build reads to find its
         dependencies are findings too. Code owns every one, because no agent can repair them.
+        """
+        ...
+
+    def quote_content(self, quote: SourceQuote) -> QuoteContent:
+        """What the quote holds, read with the file's syntax.
+
+        It is code when any of its places has something outside every comment and string literal,
+        else a comment or a string literal, and "not source" in a file whose syntax the adapter
+        does not read. It reads only the text it is given, so it opens no file and needs no gate.
         """
         ...
 
