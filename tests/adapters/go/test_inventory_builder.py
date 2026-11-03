@@ -15,6 +15,8 @@ from arde.adapters.language.go.goinspect_client import (
     RouteSite,
     SourcePlace,
     StructField,
+    UnreadProblem,
+    UnreadSite,
     WrapperCall,
 )
 from arde.adapters.language.go.inventory_builder import (
@@ -113,7 +115,7 @@ def inventory_of(
     make_targets: tuple[str, ...] = (),
     declarations: tuple[Declaration, ...] = (),
     stripped_prefixes: tuple[SourcePlace, ...] = (),
-    wrapper_prefixes: tuple[SourcePlace, ...] = (),
+    unread_sites: tuple[UnreadSite, ...] = (),
     folders: tuple[str, ...] | None = None,
     build_files: tuple[str, ...] | None = None,
     wrapper_calls: tuple[WrapperCall, ...] = (),
@@ -127,7 +129,7 @@ def inventory_of(
         build_files=tuple(files) if build_files is None else build_files,
         sites=sites,
         stripped_prefixes=stripped_prefixes,
-        wrapper_prefixes=wrapper_prefixes,
+        unread_sites=unread_sites,
         wrapper_calls=wrapper_calls,
     )
     reading = SourceReading(
@@ -488,17 +490,47 @@ def test_the_file_named_by_a_prefix_stop_is_printed_safely() -> None:
     assert "\x1b" not in str(error)
 
 
-def test_a_wrapper_that_adds_to_the_path_stops_the_run_and_names_the_place() -> None:
+def stopped_at_an_unread_site(problem: UnreadProblem) -> RouteNotUnderstoodError:
+    site = UnreadSite(file="web/router.go", line=8, problem=problem)
     with pytest.raises(RouteNotUnderstoodError) as stopped:
-        inventory_of(
-            registering(Lit("GET /items")),
-            wrapper_prefixes=(SourcePlace(file="web/router.go", line=8),),
-        )
+        inventory_of(registering(Lit("GET /items")), unread_sites=(site,))
+    return stopped.value
 
-    assert "web/router.go:8" in str(stopped.value)
-    assert "adds to the path" in str(stopped.value)
-    assert stopped.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
-    assert "report that" in stopped.value.next_action
+
+@pytest.mark.parametrize(
+    ("problem", "said"),
+    [
+        ("builds its path", "builds its path from more than its parameters"),
+        ("hands on its path", "hands its path to another function"),
+        ("registers nothing", "registers no route"),
+        ("method is not a constant", "method argument is not a constant"),
+    ],
+)
+def test_a_site_goinspect_cannot_read_stops_the_run_names_the_place_and_says_why(
+    problem: UnreadProblem, said: str
+) -> None:
+    error = stopped_at_an_unread_site(problem)
+
+    assert "web/router.go:8" in str(error)
+    assert said in str(error)
+    assert error.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
+    assert "report that" in error.next_action
+    assert "Do not narrow" in error.next_action
+
+
+def test_a_wrapper_that_builds_its_path_is_told_how_to_name_a_method_parameter() -> None:
+    error = stopped_at_an_unread_site("builds its path")
+
+    assert "`method`" in error.next_action
+
+
+def test_the_file_named_by_an_unread_site_is_printed_safely() -> None:
+    site = UnreadSite(file="e\x1bvil.go", line=2, problem="registers nothing")
+
+    with pytest.raises(RouteNotUnderstoodError) as stopped:
+        inventory_of(registering(Lit("GET /items")), unread_sites=(site,))
+
+    assert "\x1b" not in str(stopped.value)
 
 
 def test_no_route_at_all_stops_the_run_and_asks_for_a_pattern() -> None:

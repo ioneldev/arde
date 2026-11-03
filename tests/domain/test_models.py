@@ -415,6 +415,7 @@ PROFILE_FIELDS: dict[str, Any] = {
     ("kind", "args"),
     [
         ("route", {"path": 0, "handler": 1}),
+        ("route", {"method": 0, "path": 1, "handler": 2}),
         ("param", {"name": 0}),
         ("env", {"name": 0}),
         ("error", {"status": 1, "code": 2}),
@@ -448,8 +449,10 @@ def test_a_pattern_missing_an_argument_its_kind_needs_is_refused_and_names_it(
 @pytest.mark.parametrize(
     ("kind", "args", "unknown"),
     [
-        ("route", {"path": 0, "handler": 1, "method": 2}, "method"),
         ("route", {"path": 0, "handler": 1, "middleware": 2}, "middleware"),
+        ("param", {"name": 0, "method": 1}, "method"),
+        ("env", {"name": 0, "method": 1}, "method"),
+        ("error", {"code": 0, "status": 1, "method": 2}, "method"),
         ("param", {"name": 0, "default": 1}, "default"),
         ("env", {"name": 0, "fallback": 1}, "fallback"),
         ("error", {"code": 0, "status": 1, "message": 2}, "message"),

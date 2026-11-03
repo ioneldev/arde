@@ -24,10 +24,12 @@ r.URL.Query().Get. Anchor it with ^ and $, and escape each dot.
 args gives the position of each argument ARDE reads, counted from 0. Each kind has exact names, \
 and any other name is refused.
 
-- route: `path` and `handler`. Calls to Handle and HandleFunc of net/http are found with no \
-pattern, whatever the receiver is called. Write a pattern for a function of this service that \
-registers routes for its callers, or for another router. It is read at that function's calls, and \
-the registration inside it is passed over.
+- route: `path` and `handler`, and `method` for a function that takes the method as an \
+argument. Calls to Handle and HandleFunc of net/http are found with no pattern, whatever the \
+receiver is called. Write a pattern for a function of this service that registers routes for its \
+callers, or for another router. It is read at that function's calls, and the registration inside \
+it is passed over. Such a function must register its path argument alone, after a constant method \
+such as "GET ", or after its method argument and a space.
 - param: `name`. One pattern per way the service reads a request value, such as \
 ^r\\.URL\\.Query\\(\\)\\.Get$, ^r\\.PathValue$ or a local variable that holds the query, as in \
 ^query\\.Get$.

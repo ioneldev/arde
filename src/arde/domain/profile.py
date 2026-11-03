@@ -6,15 +6,18 @@ from pydantic import model_validator
 
 from arde.domain.base import CodeIdentifier, Frozen, MainFile, MainPackage
 
-# The argument names that code reads for each kind, and it reads no others. A pattern without one
-# could match a call and give nothing from it, every time, and look like a repo without that fact.
-# A pattern with another would be ignored, which reads as a method it never gave ARDE.
+# The argument names that code must read for each kind. A pattern without one could match a call
+# and give nothing from it, every time, and look like a repo without that fact. A name that is
+# neither required nor optional would be ignored, which reads as something it never gave ARDE.
 REQUIRED_ARGUMENTS: dict[str, frozenset[str]] = {
     "route": frozenset({"path", "handler"}),
     "param": frozenset({"name"}),
     "env": frozenset({"name"}),
     "error": frozenset({"code", "status"}),
 }
+# A route pattern may name the method too, for a function that takes it as an argument. Code reads
+# it at every call the pattern matches, and a method that is not a constant stops the run.
+OPTIONAL_ARGUMENTS: dict[str, frozenset[str]] = {"route": frozenset({"method"})}
 
 
 class ExtractionPattern(Frozen):
@@ -24,8 +27,9 @@ class ExtractionPattern(Frozen):
 
     @model_validator(mode="after")
     def _name_exactly_the_arguments_the_kind_reads(self) -> Self:
-        read = REQUIRED_ARGUMENTS[self.kind]
-        missing = sorted(read - self.args.keys())
+        required = REQUIRED_ARGUMENTS[self.kind]
+        read = required | OPTIONAL_ARGUMENTS.get(self.kind, frozenset())
+        missing = sorted(required - self.args.keys())
         if missing:
             raise ValueError(
                 f"a {self.kind} pattern must give a position for {', '.join(missing)} in args"

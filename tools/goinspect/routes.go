@@ -4,10 +4,11 @@ import (
 	"cmp"
 	"go/ast"
 	"go/constant"
+	"go/token"
 	"go/types"
 	"maps"
+	"regexp"
 	"slices"
-	"strings"
 	"unicode/utf8"
 
 	"golang.org/x/tools/go/types/typeutil"
@@ -30,14 +31,31 @@ var registrationFunctions = []string{
 
 var registrationPositions = map[string]int{"path": 0, "handler": 1}
 
+// The problems that stop a route from being read. Each names a site in unread_sites.
+const (
+	// A site inside a wrapper builds its path from more than the wrapper's parameters.
+	buildsItsPath = "builds its path"
+	// A site inside a wrapper hands its path to another wrapper, whose own form would apply too.
+	handsOnItsPath = "hands on its path"
+	// A call to a wrapper registers no route: its handler is a mux, or no site inside the wrapper
+	// registers a path it is given.
+	registersNothing = "registers nothing"
+	// The argument a route pattern names as the method is not a constant at this call.
+	methodIsNotKnown = "method is not a constant"
+)
+
+// aMethodAndASpace is the constant a wrapper may put before its path parameter, such as "GET ".
+var aMethodAndASpace = regexp.MustCompile(`^[A-Z]+ $`)
+
 type routeRequest struct {
 	dir          string
 	patternsPath string
 	mainPackage  string
 }
 
-// routeSite is one call that registers a route. Literals holds the path when the compiler knows
-// it, and Args the path and the handler as written. A handler with a root reads as the root's name.
+// routeSite is one call that registers a route. Literals holds the path it registers when the
+// compiler knows it, and Args the path and the handler as written. A handler with a root reads as
+// the root's name.
 type routeSite struct {
 	callMatch
 	HandlerID   *string `json:"handler_id"`
@@ -52,18 +70,40 @@ type wrapperCall struct {
 	sourcePlace
 }
 
+// unreadSite is a call whose route cannot be read, and the problem that says why.
+type unreadSite struct {
+	sourcePlace
+	Problem string `json:"problem"`
+}
+
 type routeReport struct {
 	PackageFolders   []string      `json:"package_folders"`
 	BuildFiles       []string      `json:"build_files"`
 	Sites            []routeSite   `json:"sites"`
 	StrippedPrefixes []sourcePlace `json:"stripped_prefixes"`
-	WrapperPrefixes  []sourcePlace `json:"wrapper_prefixes"`
+	UnreadSites      []unreadSite  `json:"unread_sites"`
 	WrapperCalls     []wrapperCall `json:"wrapper_calls"`
 }
 
 // wrappersByKind holds, for each pattern kind, the declared functions a pattern of that kind matched
 // at a call, with the argument positions of the first pattern that did.
 type wrappersByKind map[string]map[*types.Func]map[string]int
+
+// wrapperForm is how a site inside a wrapper builds the path it registers from the wrapper's
+// parameters, so that each call to the wrapper can build the same path from its own constants.
+type wrapperForm struct {
+	// methodBefore is the constant before the path parameter, such as "GET ", or empty.
+	methodBefore string
+	// methodFromTheCall is method+" "+path, with the method read at each call.
+	methodFromTheCall bool
+}
+
+func (form wrapperForm) registered(path, method string) string {
+	if form.methodFromTheCall {
+		return method + " " + path
+	}
+	return form.methodBefore + path
+}
 
 // findRoutes reads every pattern before it loads anything, as findMatches does.
 func findRoutes(request routeRequest) (routeReport, error) {
@@ -77,25 +117,25 @@ func findRoutes(request routeRequest) (routeReport, error) {
 	}
 	calls := service.calls()
 	reader := routeReader{service: service, patterns: patterns, wrappers: wrappersIn(calls, patterns)}
-	return reader.report(calls), nil
+	return reader.withWrapperForms(calls).report(calls), nil
 }
 
 func wrappersIn(calls []serviceCall, patterns []callPattern) wrappersByKind {
 	wrappers := wrappersByKind{}
 	for _, call := range calls {
-		target := typeutil.StaticCallee(call.info, call.syntax)
+		target := call.target()
 		if target == nil {
 			continue
 		}
 		for _, pattern := range patterns {
-			if !pattern.call.MatchString(call.callee) {
+			if !call.matches(pattern) {
 				continue
 			}
 			if wrappers[pattern.kind] == nil {
 				wrappers[pattern.kind] = map[*types.Func]map[string]int{}
 			}
-			if _, known := wrappers[pattern.kind][target.Origin()]; !known {
-				wrappers[pattern.kind][target.Origin()] = pattern.argumentPositions
+			if _, known := wrappers[pattern.kind][target]; !known {
+				wrappers[pattern.kind][target] = pattern.argumentPositions
 			}
 		}
 	}
@@ -106,6 +146,30 @@ type routeReader struct {
 	service  loadedService
 	patterns []callPattern
 	wrappers wrappersByKind
+	// forms holds, for each route wrapper of the module, the form of each site inside it that
+	// registers a path it is given. A wrapper with a site that cannot be read is in unreadWrappers.
+	forms          map[*types.Func][]wrapperForm
+	unreadWrappers map[*types.Func]bool
+}
+
+// withWrapperForms reads the sites inside every wrapper before any call to one is read.
+func (reader routeReader) withWrapperForms(calls []serviceCall) routeReader {
+	reader.forms = map[*types.Func][]wrapperForm{}
+	reader.unreadWrappers = map[*types.Func]bool{}
+	for _, call := range calls {
+		for _, read := range reader.routeCallsOf(call) {
+			inner, isInside := reader.innerSiteAt(read)
+			if !isInside {
+				continue
+			}
+			if inner.problem != "" {
+				reader.unreadWrappers[call.enclosing] = true
+			} else {
+				reader.forms[call.enclosing] = append(reader.forms[call.enclosing], inner.form)
+			}
+		}
+	}
+	return reader
 }
 
 func (reader routeReader) report(calls []serviceCall) routeReport {
@@ -114,17 +178,16 @@ func (reader routeReader) report(calls []serviceCall) routeReport {
 		BuildFiles:       reader.service.buildFiles(),
 		Sites:            []routeSite{},
 		StrippedPrefixes: []sourcePlace{},
-		WrapperPrefixes:  []sourcePlace{},
+		UnreadSites:      []unreadSite{},
 		WrapperCalls:     []wrapperCall{},
 	}
 	for _, call := range calls {
-		report.Sites = append(report.Sites, reader.sitesOf(call)...)
+		reading := reader.readCall(call)
+		report.Sites = append(report.Sites, reading.sites...)
+		report.UnreadSites = append(report.UnreadSites, reading.unread...)
 		report.WrapperCalls = append(report.WrapperCalls, reader.wrapperCallsOf(call)...)
 		if call.isCallTo(stripPrefixFunction) && !call.stripsAFileServer() {
 			report.StrippedPrefixes = append(report.StrippedPrefixes, call.place)
-		}
-		if reader.addsToAWrappedPath(call) {
-			report.WrapperPrefixes = append(report.WrapperPrefixes, call.place)
 		}
 	}
 	report.sort()
@@ -136,7 +199,10 @@ func (report *routeReport) sort() {
 		return cmp.Or(cmp.Compare(a.File, b.File), cmp.Compare(a.Line, b.Line))
 	})
 	slices.SortFunc(report.StrippedPrefixes, comparePlaces)
-	slices.SortFunc(report.WrapperPrefixes, comparePlaces)
+	slices.SortFunc(report.UnreadSites, func(a, b unreadSite) int {
+		return cmp.Or(comparePlaces(a.sourcePlace, b.sourcePlace), cmp.Compare(a.Problem, b.Problem))
+	})
+	report.UnreadSites = slices.Compact(report.UnreadSites)
 	slices.SortFunc(report.WrapperCalls, func(a, b wrapperCall) int {
 		return cmp.Or(comparePlaces(a.sourcePlace, b.sourcePlace), cmp.Compare(a.Kind, b.Kind))
 	})
@@ -147,8 +213,16 @@ func comparePlaces(a, b sourcePlace) int {
 	return cmp.Or(cmp.Compare(a.File, b.File), cmp.Compare(a.Line, b.Line))
 }
 
+// target is the function a call reaches, as declared, or nil for a call the compiler cannot name.
+func (call serviceCall) target() *types.Func {
+	if target := typeutil.StaticCallee(call.info, call.syntax); target != nil {
+		return target.Origin()
+	}
+	return nil
+}
+
 func (call serviceCall) isCallTo(names ...string) bool {
-	target := typeutil.StaticCallee(call.info, call.syntax)
+	target := call.target()
 	return target != nil && slices.Contains(names, target.FullName())
 }
 
@@ -170,14 +244,61 @@ func (call serviceCall) matches(pattern callPattern) bool {
 	return pattern.call.MatchString(call.callee)
 }
 
-func (reader routeReader) sitesOf(call serviceCall) []routeSite {
-	sites := []routeSite{}
-	for _, positions := range reader.routePositionsOf(call) {
-		if site, isRoute := reader.siteAt(call, positions); isRoute {
-			sites = append(sites, site)
-		}
+// routeCall is a call read with the argument positions of one route pattern.
+type routeCall struct {
+	serviceCall
+	positions map[string]int
+}
+
+func (call routeCall) argument(name string) ast.Expr {
+	position, isNamed := call.positions[name]
+	if !isNamed || position >= len(call.syntax.Args) {
+		return nil
 	}
-	return sites
+	return call.syntax.Args[position]
+}
+
+func (call routeCall) namesA(name string) bool {
+	_, isNamed := call.positions[name]
+	return isNamed
+}
+
+// methodOf is the method the call passes where its route pattern names one, when the compiler
+// knows it.
+func (call routeCall) methodOf() (string, bool) {
+	if !call.namesA("method") {
+		return "", false
+	}
+	return knownString(call.info, call.argument("method"))
+}
+
+// callReading is what one call adds to the report.
+type callReading struct {
+	sites  []routeSite
+	unread []unreadSite
+}
+
+func (call routeCall) unreadAs(problem string) callReading {
+	return callReading{unread: []unreadSite{{sourcePlace: call.place, Problem: problem}}}
+}
+
+func (reader routeReader) readCall(call serviceCall) callReading {
+	reading := callReading{}
+	for _, read := range reader.routeCallsOf(call) {
+		found := reader.readAt(read)
+		reading.sites = append(reading.sites, found.sites...)
+		reading.unread = append(reading.unread, found.unread...)
+	}
+	return reading
+}
+
+// routeCallsOf reads the call once for each set of positions it registers a route with.
+func (reader routeReader) routeCallsOf(call serviceCall) []routeCall {
+	reads := []routeCall{}
+	for _, positions := range reader.routePositionsOf(call) {
+		reads = append(reads, routeCall{serviceCall: call, positions: positions})
+	}
+	return reads
 }
 
 // routePositionsOf says where a call holds its path and handler. A pattern wins, so that a wrong
@@ -194,10 +315,8 @@ func (reader routeReader) routePositionsOf(call serviceCall) []map[string]int {
 	if len(positions) > 0 {
 		return positions
 	}
-	if target := typeutil.StaticCallee(call.info, call.syntax); target != nil {
-		if wrapperPositions, isWrapper := reader.wrappers[routeKind][target.Origin()]; isWrapper {
-			return []map[string]int{wrapperPositions}
-		}
+	if wrapperPositions, isWrapper := reader.wrappers[routeKind][call.target()]; isWrapper {
+		return []map[string]int{wrapperPositions}
 	}
 	if call.isCallTo(registrationFunctions...) {
 		return []map[string]int{registrationPositions}
@@ -205,67 +324,187 @@ func (reader routeReader) routePositionsOf(call serviceCall) []map[string]int {
 	return nil
 }
 
-// siteAt reports false for a call that adds no route of its own: a mount, or a call inside a
-// wrapper that hands on a path it was given.
-func (reader routeReader) siteAt(call serviceCall, positions map[string]int) (routeSite, bool) {
-	handlers := handlerReader{info: call.info, service: reader.service}
-	handler := handlers.innermost(call.argument(positions, "handler"))
-	if handler != nil && handlers.isMount(handler) {
-		return routeSite{}, false
+// readAt reads a call one of three ways: a site inside a wrapper that hands on its path, a call
+// to a wrapper, whose sites say what it registers, or a call that registers its route itself.
+func (reader routeReader) readAt(call routeCall) callReading {
+	if inner, isInside := reader.innerSiteAt(call); isInside {
+		if inner.problem != "" {
+			return call.unreadAs(inner.problem)
+		}
+		return callReading{}
 	}
-	path, pathIsKnown := knownString(call.info, call.argument(positions, "path"))
-	if _, isInsideAWrapper := reader.wrappers[routeKind][call.enclosing]; isInsideAWrapper && !pathIsKnown {
-		return routeSite{}, false
+	if reader.isRouteWrapper(call.target()) {
+		return reader.wrapperCallAt(call)
 	}
-	site := routeSite{callMatch: reader.matchAt(call, positions)}
+	return reader.registrationAt(call)
+}
+
+// isRouteWrapper is true for a function of the module that a route pattern matched. A function of
+// another module that one matched registers its route itself, as a router's method does.
+func (reader routeReader) isRouteWrapper(function *types.Func) bool {
+	_, isMatched := reader.wrappers[routeKind][function]
+	return isMatched && function != nil && reader.service.holds(function)
+}
+
+// innerSite is a site inside a wrapper whose path is not a constant: the form it registers its
+// path in, or the problem that stops it being read.
+type innerSite struct {
+	form    wrapperForm
+	problem string
+}
+
+// innerSiteAt reads a site inside a wrapper that registers a path it is given. The pattern reads
+// the path at the wrapper's calls, so the site must build it from the wrapper's parameters in a
+// form those calls can repeat. It reports false for any other call.
+func (reader routeReader) innerSiteAt(call routeCall) (innerSite, bool) {
+	_, pathIsKnown := knownString(call.info, call.argument("path"))
+	if pathIsKnown || !reader.isRouteWrapper(call.enclosing) {
+		return innerSite{}, false
+	}
+	if reader.isRouteWrapper(call.target()) {
+		return innerSite{problem: handsOnItsPath}, true
+	}
+	form, isRead := reader.formOf(call)
+	if !isRead {
+		return innerSite{problem: buildsItsPath}, true
+	}
+	return innerSite{form: form}, true
+}
+
+// formOf reads three forms and no others: the wrapper's path parameter alone, a constant method
+// and a space before it, and the wrapper's method parameter, a space and its path parameter.
+func (reader routeReader) formOf(site routeCall) (wrapperForm, bool) {
+	parameters := wrapperParameters{
+		wrapper:   site.enclosing,
+		positions: reader.wrappers[routeKind][site.enclosing],
+		info:      site.info,
+	}
+	path := ast.Unparen(site.argument("path"))
+	if parameters.isTheOneNamed("path", path) {
+		return wrapperForm{}, true
+	}
+	sum, isSum := path.(*ast.BinaryExpr)
+	if !isSum || sum.Op != token.ADD || !parameters.isTheOneNamed("path", sum.Y) {
+		return wrapperForm{}, false
+	}
+	if method, isKnown := knownString(site.info, sum.X); isKnown {
+		return wrapperForm{methodBefore: method}, aMethodAndASpace.MatchString(method)
+	}
+	methodAndSpace, isSum := ast.Unparen(sum.X).(*ast.BinaryExpr)
+	if !isSum || methodAndSpace.Op != token.ADD || !parameters.isTheOneNamed("method", methodAndSpace.X) {
+		return wrapperForm{}, false
+	}
+	space, isKnown := knownString(site.info, methodAndSpace.Y)
+	return wrapperForm{methodFromTheCall: true}, isKnown && space == " "
+}
+
+// wrapperParameters names a wrapper's parameters by the argument names its route pattern gives.
+type wrapperParameters struct {
+	wrapper   *types.Func
+	positions map[string]int
+	info      *types.Info
+}
+
+func (parameters wrapperParameters) isTheOneNamed(name string, expression ast.Expr) bool {
+	position, isNamed := parameters.positions[name]
+	return isNamed && refersTo(parameters.info, expression, parameterAt(parameters.wrapper, position))
+}
+
+// parameterAt is the parameter an argument at that position is passed to: the last one for the
+// extra arguments of a variadic function, and nil past the end.
+func parameterAt(function *types.Func, position int) *types.Var {
+	signature := function.Origin().Signature()
+	parameters := signature.Params()
+	if signature.Variadic() && position >= parameters.Len()-1 {
+		return parameters.At(parameters.Len() - 1)
+	}
+	if position >= parameters.Len() {
+		return nil
+	}
+	return parameters.At(position)
+}
+
+// refersTo is true for an expression that is the variable itself, in parentheses or not.
+func refersTo(info *types.Info, expression ast.Expr, variable *types.Var) bool {
+	identifier, isIdentifier := ast.Unparen(expression).(*ast.Ident)
+	return isIdentifier && variable != nil && info.Uses[identifier] == variable
+}
+
+// wrapperCallAt reads a call to a wrapper as one route for each site inside the wrapper, with the
+// path that site builds from this call's constants. A wrapper whose own site cannot be read gives
+// nothing here, because that site stops the run.
+func (reader routeReader) wrapperCallAt(call routeCall) callReading {
+	wrapper := call.target()
+	if reader.unreadWrappers[wrapper] {
+		return callReading{}
+	}
+	handler := reader.handlerAt(call)
+	if len(reader.forms[wrapper]) == 0 || handler.isMount {
+		return call.unreadAs(registersNothing)
+	}
+	method, methodIsKnown := call.methodOf()
+	if call.namesA("method") && !methodIsKnown {
+		return call.unreadAs(methodIsNotKnown)
+	}
+	path, pathIsKnown := knownString(call.info, call.argument("path"))
+	if !pathIsKnown {
+		return callReading{sites: []routeSite{reader.siteAt(call, handler)}}
+	}
+	reading := callReading{}
+	for _, form := range reader.forms[wrapper] {
+		if form.methodFromTheCall && !methodIsKnown {
+			return call.unreadAs(methodIsNotKnown)
+		}
+		site := reader.siteAt(call, handler)
+		site.Literals["path"] = form.registered(path, method)
+		reading.sites = append(reading.sites, site)
+	}
+	return reading
+}
+
+// registrationAt reads a call that registers its route itself, such as mux.HandleFunc or a
+// router's method that a pattern names. A mount adds no route of its own, because its mux's routes
+// are listed where they are registered.
+func (reader routeReader) registrationAt(call routeCall) callReading {
+	handler := reader.handlerAt(call)
+	if handler.isMount {
+		return callReading{}
+	}
+	registered, pathIsKnown := knownString(call.info, call.argument("path"))
+	if call.namesA("method") {
+		method, methodIsKnown := call.methodOf()
+		if !methodIsKnown {
+			return call.unreadAs(methodIsNotKnown)
+		}
+		registered = method + " " + registered
+	}
+	site := reader.siteAt(call, handler)
 	if pathIsKnown {
-		site.Literals["path"] = path
+		site.Literals["path"] = registered
 	}
-	if handler != nil {
-		reader.nameTheRoot(&site, handlers.rootOf(handler))
-	}
-	return site, true
+	return callReading{sites: []routeSite{site}}
 }
 
-// addsToAWrappedPath is true for a site inside a wrapper whose path holds a constant with a slash.
-// The pattern reads the path at the wrapper's calls, and that text would be missing what the wrapper
-// adds. A method such as "GET "+path has no slash, and the wrapper's name gives the method.
-func (reader routeReader) addsToAWrappedPath(call serviceCall) bool {
-	if _, isInsideAWrapper := reader.wrappers[routeKind][call.enclosing]; !isInsideAWrapper {
-		return false
-	}
-	for _, positions := range reader.routePositionsOf(call) {
-		path := call.argument(positions, "path")
-		if _, isKnown := knownString(call.info, path); !isKnown && holdsAConstantWithASlash(call.info, path) {
-			return true
-		}
-	}
-	return false
+func (reader routeReader) handlerAt(call routeCall) handlerReading {
+	handlers := handlerReader{info: call.info, service: reader.service}
+	return handlers.read(call.argument("handler"))
 }
 
-func holdsAConstantWithASlash(info *types.Info, expression ast.Expr) bool {
-	found := false
-	if expression == nil {
-		return false
-	}
-	ast.Inspect(expression, func(node ast.Node) bool {
-		if part, isExpression := node.(ast.Expr); isExpression {
-			text, isKnown := knownString(info, part)
-			found = found || (isKnown && strings.Contains(text, "/"))
-		}
-		return !found
-	})
-	return found
+// siteAt leaves the path to the caller, which knows what the call registers.
+func (reader routeReader) siteAt(call routeCall, handler handlerReading) routeSite {
+	site := routeSite{callMatch: reader.matchAt(call)}
+	reader.nameTheRoot(&site, handler.root)
+	return site
 }
 
-func (reader routeReader) matchAt(call serviceCall, positions map[string]int) callMatch {
+func (reader routeReader) matchAt(call routeCall) callMatch {
 	source := reader.service.printerSource()
 	return callMatch{
 		Kind:     routeKind,
 		Callee:   call.callee,
 		File:     call.place.File,
 		Line:     call.place.Line,
-		Args:     source.argumentTexts(call.syntax, positions),
+		Args:     source.argumentTexts(call.syntax, call.positions),
 		Literals: map[string]string{},
 	}
 }
@@ -307,14 +546,6 @@ func (reader routeReader) wrapperCallsOf(call serviceCall) []wrapperCall {
 		}
 	}
 	return found
-}
-
-func (call serviceCall) argument(positions map[string]int, name string) ast.Expr {
-	position, isNamed := positions[name]
-	if !isNamed || position >= len(call.syntax.Args) {
-		return nil
-	}
-	return call.syntax.Args[position]
 }
 
 // knownString is the value of a string the compiler knows, a const or a sum of consts included.

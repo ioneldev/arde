@@ -14,10 +14,25 @@ type handlerRoot struct {
 	name     ast.Expr
 }
 
+// handlerReading is what a registration's handler says: the function behind it, and whether it is
+// a mount, whose mux's own routes are listed where they are registered.
+type handlerReading struct {
+	root    handlerRoot
+	isMount bool
+}
+
 // handlerReader follows a registration's handler through what the type checker knows.
 type handlerReader struct {
 	info    *types.Info
 	service loadedService
+}
+
+func (reader handlerReader) read(handler ast.Expr) handlerReading {
+	innermost := reader.innermost(handler)
+	if innermost == nil {
+		return handlerReading{}
+	}
+	return handlerReading{root: reader.rootOf(innermost), isMount: reader.isMount(innermost)}
 }
 
 // innermost takes off what wraps a handler: parentheses, a conversion such as http.HandlerFunc(x),

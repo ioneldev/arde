@@ -36,12 +36,18 @@ type wrapperCallOutput struct {
 	Line int    `json:"line"`
 }
 
+type unreadSiteOutput struct {
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	Problem string `json:"problem"`
+}
+
 type routesOutput struct {
 	PackageFolders   []string            `json:"package_folders"`
 	BuildFiles       []string            `json:"build_files"`
 	Sites            []siteOutput        `json:"sites"`
 	StrippedPrefixes []placeOutput       `json:"stripped_prefixes"`
-	WrapperPrefixes  []placeOutput       `json:"wrapper_prefixes"`
+	UnreadSites      []unreadSiteOutput  `json:"unread_sites"`
 	WrapperCalls     []wrapperCallOutput `json:"wrapper_calls"`
 }
 
@@ -874,7 +880,7 @@ func TestRoutesPassesOverASiteInsideAFunctionARoutePatternMatches(t *testing.T) 
 
 	got := sitePaths(routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns}).Sites)
 
-	if want := []string{"/always", "/known-inside-the-wrapper", "/orders"}; !reflect.DeepEqual(got, want) {
+	if want := []string{"/always", "/known-inside-the-wrapper", "POST /orders"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 }
@@ -895,74 +901,254 @@ func TestRoutesKeepsTheSiteInsideAWrapperWhenNoPatternMatchesIt(t *testing.T) {
 	}
 }
 
-func TestRoutesListsAWrapperThatAddsToThePathItIsGiven(t *testing.T) {
-	cases := map[string]string{
-		"a slash in front":          `"/v1"+path`,
-		"a method and a slash":      `"POST /v1"+path`,
-		"a const holding the slash": `versionRoot+path`,
-		"a slash behind":            `path+"/"`,
-		"a call that joins":         `strings.Join([]string{"/v1", path}, "")`,
-	}
-
-	for name, argument := range cases {
-		source := `package main
+// aWrapperRegistering puts the site in a wrapper that takes the method, the path and the handler.
+func aWrapperRegistering(site string) string {
+	return `package main
 
 import (
 	"net/http"
+	paths "path"
 	"strings"
 )
 
 const versionRoot = "/v1"
 
-var _ = strings.Join
+var elsewhere = "/x"
 
-type gate struct{ mux *http.ServeMux }
+var _, _ = strings.Join, paths.Join
 
-func (g gate) post(path string, h http.HandlerFunc) {
-	g.mux.HandleFunc(` + argument + `, h)
+type gate struct {
+	mux    *http.ServeMux
+	prefix string
+}
+
+func (g gate) post(method, path string, h http.HandlerFunc) {
+	` + site + `
 }
 
 func main() {
-	gate{mux: http.NewServeMux()}.post("/items", parcels)
+	gate{mux: http.NewServeMux()}.post("PUT", "/items", parcels)
 }
 ` + handlerFuncs
-		root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
-		patterns := `[{"kind":"route","call":"\\.post$","args":{"path":0,"handler":1}}]`
+}
 
-		got := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns}).WrapperPrefixes
+func lineHolding(t *testing.T, source, text string) int {
+	t.Helper()
+	for number, line := range strings.Split(source, "\n") {
+		if strings.Contains(line, text) {
+			return number + 1
+		}
+	}
+	t.Fatalf("no line holds %q", text)
+	return 0
+}
 
-		if want := []placeOutput{{File: "main.go", Line: 15}}; !reflect.DeepEqual(got, want) {
+func unreadSitesOf(t *testing.T, source, patterns string) []unreadSiteOutput {
+	t.Helper()
+	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
+	return routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns}).UnreadSites
+}
+
+const postWithoutAMethod = `[{"kind":"route","call":"\\.post$","args":{"path":1,"handler":2}}]`
+
+const postWithAMethod = `[{"kind":"route","call":"\\.post$","args":{"method":0,"path":1,"handler":2}}]`
+
+func TestRoutesStopsAtAWrapperThatBuildsItsPathFromMoreThanItsParameters(t *testing.T) {
+	cases := map[string]struct {
+		site     string
+		patterns string
+	}{
+		"a slash in front":                   {`g.mux.HandleFunc("/v1"+path, h)`, postWithoutAMethod},
+		"a method and a slash":               {`g.mux.HandleFunc("POST /v1"+path, h)`, postWithoutAMethod},
+		"a const holding the slash":          {`g.mux.HandleFunc(versionRoot+path, h)`, postWithoutAMethod},
+		"a prefix held in a field":           {`g.mux.HandleFunc("GET "+g.prefix+path, h)`, postWithoutAMethod},
+		"a slash behind":                     {`g.mux.HandleFunc(path+"/", h)`, postWithoutAMethod},
+		"a call that joins":                  {`g.mux.HandleFunc(strings.Join([]string{"/v1", path}, ""), h)`, postWithoutAMethod},
+		"a suffix joined on":                 {`g.mux.HandleFunc("GET "+paths.Join(path, "{id}"), h)`, postWithoutAMethod},
+		"a local variable":                   {`item := path + "/{id}"; g.mux.HandleFunc("GET "+item, h)`, postWithoutAMethod},
+		"a variable that is no parameter":    {`g.mux.HandleFunc("GET "+elsewhere, h)`, postWithoutAMethod},
+		"a method the pattern does not name": {`g.mux.HandleFunc(method+" "+path, h)`, postWithoutAMethod},
+		"a method and two spaces":            {`g.mux.HandleFunc(method+"  "+path, h)`, postWithAMethod},
+		"a method in lower case":             {`g.mux.HandleFunc("get "+path, h)`, postWithoutAMethod},
+		"the path before the method":         {`g.mux.HandleFunc(path+" "+method, h)`, postWithAMethod},
+	}
+
+	for name, test := range cases {
+		source := aWrapperRegistering(test.site)
+
+		got := unreadSitesOf(t, source, test.patterns)
+
+		want := []unreadSiteOutput{{File: "main.go", Line: lineHolding(t, source, "HandleFunc("), Problem: "builds its path"}}
+		if !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: got %+v, want %+v", name, got, want)
 		}
 	}
 }
 
-func TestRoutesDoesNotCallAMethodOrAPlainPathAPrefix(t *testing.T) {
-	for _, argument := range []string{`path`, `"POST "+path`, `"GET "+path`} {
-		source := `package main
+func TestRoutesReadsThePathAWrapperRegistersAtEachCall(t *testing.T) {
+	cases := map[string]string{
+		`path`:                    "/items",
+		`"POST "+path`:            "POST /items",
+		`"GET "+path`:             "GET /items",
+		`method+" "+path`:         "PUT /items",
+		`(method + " ") + (path)`: "PUT /items",
+	}
+
+	for argument, want := range cases {
+		source := aWrapperRegistering(`g.mux.HandleFunc(` + argument + `, h)`)
+		root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
+
+		output := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: postWithAMethod})
+
+		if got := sitePaths(output.Sites); !reflect.DeepEqual(got, []string{want}) || len(output.UnreadSites) != 0 {
+			t.Errorf("%s: got %v and %+v, want %s", argument, got, output.UnreadSites, want)
+		}
+	}
+}
+
+func TestRoutesReadsOneRouteForEachSiteInsideAWrapper(t *testing.T) {
+	source := aWrapperRegistering(`g.mux.HandleFunc("GET "+path, h); g.mux.HandleFunc("HEAD "+path, h)`)
+	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
+
+	got := sitePaths(routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: postWithoutAMethod}).Sites)
+
+	if want := []string{"GET /items", "HEAD /items"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestRoutesStopsAtAWrapperThatHandsItsPathToAnotherWrapper(t *testing.T) {
+	source := `package main
 
 import "net/http"
 
 type gate struct{ mux *http.ServeMux }
 
-func (g gate) post(path string, h http.HandlerFunc) {
-	g.mux.HandleFunc(` + argument + `, h)
+func (g gate) get(path string, h http.HandlerFunc) {
+	g.mux.HandleFunc("GET "+path, h)
+}
+
+func (g gate) item(path string, h http.HandlerFunc) {
+	g.get(path, h)
 }
 
 func main() {
-	gate{mux: http.NewServeMux()}.post("/items", parcels)
+	gate{mux: http.NewServeMux()}.item("/items", parcels)
 }
 ` + handlerFuncs
-		root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
-		patterns := `[{"kind":"route","call":"\\.post$","args":{"path":0,"handler":1}}]`
+	patterns := `[{"kind":"route","call":"\\.(get|item)$","args":{"path":0,"handler":1}}]`
 
-		if got := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns}).WrapperPrefixes; len(got) != 0 {
-			t.Errorf("%s: got %+v", argument, got)
+	got := unreadSitesOf(t, source, patterns)
+
+	if want := []unreadSiteOutput{{File: "main.go", Line: 12, Problem: "hands on its path"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestRoutesStopsAtACallToAWrapperThatRegistersNothing(t *testing.T) {
+	cases := map[string]struct {
+		source   string
+		patterns string
+	}{
+		"a mux as the handler": {`package main
+
+import "net/http"
+
+func mount(mux *http.ServeMux, prefix string) {
+	mux.HandleFunc(prefix, parcels)
+}
+
+func main() {
+	mount(http.NewServeMux(), "/api/")
+}
+` + handlerFuncs, `[{"kind":"route","call":"^mount$","args":{"path":1,"handler":0}}]`},
+		"no site inside": {`package main
+
+import "net/http"
+
+func announce(path string, h http.HandlerFunc) {}
+
+func main() {
+	announce("/api/", parcels)
+}
+` + handlerFuncs, `[{"kind":"route","call":"^announce$","args":{"path":0,"handler":1}}]`},
+		"a known path alone inside": {`package main
+
+import "net/http"
+
+func announce(path string, h http.HandlerFunc) {
+	http.HandleFunc("/fixed", h)
+}
+
+func main() {
+	announce("/api/", parcels)
+}
+` + handlerFuncs, `[{"kind":"route","call":"^announce$","args":{"path":0,"handler":1}}]`},
+	}
+
+	for name, test := range cases {
+		got := unreadSitesOf(t, test.source, test.patterns)
+
+		want := []unreadSiteOutput{{File: "main.go", Line: lineHolding(t, test.source, `"/api/"`), Problem: "registers nothing"}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %+v, want %+v", name, got, want)
 		}
 	}
 }
 
-func TestRoutesDoesNotCallAPathOutsideAWrapperAPrefix(t *testing.T) {
+func TestRoutesStopsAtAMethodThatIsNotAConstant(t *testing.T) {
+	source := `package main
+
+import (
+	"net/http"
+	"os"
+)
+
+type gate struct{ mux *http.ServeMux }
+
+func (g gate) post(method, path string, h http.HandlerFunc) {
+	g.mux.HandleFunc(method+" "+path, h)
+}
+
+func main() {
+	gate{mux: http.NewServeMux()}.post(os.Getenv("METHOD"), "/items", parcels)
+}
+` + handlerFuncs
+
+	got := unreadSitesOf(t, source, postWithAMethod)
+
+	if want := []unreadSiteOutput{{File: "main.go", Line: 15, Problem: "method is not a constant"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+// A router of another module registers its route itself, so the method its pattern names comes
+// before the path, as the router's own method puts it.
+func TestRoutesPutsTheMethodAPatternNamesBeforeThePathOfACallToAnotherModule(t *testing.T) {
+	cases := map[string][]string{`"GET"`: {"GET /x"}, `os.Getenv("M")`: {}}
+
+	for method, want := range cases {
+		source := "package main\n\nimport (\n\t\"net/http\"\n\t\"os\"\n\n\t\"example.com/router\"\n)\n\nvar _ = os.Getenv\n\nfunc main() {\n\tr := &router.Router{}\n\tr.Method(" + method + ", \"/x\", parcels)\n}\n" + handlerFuncs
+		root := writeTree(t, map[string]string{
+			"go.mod":           "module example.com/depot\n\ngo 1.22\n\nrequire example.com/router v0.0.0\n\nreplace example.com/router => ./router\n",
+			"router/go.mod":    "module example.com/router\n\ngo 1.22\n",
+			"router/router.go": "package router\n\nimport \"net/http\"\n\ntype Router struct{}\n\nfunc (*Router) Method(method, path string, h http.HandlerFunc) {}\n",
+			"main.go":          source,
+		})
+		patterns := `[{"kind":"route","call":"^r\\.Method$","args":{"method":0,"path":1,"handler":2}}]`
+
+		output := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns})
+
+		if got := sitePaths(output.Sites); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %v, want %v", method, got, want)
+		}
+		if len(want) == 0 && !reflect.DeepEqual(output.UnreadSites, []unreadSiteOutput{{File: "main.go", Line: 14, Problem: "method is not a constant"}}) {
+			t.Errorf("%s: got %+v", method, output.UnreadSites)
+		}
+	}
+}
+
+func TestRoutesLeavesAnUnknownPathOutsideAWrapperToTheSite(t *testing.T) {
 	source := `package main
 
 import "net/http"
@@ -976,7 +1162,7 @@ func main() {
 
 	output := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns})
 
-	if len(output.WrapperPrefixes) != 0 || len(output.Sites) != 1 {
+	if len(output.UnreadSites) != 0 || len(output.Sites) != 1 {
 		t.Fatalf("this site stops as a path the compiler does not know, got %+v", output)
 	}
 }
@@ -1003,7 +1189,7 @@ func main() {
 
 	got := sitePaths(routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns}).Sites)
 
-	if want := []string{"/one", "/two"}; !reflect.DeepEqual(got, want) {
+	if want := []string{"POST /one", "POST /two"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("a pattern on one receiver must not lose the call on the other, got %v", got)
 	}
 }
@@ -1185,7 +1371,7 @@ func TestRoutesSortsSitesAndPrintsEmptyListsAsLists(t *testing.T) {
 	if exitCode != 0 || stderr != "" {
 		t.Fatalf("exit %d, stderr %q", exitCode, stderr)
 	}
-	want := `{"package_folders":["."],"build_files":["main.go"],"sites":[],"stripped_prefixes":[],"wrapper_prefixes":[],"wrapper_calls":[]}` + "\n"
+	want := `{"package_folders":["."],"build_files":["main.go"],"sites":[],"stripped_prefixes":[],"unread_sites":[],"wrapper_calls":[]}` + "\n"
 	if stdout != want {
 		t.Fatalf("got %s, want %s", stdout, want)
 	}

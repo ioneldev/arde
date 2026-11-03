@@ -6,6 +6,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from pydantic import ValidationError
 
@@ -95,7 +96,8 @@ class MatchReport(Frozen):
 
 
 class RouteSite(CallMatch):
-    """A call that registers a route. In literals, the path is any value the compiler knows."""
+    """A call that registers a route. In literals, the path is the pattern the call registers,
+    when the compiler knows it: a wrapper's call holds the path the wrapper builds from it."""
 
     # The exact function behind the handler and where it is declared, or None when it has none.
     handler_id: str | None
@@ -112,16 +114,27 @@ class WrapperCall(SourcePlace):
     kind: str
 
 
+# Why goinspect cannot read the route a call registers. The first three are about a function of the
+# service that a route pattern matches: a site inside it builds its path from more than its
+# parameters, or hands its path to another such function, or a call to it registers nothing.
+UnreadProblem = Literal[
+    "builds its path", "hands on its path", "registers nothing", "method is not a constant"
+]
+
+
+class UnreadSite(SourcePlace):
+    problem: UnreadProblem
+
+
 class RouteReport(Frozen):
     # Folders of the packages that make up the service, from the repo root. The root reads ".".
     package_folders: tuple[str, ...]
     # The files of those packages that this machine's build compiles.
     build_files: tuple[str, ...]
     sites: tuple[RouteSite, ...]
-    # Calls to http.StripPrefix around anything but a file server, and sites inside a wrapper that
-    # add to the path they are given.
+    # Calls to http.StripPrefix around anything but a file server.
     stripped_prefixes: tuple[SourcePlace, ...]
-    wrapper_prefixes: tuple[SourcePlace, ...]
+    unread_sites: tuple[UnreadSite, ...]
     wrapper_calls: tuple[WrapperCall, ...]
 
 

@@ -16,6 +16,7 @@ from arde.adapters.language.go.goinspect_client import (
     RouteReport,
     RouteSite,
     StructField,
+    UnreadProblem,
 )
 from arde.application.ports import ProfileProblem
 from arde.domain.base import Frozen, describe_problems, one_line, printable_name
@@ -76,6 +77,26 @@ REGISTER_A_PLAIN_PATH = (
 PREFIXES_ARE_NOT_RESOLVED = (
     f"ARDE does not resolve path prefixes, so this repo cannot be documented yet: report that. "
     f"{DO_NOT_NARROW}"
+)
+READ_A_WRAPPER_FORM = (
+    "ARDE reads a function that registers routes for its callers when it registers its path "
+    'parameter alone, after a constant method such as "GET ", or after its method parameter and '
+    "a space. If this function takes the method as a parameter, give that position as `method` in "
+    "the route pattern's args, then run again. Otherwise this repo cannot be documented yet: "
+    f"report that. {DO_NOT_NARROW}"
+)
+WRAPPERS_REGISTER_THEMSELVES = (
+    "ARDE reads a function that registers routes for its callers only when it registers them "
+    f"itself, so this repo cannot be documented yet: report that. {DO_NOT_NARROW}"
+)
+GIVE_THE_POSITIONS_OF_THE_ROUTE = (
+    "Check the route pattern for this function: its path and handler positions must name the "
+    "path and handler of the route it registers. If the function has no such arguments, this repo "
+    f"cannot be documented yet: report that. {DO_NOT_NARROW}"
+)
+READ_A_CONSTANT_METHOD = (
+    "ARDE reads a method the compiler knows. If the method is computed or comes from a table, "
+    f"this repo cannot be documented yet: report that. {DO_NOT_NARROW}"
 )
 GIVE_THE_HANDLER_POSITION = (
     "The route pattern gives a handler position past the end of this call. Correct that position "
@@ -164,12 +185,33 @@ def _stop_where_a_path_changes(service: RouteReport) -> None:
             "http.StripPrefix changes the paths under it, so they cannot be read",
             next_action=PREFIXES_ARE_NOT_RESOLVED,
         )
-    if service.wrapper_prefixes:
-        raise RouteNotUnderstoodError(
-            service.wrapper_prefixes[0],
-            "the function around this call adds to the path, so its callers' paths cannot be read",
-            next_action=PREFIXES_ARE_NOT_RESOLVED,
-        )
+    if service.unread_sites:
+        site = service.unread_sites[0]
+        problem, next_action = _WHY_A_SITE_IS_UNREAD[site.problem]
+        raise RouteNotUnderstoodError(site, problem, next_action=next_action)
+
+
+_WHY_A_SITE_IS_UNREAD: dict[UnreadProblem, tuple[str, str]] = {
+    "builds its path": (
+        "the function around this call builds its path from more than its parameters, so its "
+        "callers' paths cannot be read",
+        READ_A_WRAPPER_FORM,
+    ),
+    "hands on its path": (
+        "the function around this call hands its path to another function that registers routes, "
+        "whose own form would apply too",
+        WRAPPERS_REGISTER_THEMSELVES,
+    ),
+    "registers nothing": (
+        "this call goes to a function a route pattern matches, and it registers no route here: its "
+        "handler is a mux, or the function registers no path it is given",
+        GIVE_THE_POSITIONS_OF_THE_ROUTE,
+    ),
+    "method is not a constant": (
+        "the method argument is not a constant",
+        READ_A_CONSTANT_METHOD,
+    ),
+}
 
 
 @dataclass(frozen=True)

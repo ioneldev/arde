@@ -26,6 +26,7 @@ from arde.adapters.language.go.goinspect_client import (
     GoinspectClient,
     PatternName,
     SourcePlace,
+    UnreadSite,
     WrapperCall,
     build_goinspect,
 )
@@ -603,7 +604,7 @@ ROUTES_REPLY = {
         }
     ],
     "stripped_prefixes": [{"file": "web/files.go", "line": 4}],
-    "wrapper_prefixes": [{"file": "web/router.go", "line": 6}],
+    "unread_sites": [{"file": "web/router.go", "line": 6, "problem": "builds its path"}],
     "wrapper_calls": [{"kind": "env", "file": "main.go", "line": 7}],
 }
 
@@ -626,7 +627,9 @@ def test_routes_hand_over_the_patterns_and_the_main_package_and_read_the_reply(
     assert site.handler_id == "(*example.com/depot.desk).list"
     assert (site.handler_file, site.handler_line) == ("web/desk.go", 30)
     assert reply.stripped_prefixes == (SourcePlace(file="web/files.go", line=4),)
-    assert reply.wrapper_prefixes == (SourcePlace(file="web/router.go", line=6),)
+    assert reply.unread_sites == (
+        UnreadSite(file="web/router.go", line=6, problem="builds its path"),
+    )
     assert reply.wrapper_calls == (WrapperCall(kind="env", file="main.go", line=7),)
 
 
@@ -648,6 +651,16 @@ def test_a_routes_reply_with_no_package_folders_is_refused(stand_in: StandIn, fo
     stand_in.replies_with(json.dumps({**ROUTES_REPLY, "package_folders": None}))
 
     with pytest.raises(GoinspectError, match="package_folders"):
+        GoinspectClient(stand_in.binary).routes(folder, [], main_package=".")
+
+
+def test_a_routes_reply_with_a_problem_arde_does_not_know_is_refused(
+    stand_in: StandIn, folder: Path
+) -> None:
+    unknown = [{"file": "web/router.go", "line": 6, "problem": "something new"}]
+    stand_in.replies_with(json.dumps({**ROUTES_REPLY, "unread_sites": unknown}))
+
+    with pytest.raises(GoinspectError, match="unread_sites"):
         GoinspectClient(stand_in.binary).routes(folder, [], main_package=".")
 
 
