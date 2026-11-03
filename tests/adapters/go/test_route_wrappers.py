@@ -244,6 +244,75 @@ def test_a_wrapper_that_writes_a_parameter_it_registers_stops_the_run_and_names_
     assert "written at main.go:18" in str(stopped.value)
 
 
+def a_shop_that_registers_through(helper: str, *, use: str) -> str:
+    return f"""package main
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+)
+
+type app struct{{ mux *http.ServeMux }}
+
+func (a *app) get(path string, h http.HandlerFunc) {{
+	a.mux.HandleFunc("POST "+path, h)
+}}
+
+type registrar interface {{
+	get(path string, h http.HandlerFunc)
+}}
+
+func health(w http.ResponseWriter, r *http.Request) {{ fmt.Fprint(w, "ok") }}
+func items(w http.ResponseWriter, r *http.Request)  {{ fmt.Fprint(w, "items") }}
+
+{helper}
+
+func main() {{
+	a := &app{{mux: http.NewServeMux()}}
+	a.get("/healthz", health)
+	{use}
+	http.ListenAndServe(":"+os.Getenv("PORT"), a.mux)
+}}
+"""
+
+
+GET_ON_A = ExtractionPattern(kind="route", call=r"^a\.get$", args={"path": 0, "handler": 1})
+GET_ANYWHERE = ExtractionPattern(kind="route", call=r"\.get$", args={"path": 0, "handler": 1})
+PASSES_IT_ON = 'func registerShop(get func(string, http.HandlerFunc)) { get("/items", items) }'
+CALLS_THE_INTERFACE = 'func viaInterface(r registrar) { r.get("/orders", items) }'
+
+
+# The reviewer's service lost /items and /direct, and my own lost /orders behind the interface, or
+# read it as GET with a pattern that matches r.get while the wrapper registers POST.
+@pytest.mark.parametrize(
+    ("helper", "use", "pattern", "place", "said"),
+    [
+        (PASSES_IT_ON, "registerShop(a.get)", GET_ON_A, 27, "other than in a direct call"),
+        (PASSES_IT_ON, 'g := a.get; g("/direct", items)', GET_ON_A, 27, "other than in a direct"),
+        (CALLS_THE_INTERFACE, "viaInterface(a)", GET_ON_A, 22, "goes through an interface"),
+        (CALLS_THE_INTERFACE, "viaInterface(a)", GET_ANYWHERE, 22, "goes through an interface"),
+    ],
+    ids=["passed as an argument", "held in a variable", "an interface", "an interface it matches"],
+)
+def test_a_wrapper_used_other_than_in_a_direct_call_stops_the_run_and_names_the_use(
+    adapter: GoAdapter,
+    tmp_path: Path,
+    helper: str,
+    use: str,
+    pattern: ExtractionPattern,
+    place: int,
+    said: str,
+) -> None:
+    repo = a_service(tmp_path, a_shop_that_registers_through(helper, use=use))
+
+    with pytest.raises(RouteNotUnderstoodError, match=f"registered at main.go:{place}:") as stopped:
+        adapter.extract_inventory(repo, reading(pattern))
+
+    assert said in str(stopped.value)
+    assert stopped.value.exit_code == ExitCode.DISCOVERY_NEEDS_INPUT
+
+
 GET_JSON = """package main
 
 import (

@@ -1305,6 +1305,117 @@ func main() {
 	}
 }
 
+// aRegistrarUsedAs puts a use of the wrapper get, or of a registration of net/http, beside one
+// direct call to get that the pattern matches.
+func aRegistrarUsedAs(use string) string {
+	return `package main
+
+import "net/http"
+
+type app struct{ mux *http.ServeMux }
+
+func (a *app) get(path string, h http.HandlerFunc) {
+	a.mux.HandleFunc("POST "+path, h)
+}
+
+type registrar interface {
+	get(path string, h http.HandlerFunc)
+}
+
+// bigger is one *app alone does not satisfy, and outer does, through the get it embeds.
+type bigger interface {
+	get(path string, h http.HandlerFunc)
+	close()
+}
+
+type outer struct{ *app }
+
+func (outer) close() {}
+
+type muxLike interface {
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
+type keeper struct {
+	add  func(string, http.HandlerFunc)
+	adds []func(string, http.HandlerFunc)
+}
+
+func registerShop(add func(string, http.HandlerFunc)) { add("/items", parcels) }
+
+func main() {
+	a := &app{mux: http.NewServeMux()}
+	var k keeper
+	var r registrar = a
+	var m muxLike = a.mux
+	_, _, _ = k, r, m
+	a.get("/healthz", parcels)
+	` + use + `
+}
+` + handlerFuncs
+}
+
+const getOnA = `[{"kind":"route","call":"^a\\.get$","args":{"path":0,"handler":1}}]`
+
+const getAnywhere = `[{"kind":"route","call":"\\.get$","args":{"path":0,"handler":1}}]`
+
+// A call ARDE cannot see is a route it cannot list, so every use of a function that registers
+// routes must be a direct call that a pattern reads.
+func TestRoutesStopsAtAUseOfAFunctionThatRegistersRoutesOtherThanADirectCall(t *testing.T) {
+	cases := map[string]struct {
+		use     string
+		problem string
+	}{
+		"an argument":                    {`registerShop(a.get)`, "used as a value"},
+		"an assignment":                  {`g := a.get; g("/direct", parcels)`, "used as a value"},
+		"a store into a field":           {`k.add = a.get`, "used as a value"},
+		"a store into a slice":           {`k.adds = append(k.adds, a.get)`, "used as a value"},
+		"a method expression":            {`(*app).get(a, "/items", parcels)`, "used as a value"},
+		"a call through an interface":    {`r.get("/items", parcels)`, "called through an interface"},
+		"an interface's method value":    {`f := r.get; f("/items", parcels)`, "called through an interface"},
+		"a type that embeds the wrapper": {`var o bigger = outer{a}; o.get("/items", parcels)`, "called through an interface"},
+		"a mux's method value":           {`add := a.mux.HandleFunc; add("/x", parcels)`, "used as a value"},
+		"net/http's function as a value": {`register := http.HandleFunc; register("/x", parcels)`, "used as a value"},
+		"a mux behind an interface":      {`m.HandleFunc("/x", parcels)`, "called through an interface"},
+	}
+
+	for name, test := range cases {
+		source := aRegistrarUsedAs(test.use)
+
+		got := unreadSitesOf(t, source, getOnA)
+
+		want := []unreadSiteOutput{{File: "main.go", Line: lineHolding(t, source, test.use), Problem: test.problem}}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %+v, want %+v", name, got, want)
+		}
+	}
+}
+
+// A pattern that matches the call through the interface reads it as a call that registers its own
+// route, with the method from its name, while the wrapper registers POST.
+func TestRoutesStopsAtACallThroughAnInterfaceThatAPatternMatchesToo(t *testing.T) {
+	source := aRegistrarUsedAs(`r.get("/items", parcels)`)
+
+	got := unreadSitesOf(t, source, getAnywhere)
+
+	want := []unreadSiteOutput{{File: "main.go", Line: lineHolding(t, source, `r.get("/items"`), Problem: "called through an interface"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestRoutesReadsACallThroughAnInterfaceThatNoRegistrarSatisfies(t *testing.T) {
+	source := aRegistrarUsedAs(`var s interface{ get(string) } = silent{}; s.get("/x")`) +
+		"\ntype silent struct{}\n\nfunc (silent) get(path string) {}\n"
+	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
+
+	output := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: getOnA})
+
+	if len(output.UnreadSites) != 0 || !reflect.DeepEqual(sitePaths(output.Sites), []string{"POST /healthz"}) {
+		t.Fatalf("got %+v and %v", output.UnreadSites, sitePaths(output.Sites))
+	}
+}
+
 func TestRoutesStopsAtAMethodThatIsNotAConstant(t *testing.T) {
 	source := `package main
 

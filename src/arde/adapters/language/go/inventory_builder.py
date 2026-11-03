@@ -89,6 +89,11 @@ WRAPPERS_REGISTER_THEMSELVES = (
     "ARDE reads a function that registers routes for its callers only when it registers them "
     f"itself, so this repo cannot be documented yet: report that. {DO_NOT_NARROW}"
 )
+REGISTRARS_ARE_READ_AT_THEIR_CALLS = (
+    "ARDE reads a function that registers routes only at its direct calls, so the routes it "
+    "registers through any other use cannot be listed. This repo cannot be documented yet: report "
+    f"that. {DO_NOT_NARROW}"
+)
 GIVE_THE_POSITIONS_OF_THE_ROUTE = (
     "Check the route pattern for this function: its path and handler positions must name the "
     "path and handler of the route it registers. If the function has no such arguments, this repo "
@@ -215,6 +220,16 @@ _WHY_A_SITE_IS_UNREAD: dict[UnreadProblem, tuple[str, str]] = {
     "method is not a constant": (
         "the method argument is not a constant",
         READ_A_CONSTANT_METHOD,
+    ),
+    "used as a value": (
+        "a function that registers routes is used here other than in a direct call, so what it "
+        "registers through this use cannot be read",
+        REGISTRARS_ARE_READ_AT_THEIR_CALLS,
+    ),
+    "called through an interface": (
+        "this goes through an interface that a function registering routes satisfies, so which "
+        "function it reaches and what that registers cannot be read",
+        REGISTRARS_ARE_READ_AT_THEIR_CALLS,
     ),
 }
 

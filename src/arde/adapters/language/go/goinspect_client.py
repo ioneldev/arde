@@ -119,9 +119,16 @@ class WrapperCall(SourcePlace):
 
 # Why goinspect cannot read the route a call registers. The first three are about a function of the
 # service that a route pattern matches: a site inside it builds its path from more than its
-# parameters, or hands its path to another such function, or a call to it registers nothing.
+# parameters, or hands its path to another such function, or a call to it registers nothing. The
+# last two are about a function that registers routes, such a function or one of net/http: it is
+# used other than in a direct call, or an interface its type satisfies is called.
 UnreadProblem = Literal[
-    "builds its path", "hands on its path", "registers nothing", "method is not a constant"
+    "builds its path",
+    "hands on its path",
+    "registers nothing",
+    "method is not a constant",
+    "used as a value",
+    "called through an interface",
 ]
 
 

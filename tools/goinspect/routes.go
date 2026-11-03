@@ -188,7 +188,7 @@ func (reader routeReader) report(calls []serviceCall) routeReport {
 		BuildFiles:       reader.service.buildFiles(),
 		Sites:            []routeSite{},
 		StrippedPrefixes: []sourcePlace{},
-		UnreadSites:      []unreadSite{},
+		UnreadSites:      reader.usesOutOfSight(),
 		WrapperCalls:     []wrapperCall{},
 	}
 	for _, call := range calls {
