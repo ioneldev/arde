@@ -426,3 +426,105 @@ def test_a_call_to_a_wrapper_whose_handler_is_a_mux_stops_the_run(
         adapter.extract_inventory(repo, reading(pattern))
 
     assert "registers no route" in str(stopped.value)
+
+
+def hash_of(adapter: GoAdapter, repo: Path, *, key: str, profile: RepoProfile) -> str:
+    routes = adapter.extract_inventory(repo, profile).routes
+    return adapter.route_fingerprints(repo, routes, main_package=".").hashes[key]
+
+
+def hash_moves(adapter: GoAdapter, repo: Path, *, key: str, edit: tuple[str, str]) -> bool:
+    profile = reading(GET_ON_A)
+    before = hash_of(adapter, repo, key=key, profile=profile)
+    main = repo / "main.go"
+    old, new = edit
+    assert old in main.read_text()
+    main.write_text(main.read_text().replace(old, new))
+    return hash_of(adapter, repo, key=key, profile=profile) != before
+
+
+# The reviewer's h4 and r8: the wrapper's own code, and the middleware the call hands it, shape
+# every request the route answers.
+LOADS_JSON = """package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"os"
+)
+
+type app struct{ mux *http.ServeMux }
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(v)
+}
+
+func (a *app) get(path string, load func(*http.Request) any) {
+	a.mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, load(r))
+	})
+}
+
+func (a *app) items(r *http.Request) any { return []string{"a"} }
+
+func main() {
+	a := &app{mux: http.NewServeMux()}
+	a.get("/items", a.items)
+	http.ListenAndServe(":"+os.Getenv("PORT"), a.mux)
+}
+"""
+
+GUARDED = """package main
+
+import (
+	"fmt"
+	"net/http"
+	"os"
+)
+
+type app struct{ mux *http.ServeMux }
+
+type middleware func(http.HandlerFunc) http.HandlerFunc
+
+func (a *app) get(path string, h http.HandlerFunc, wrap ...middleware) {
+	for _, m := range wrap {
+		h = m(h)
+	}
+	a.mux.HandleFunc("GET "+path, h)
+}
+
+func requireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Role") != "admin" {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func items(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "items") }
+
+func main() {
+	a := &app{mux: http.NewServeMux()}
+	a.get("/admin/items", items, requireAdmin)
+	http.ListenAndServe(":"+os.Getenv("PORT"), a.mux)
+}
+"""
+
+
+def test_an_edit_to_a_function_the_wrappers_site_calls_moves_the_route(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(tmp_path, LOADS_JSON)
+
+    assert hash_moves(adapter, repo, key="GET /items", edit=('"application/json"', '"text/plain"'))
+
+
+def test_an_edit_to_middleware_the_call_hands_the_wrapper_moves_the_route(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(tmp_path, GUARDED)
+
+    assert hash_moves(adapter, repo, key="GET /admin/items", edit=('!= "admin"', '!= "root"'))

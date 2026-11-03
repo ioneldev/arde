@@ -33,10 +33,13 @@ type handlerReader struct {
 	bodies  functionBodies
 }
 
-// registration is a call that registers a route, with the position of its handler.
+// registration is a call that registers a route, with the position of its handler and of every
+// other argument that shapes the handler, such as middleware a wrapper applies: each one that is
+// neither the path nor the method.
 type registration struct {
 	call    *ast.CallExpr
 	handler int
+	others  []int
 }
 
 func (registered registration) handlerExpression() ast.Expr {
@@ -44,6 +47,19 @@ func (registered registration) handlerExpression() ast.Expr {
 		return nil
 	}
 	return registered.call.Args[registered.handler]
+}
+
+// parts are the handler and the other arguments, which make up what serves the route.
+func (registered registration) parts() []ast.Expr {
+	parts := []ast.Expr{registered.handlerExpression()}
+	for _, position := range registered.others {
+		parts = append(parts, registered.call.Args[position])
+	}
+	return parts
+}
+
+func (registered registration) partPositions() []int {
+	return append([]int{registered.handler}, registered.others...)
 }
 
 // read gives a handler that holds a function written in place neither anchor nor roots: that
@@ -55,16 +71,25 @@ func (reader handlerReader) read(registered registration) handlerReading {
 	}
 	innermost := reader.innermost(handler)
 	reading := handlerReading{isMount: reader.isMount(innermost)}
-	if holdsAFunctionLiteral(handler) {
+	if slices.ContainsFunc(registered.parts(), holdsAFunctionLiteral) {
 		return reading
 	}
 	reading.anchor = reader.anchorAt(innermost)
 	if reading.anchor.function != nil {
-		reading.roots = sortedByID(slices.Concat(
-			reader.functionsNamedIn(handler),
-			[]*types.Func{reading.anchor.function},
-			reader.methodsHandedToAnInterface(registered),
-		))
+		named := []*types.Func{reading.anchor.function}
+		for _, part := range registered.parts() {
+			named = append(named, reader.functionsNamedIn(part)...)
+		}
+		reading.roots = sortedByID(slices.Concat(named, reader.methodsHandedToAnInterface(registered)))
+	}
+	return reading
+}
+
+// alsoRootedAt adds functions to the roots of a handler that has an anchor. One with no anchor has
+// no roots, because a hash of some of its code would not move for an edit to the rest.
+func (reading handlerReading) alsoRootedAt(functions []*types.Func) handlerReading {
+	if reading.anchor.function != nil {
+		reading.roots = sortedByID(slices.Concat(reading.roots, functions))
 	}
 	return reading
 }
@@ -181,16 +206,18 @@ func nameOfAValue(value ast.Expr) ast.Expr {
 // of interface type, an argument given to one inside it, an element a composite literal keeps as
 // one, and the operand of a conversion to one.
 func (reader handlerReader) methodsHandedToAnInterface(registered registration) []*types.Func {
-	handed := reader.argumentTypesHandedOn(registered.call, []int{registered.handler})
-	ast.Inspect(registered.handlerExpression(), func(node ast.Node) bool {
-		switch node := node.(type) {
-		case *ast.CallExpr:
-			handed = append(handed, reader.argumentTypesHandedOn(node, positionsOf(node.Args))...)
-		case *ast.CompositeLit:
-			handed = append(handed, reader.elementTypesHandedOn(node)...)
-		}
-		return true
-	})
+	handed := reader.argumentTypesHandedOn(registered.call, registered.partPositions())
+	for _, part := range registered.parts() {
+		ast.Inspect(part, func(node ast.Node) bool {
+			switch node := node.(type) {
+			case *ast.CallExpr:
+				handed = append(handed, reader.argumentTypesHandedOn(node, positionsOf(node.Args))...)
+			case *ast.CompositeLit:
+				handed = append(handed, reader.elementTypesHandedOn(node)...)
+			}
+			return true
+		})
+	}
 	methods := []*types.Func{}
 	for _, handedType := range handed {
 		methods = append(methods, reader.methodsOf(handedType)...)

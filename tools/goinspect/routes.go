@@ -100,6 +100,8 @@ type wrapperForm struct {
 	methodBefore string
 	// methodFromTheCall is method+" "+path, with the method read at each call.
 	methodFromTheCall bool
+	// named holds the functions of the module the site names, whose code shapes every request.
+	named []*types.Func
 }
 
 func (form wrapperForm) registered(path, method string) string {
@@ -386,6 +388,7 @@ func (reader routeReader) innerSiteAt(call routeCall) (innerSite, bool) {
 	if written, isWritten := reader.writeToTheParametersOf(call.enclosing); isWritten {
 		return innerSite{problem: buildsItsPath, writtenAt: written}, true
 	}
+	form.named = reader.handlersOf(call).functionsNamedIn(call.syntax)
 	return innerSite{form: form}, true
 }
 
@@ -499,7 +502,7 @@ func (reader routeReader) wrapperCallAt(call routeCall) callReading {
 		if form.methodFromTheCall && !methodIsKnown {
 			return call.unreadAs(methodIsNotKnown)
 		}
-		site := reader.siteAt(call, handler)
+		site := reader.siteAt(call, handler.alsoRootedAt(append([]*types.Func{wrapper}, form.named...)))
 		site.Literals["path"] = form.registered(path, method)
 		reading.sites = append(reading.sites, site)
 	}
@@ -529,13 +532,29 @@ func (reader routeReader) registrationAt(call routeCall) callReading {
 	return callReading{sites: []routeSite{site}}
 }
 
+func (reader routeReader) handlersOf(call routeCall) handlerReader {
+	return handlerReader{info: call.info, service: reader.service, bodies: reader.bodies}
+}
+
 func (reader routeReader) handlerAt(call routeCall) handlerReading {
-	handlers := handlerReader{info: call.info, service: reader.service, bodies: reader.bodies}
+	handlers := reader.handlersOf(call)
 	position, isNamed := call.positions["handler"]
 	if !isNamed {
 		return handlerReading{}
 	}
-	return handlers.read(registration{call: call.syntax, handler: position})
+	return handlers.read(registration{call: call.syntax, handler: position, others: call.otherPositions()})
+}
+
+// otherPositions are the arguments the route pattern names as neither the path, the method nor the
+// handler.
+func (call routeCall) otherPositions() []int {
+	others := []int{}
+	for position := range call.syntax.Args {
+		if !slices.Contains(slices.Collect(maps.Values(call.positions)), position) {
+			others = append(others, position)
+		}
+	}
+	return others
 }
 
 // siteAt leaves the path to the caller, which knows what the call registers.

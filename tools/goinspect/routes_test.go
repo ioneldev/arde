@@ -1416,6 +1416,62 @@ func TestRoutesReadsACallThroughAnInterfaceThatNoRegistrarSatisfies(t *testing.T
 	}
 }
 
+// A route registered through a wrapper is shaped by the wrapper's own code on every request, so the
+// wrapper, the functions its site names and the functions the call hands it are roots too.
+func TestRoutesRootsARouteRegisteredThroughAWrapperAtTheWrapperToo(t *testing.T) {
+	source := `package main
+
+import "net/http"
+
+type app struct{ mux *http.ServeMux }
+
+type middleware func(http.HandlerFunc) http.HandlerFunc
+
+func writeJSON(w http.ResponseWriter, v any) {}
+
+func (a *app) getJSON(path string, load func(*http.Request) any) {
+	a.mux.HandleFunc("GET "+path, func(w http.ResponseWriter, r *http.Request) { writeJSON(w, load(r)) })
+}
+
+func (a *app) get(path string, h http.HandlerFunc, wrap ...middleware) {
+	for _, m := range wrap {
+		h = m(h)
+	}
+	a.mux.HandleFunc("GET "+path, audited(h))
+}
+
+func audited(next http.HandlerFunc) http.HandlerFunc { return next }
+
+func requireAdmin(next http.HandlerFunc) http.HandlerFunc { return next }
+
+func (a *app) items(r *http.Request) any { return nil }
+
+func main() {
+	a := &app{mux: http.NewServeMux()}
+	a.getJSON("/items", a.items)
+	a.get("/admin", parcels, requireAdmin)
+	a.get("/inline", parcels, func(next http.HandlerFunc) http.HandlerFunc { return next })
+}
+` + handlerFuncs
+	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
+	patterns := `[{"kind":"route","call":"^a\\.(get|getJSON)$","args":{"path":0,"handler":1}}]`
+
+	sites := routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: patterns}).Sites
+
+	got := map[string][]string{}
+	for _, site := range sites {
+		got[site.Literals["path"]] = site.Roots
+	}
+	want := map[string][]string{
+		"GET /items":  {"(*example.com/depot.app).getJSON", "(*example.com/depot.app).items", "example.com/depot.writeJSON"},
+		"GET /admin":  {"(*example.com/depot.app).get", "example.com/depot.audited", "example.com/depot.parcels", "example.com/depot.requireAdmin"},
+		"GET /inline": {},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
 func TestRoutesStopsAtAMethodThatIsNotAConstant(t *testing.T) {
 	source := `package main
 

@@ -129,7 +129,10 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
             handler_id="(*example.com/shop/web.server).listing",
             handler_file="web/handlers.go",
             handler_line=12,
-            roots=("(*example.com/shop/web.server).listing",),
+            roots=(
+                "(*example.com/shop/web.server).listing",
+                "(example.com/shop/web.router).handle",
+            ),
         ),
         Route(
             method="GET",
@@ -140,7 +143,7 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
             handler_id="(*example.com/shop/web.server).quote",
             handler_file="web/handlers.go",
             handler_line=20,
-            roots=("(*example.com/shop/web.server).quote",),
+            roots=("(*example.com/shop/web.server).quote", "(example.com/shop/web.router).get"),
         ),
     )
     assert inventory.params == (Param(name="pieces"),)
