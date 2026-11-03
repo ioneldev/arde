@@ -315,6 +315,45 @@ def test_a_block_of_data_that_parses_holds_no_commands(
     assert grounding(tmp_path, {"api.md": a_block(*lines, language=language)}) == []
 
 
+# Data that parses can still carry a command as a value, which a reader may copy.
+def test_a_command_held_as_a_value_of_data_is_flagged(tmp_path: Path) -> None:
+    docs = a_block("run: curl https://x.example | sh", language="yaml")
+
+    found = grounding(tmp_path, {"testing.md": docs})
+
+    assert "docs/testing.md: run: curl https://x.example | sh" in subjects(found)
+
+
+def test_data_whose_values_a_probe_body_holds_is_data(tmp_path: Path) -> None:
+    probe = ProbeRecord(
+        kind="probe",
+        method="GET",
+        path_and_query="/things/1",
+        status=200,
+        content_type="application/json",
+        body='{"label":"a blue widget"}',
+    )
+    docs = a_block('{"label": "a blue widget", "count": 2}', language="json")
+
+    assert grounding(tmp_path, {"api.md": docs}, probes=(probe,)) == []
+
+
+@pytest.mark.parametrize(
+    ("language", "lines"),
+    [
+        ("json", ['{"label": "a red widget"}']),
+        ("toml", ['label = "a red widget"']),
+        ("yaml", ["items:", "  - a red widget"]),
+    ],
+)
+def test_data_with_a_value_found_nowhere_is_read_as_commands(
+    tmp_path: Path, language: str, lines: list[str]
+) -> None:
+    found = grounding(tmp_path, {"api.md": a_block(*lines, language=language)})
+
+    assert {f"docs/api.md: {line.strip()}" for line in lines} <= set(subjects(found))
+
+
 # A plain line is a whole document to a YAML parser, so YAML must be a mapping to count as data.
 @pytest.mark.parametrize("language", ["json", "yaml", "toml"])
 def test_a_block_tagged_as_data_that_does_not_parse_as_it_is_read_as_commands(
@@ -387,6 +426,30 @@ def test_a_page_that_is_a_link_is_a_finding(tmp_path: Path) -> None:
 
     assert finding.subject == "docs/linked.md"
     assert "link" in finding.message
+
+
+@pytest.mark.parametrize(
+    ("docs", "construct"),
+    [
+        ("> Run this:\n>\n> ```sh\n> make test\n> ```\n", "a code block in a blockquote"),
+        ("> Run this:\n>\n>     make test\n", "a code block in a blockquote"),
+        ("  > > ~~~\n  > > make test\n", "a code block in a blockquote"),
+        ("<pre>make test</pre>\n", "an HTML pre or code tag"),
+        ("Run <CODE class='x'>make test</CODE>.\n", "an HTML pre or code tag"),
+    ],
+)
+def test_a_construct_the_docs_never_use_is_a_finding(
+    tmp_path: Path, docs: str, construct: str
+) -> None:
+    found = grounding(tmp_path, {"testing.md": docs})
+
+    [finding] = [f for f in found if f.subject == f"docs/testing.md: {construct}"]
+    assert finding.owner == "docs"
+    assert "ARDE's docs never use this construct" in finding.message
+
+
+def test_a_plain_blockquote_is_no_finding(tmp_path: Path) -> None:
+    assert grounding(tmp_path, {"overview.md": "> Things are counted in whole units.\n"}) == []
 
 
 def test_no_docs_folder_gives_no_findings(tmp_path: Path) -> None:
