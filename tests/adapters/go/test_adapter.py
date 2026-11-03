@@ -49,7 +49,7 @@ def edit(path: Path, old: str, new: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
-def a_route(method: str, path: str, handler: str, *, handler_id: str | None = None) -> Route:
+def a_route(method: str, path: str, *, handler: str, handler_id: str | None = None) -> Route:
     return Route(
         method=method,
         path=path,
@@ -63,9 +63,9 @@ def a_route(method: str, path: str, handler: str, *, handler_id: str | None = No
 def field(
     struct: str,
     name: str,
+    *,
     json_name: str,
     declared_type: str,
-    *,
     may_be_absent: bool = False,
     file: str = "web/payloads.go",
 ) -> ResponseField:
@@ -142,17 +142,17 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
     assert inventory.dropped == ()
     assert inventory.unmatched_patterns == ()
     assert inventory.response_fields == (
-        field("ItemView", "PriceCents", "price_cents", "int64"),
-        field("ItemView", "SKU", "sku", "string"),
-        field("ItemView", "Title", "title", "string"),
-        field("Listing", "Items", "items", "[]ItemView"),
-        field("Quote", "ChargeCents", "charge_cents", "int64"),
-        field("Quote", "Details", "details", "any"),
-        field("Quote", "Note", "note", "string", may_be_absent=True),
-        field("Quote", "Pieces", "pieces", "int"),
-        field("Quote", "SKU", "sku", "string"),
-        field("Stamp", "IssuedBy", "issued_by", "string"),
-        field("problem", "Code", "code", "string", file="web/failures.go"),
+        field("ItemView", "PriceCents", json_name="price_cents", declared_type="int64"),
+        field("ItemView", "SKU", json_name="sku", declared_type="string"),
+        field("ItemView", "Title", json_name="title", declared_type="string"),
+        field("Listing", "Items", json_name="items", declared_type="[]ItemView"),
+        field("Quote", "ChargeCents", json_name="charge_cents", declared_type="int64"),
+        field("Quote", "Details", json_name="details", declared_type="any"),
+        field("Quote", "Note", json_name="note", declared_type="string", may_be_absent=True),
+        field("Quote", "Pieces", json_name="pieces", declared_type="int"),
+        field("Quote", "SKU", json_name="sku", declared_type="string"),
+        field("Stamp", "IssuedBy", json_name="issued_by", declared_type="string"),
+        field("problem", "Code", json_name="code", declared_type="string", file="web/failures.go"),
     )
 
 
@@ -1202,9 +1202,9 @@ def test_two_routes_that_share_a_key_and_not_a_handler_are_left_out_and_not_merg
     adapter: GoAdapter,
 ) -> None:
     routes = [
-        a_route("GET", "/", "s.listing", handler_id=LISTING),
-        a_route("GET", "/", "s.quote", handler_id=QUOTE),
-        a_route("GET", "/items/{sku}", "s.quote", handler_id=QUOTE),
+        a_route("GET", "/", handler="s.listing", handler_id=LISTING),
+        a_route("GET", "/", handler="s.quote", handler_id=QUOTE),
+        a_route("GET", "/items/{sku}", handler="s.quote", handler_id=QUOTE),
     ]
 
     reply = hashes_of(adapter, SHOP, routes)
@@ -1217,8 +1217,8 @@ def test_two_routes_that_share_a_key_and_a_function_keep_their_fingerprint(
     adapter: GoAdapter,
 ) -> None:
     routes = [
-        a_route("GET", "/", "s.listing", handler_id=LISTING),
-        a_route("GET", "/", "other.listing", handler_id=LISTING),
+        a_route("GET", "/", handler="s.listing", handler_id=LISTING),
+        a_route("GET", "/", handler="other.listing", handler_id=LISTING),
     ]
 
     assert sorted(hashes_of(adapter, SHOP, routes).hashes) == ["GET /"]
@@ -1226,8 +1226,8 @@ def test_two_routes_that_share_a_key_and_a_function_keep_their_fingerprint(
 
 def test_a_route_with_a_function_and_one_without_share_no_fingerprint(adapter: GoAdapter) -> None:
     routes = [
-        a_route("GET", "/", "s.listing", handler_id=LISTING),
-        a_route("GET", "/", INLINE_HANDLER),
+        a_route("GET", "/", handler="s.listing", handler_id=LISTING),
+        a_route("GET", "/", handler=INLINE_HANDLER),
     ]
 
     assert hashes_of(adapter, SHOP, routes).unhashed == {"GET /": "shared key"}
@@ -1235,8 +1235,8 @@ def test_a_route_with_a_function_and_one_without_share_no_fingerprint(adapter: G
 
 def test_two_routes_that_share_a_function_share_a_fingerprint(adapter: GoAdapter) -> None:
     routes = [
-        a_route("GET", "/a", "s.quote", handler_id=QUOTE),
-        a_route("POST", "/b", "other.quote", handler_id=QUOTE),
+        a_route("GET", "/a", handler="s.quote", handler_id=QUOTE),
+        a_route("POST", "/b", handler="other.quote", handler_id=QUOTE),
     ]
 
     hashes = hashes_of(adapter, SHOP, routes).hashes
@@ -1246,8 +1246,8 @@ def test_two_routes_that_share_a_function_share_a_fingerprint(adapter: GoAdapter
 
 def test_an_inline_handler_has_no_fingerprint_and_says_why(adapter: GoAdapter) -> None:
     routes = [
-        a_route("GET", "/", "s.listing", handler_id=LISTING),
-        a_route("GET", "/inline", INLINE_HANDLER),
+        a_route("GET", "/", handler="s.listing", handler_id=LISTING),
+        a_route("GET", "/inline", handler=INLINE_HANDLER),
     ]
 
     reply = hashes_of(adapter, SHOP, routes)
@@ -1260,9 +1260,11 @@ def test_a_name_with_no_function_behind_it_has_no_fingerprint_and_says_why(
     adapter: GoAdapter,
 ) -> None:
     routes = [
-        a_route("GET", "/", "s.listing", handler_id=LISTING),
-        a_route("GET", "/variable", "local"),
-        a_route("GET", "/ghost", "s.gone", handler_id="(*example.com/shop/web.server).gone"),
+        a_route("GET", "/", handler="s.listing", handler_id=LISTING),
+        a_route("GET", "/variable", handler="local"),
+        a_route(
+            "GET", "/ghost", handler="s.gone", handler_id="(*example.com/shop/web.server).gone"
+        ),
     ]
 
     reply = hashes_of(adapter, SHOP, routes)
@@ -1303,14 +1305,14 @@ def test_no_routes_means_no_fingerprints_and_no_run(adapter: GoAdapter, tmp_path
 def test_only_inline_handlers_means_no_fingerprints_and_no_run(
     adapter: GoAdapter, tmp_path: Path
 ) -> None:
-    reply = hashes_of(adapter, tmp_path, [a_route("GET", "/", INLINE_HANDLER)])
+    reply = hashes_of(adapter, tmp_path, [a_route("GET", "/", handler=INLINE_HANDLER)])
 
     assert reply == RouteHashes(hashes={}, unhashed={"GET /": "inline"})
 
 
 def test_a_repo_goinspect_cannot_load_is_an_error(adapter: GoAdapter, tmp_path: Path) -> None:
     with pytest.raises(GoinspectError, match=r"go\.mod"):
-        hashes_of(adapter, tmp_path, [a_route("GET", "/", "s.listing", handler_id=LISTING)])
+        hashes_of(adapter, tmp_path, [a_route("GET", "/", handler="s.listing", handler_id=LISTING)])
 
 
 def test_a_variable_that_shares_a_functions_name_hashes_nothing(
