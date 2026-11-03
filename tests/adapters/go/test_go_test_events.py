@@ -56,6 +56,29 @@ def test_a_skipped_subtest_is_named_though_its_parent_passed() -> None:
     assert read(*events) == (1, (f"{PACKAGE}.TestTable/needs_a_database",))
 
 
+# A package's own test files and its external _test package can each hold a test of one name, and
+# go test reports both under the package's path, one run after the other.
+def test_a_failing_test_keeps_its_text_when_a_test_of_the_same_name_passed() -> None:
+    measured = measured_tests(
+        stream(
+            event("run", "TestTwice"),
+            event("output", "TestTwice", output="--- PASS: TestTwice (0.00s)\n"),
+            event("pass", "TestTwice"),
+            event("run", "TestTwice"),
+            event("output", "TestTwice", output="    calc_ext_test.go:26: the second fails\n"),
+            event("output", "TestTwice", output="--- FAIL: TestTwice (0.00s)\n"),
+            event("fail", "TestTwice"),
+            event("fail"),
+        ),
+        tests_passed=False,
+    )
+
+    assert "calc_ext_test.go:26: the second fails" in measured.text
+    assert "--- FAIL: TestTwice" in measured.text
+    assert "--- PASS: TestTwice" not in measured.text
+    assert measured.tests_run == 2
+
+
 def test_a_package_with_no_test_files_skips_and_is_not_a_skipped_test() -> None:
     assert read(event("start"), event("skip")) == (0, ())
 

@@ -584,6 +584,27 @@ def test_a_failing_test_is_reported_and_not_raised(adapter: GoAdapter, shop: Pat
     assert (result.tests_run, result.tests_listed) == (3, 3)
 
 
+def test_a_failing_test_keeps_its_text_when_a_test_of_the_same_name_passed(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    write_go(
+        tmp_path,
+        {
+            "main.go": "package main\n\nfunc main() {}\n",
+            "calc/calc.go": "package calc\n",
+            "calc/calc_test.go": 'package calc\n\nimport "testing"\n\n'
+            "func TestTwice(t *testing.T) {}\n",
+            "calc/calc_ext_test.go": 'package calc_test\n\nimport "testing"\n\n'
+            'func TestTwice(t *testing.T) { t.Fatal("the external TestTwice fails") }\n',
+        },
+    )
+
+    result = adapter.run_checks(tmp_path, service_at("."))
+
+    assert (result.test_ok, result.tests_run) == (False, 2)
+    assert "the external TestTwice fails" in result.output
+
+
 def test_a_build_error_is_reported_and_not_raised(adapter: GoAdapter, shop: Path) -> None:
     edit(shop / "pricing" / "pricing.go", "return unitCents", new="return missing")
 

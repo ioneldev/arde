@@ -4,6 +4,8 @@ A package whose every test skipped prints "ok", so the plain form cannot tell a 
 having run. Each line of the stream is one event.
 """
 
+from collections import Counter
+
 from pydantic import BaseModel, Field, ValidationError
 
 from arde.adapters.language.go.errors import GoCommandError
@@ -44,14 +46,38 @@ def measured_tests(stream: str, *, tests_passed: bool) -> MeasuredTests:
     lines = [line for line in stream.split("\n") if line.strip()]
     events = [_event_from(line, tests_passed=tests_passed) for line in lines]
     endings = [event for event in events if event.test and event.action in _TEST_ENDINGS]
-    passed = {event.test_name for event in endings if event.action == "pass"}
     skipped = {event.test_name for event in endings if event.action == "skip"}
     return MeasuredTests(
         tests_run=sum(1 for e in endings if e.action != "skip" and e.is_top_level),
         tests_skipped=tuple(sorted(printable_name(name) for name in skipped)),
-        # A skip keeps its text, because its reason says what the run was missing.
-        text="".join(e.output for e in events if not (e.test and e.test_name in passed)),
+        text="".join(event.output for event in _without_runs_that_passed(events)),
     )
+
+
+# One name can run twice in a package, once from its own test files and once from its external
+# _test package, and go test names both by the package's path. So a run is told by its order: each
+# "run" event of a name starts the next one. A skip keeps its text, because its reason says what
+# the run was missing.
+def _without_runs_that_passed(events: list[_Event]) -> list[_Event]:
+    runs = _run_of_each(events)
+    passed = {
+        run for event, run in zip(events, runs, strict=True) if run and event.action == "pass"
+    }
+    return [event for event, run in zip(events, runs, strict=True) if run not in passed]
+
+
+# An event of a test belongs to the latest run of its name, and an event of no test to none.
+def _run_of_each(events: list[_Event]) -> list[tuple[str, int] | None]:
+    runs_started: Counter[str] = Counter()
+    runs: list[tuple[str, int] | None] = []
+    for event in events:
+        if not event.test:
+            runs.append(None)
+            continue
+        if event.action == "run":
+            runs_started[event.test_name] += 1
+        runs.append((event.test_name, runs_started[event.test_name]))
+    return runs
 
 
 # A failed run may hold the tool's own words. A run that passed may not: every count here rests on
