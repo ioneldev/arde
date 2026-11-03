@@ -17,6 +17,7 @@ from arde.adapters.language.go.goinspect_client import (
 )
 from arde.adapters.language.go.inventory_builder import SourceReading, build_inventory
 from arde.adapters.language.go.makefile import make_targets_of
+from arde.adapters.language.go.swag import build_swag, run_swag
 from arde.adapters.repo_links import require_no_link_leaves
 from arde.application.ports import CheckResult, LanguageAdapter, RouteHashes, UnhashedReason
 from arde.domain.inventory import INLINE_HANDLER, Inventory, Route
@@ -34,8 +35,10 @@ def patterns_of(profile: RepoProfile) -> tuple[ExtractionPattern, ...]:
 
 
 class GoAdapter(LanguageAdapter):
-    def __init__(self, goinspect: Path) -> None:
+    # Keyword-only, because the two paths have one type and a swap would pass every type check.
+    def __init__(self, goinspect: Path, *, swag: Path) -> None:
         self._goinspect = GoinspectClient(goinspect)
+        self._swag = swag
 
     def detects(self, repo: Path) -> bool:
         require_no_link_leaves(repo)
@@ -122,11 +125,16 @@ class GoAdapter(LanguageAdapter):
         require_no_link_leaves(repo)
         return toolchain.built_service(repo, profile)
 
+    # The gate also keeps swag from writing the spec through a link to a file outside the repo.
+    def generate_spec(self, repo: Path, profile: RepoProfile) -> Path:
+        require_no_link_leaves(repo)
+        return run_swag(repo, profile, swag=self._swag)
+
 
 # The return type is the static proof that GoAdapter satisfies the port: mypy fails here when
 # the port gains a method that GoAdapter lacks, or when a signature drifts.
 def go_adapter(bin_dir: Path) -> LanguageAdapter:
-    return GoAdapter(build_goinspect(bin_dir))
+    return GoAdapter(build_goinspect(bin_dir), swag=build_swag(bin_dir))
 
 
 def _of_the_profile(unmatched: Iterable[PatternName]) -> tuple[PatternName, ...]:

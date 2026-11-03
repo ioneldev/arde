@@ -239,6 +239,14 @@ class LanguageAdapter(Protocol):
         """
         ...
 
+    def generate_spec(self, repo: Path, profile: RepoProfile) -> Path:
+        """Writes the repo's OpenAPI file from its annotations, and returns the path of its JSON.
+
+        The YAML form is written beside it, and nothing else in the repo changes. A tool that
+        cannot read the annotations raises an ArdeError that quotes the end of what it printed.
+        """
+        ...
+
 
 class ServiceConfig(Frozen):
     """How to start one service and where to look when it will not start."""

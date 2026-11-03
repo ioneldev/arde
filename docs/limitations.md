@@ -87,6 +87,8 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 - **A nested module is not checked.** `./...` stops at a folder with its own `go.mod`, so build, vet and test never reach it, even when the repo's own `go.work` names it. Each such folder is named in `unchecked_modules`, the outermost only, so a failing test there cannot turn a run red. One inside `vendor`, `testdata` or a folder starting with `_` or `.` is not named, because `./...` never looks there for anything.
 - **Go's clock is per test binary, and ARDE's is for the whole command.** Go stops a binary after 540 s, prints the tests still running and fails the package, so one hang is a red result that names the test. ARDE stops `go test` after 600 s, so slow packages that run one after another can reach that first, and that stops the run. A timeout's message then holds the last 2,000 bytes the command printed, which for `go test` are events, and in a repo of many packages may be little, because `go` holds a package's output until it ends.
 - **Extra test commands run without a shell.** They are split into words, so `&&`, pipes and redirects do not work in them.
+- **swag passes over every folder named `docs`, and every hidden folder.** A handler declared in one gets no operation in the spec, and swag still exits 0. Measured for a `docs` folder with v2.0.0-rc6, and read in its source for a hidden one. Nothing in ARDE catches this yet.
+- **A repo's `.swaggo` file shapes its spec.** swag reads type overrides from that file in the repo root, so a line such as `replace birds.Nest string` turns that struct into a string wherever the spec uses it, and swag still exits 0. ARDE runs the pinned command as it stands and leaves the file in place. Measured with v2.0.0-rc6.
 - **No detection of critical changes** that alter a project's scope or can damage a service while the tests still pass.
 - **No stored knowledge graph.** It was dropped. Only cross-repo questions such as "which services use this contract?" would reopen it.
 
@@ -131,3 +133,4 @@ As of Phase 1. Move an item out of this list when a test or a measurement covers
 
 - The container image is about 980 MB, because it holds both the Go and Python toolchains.
 - `swag` v2.0.0-rc6 is a pre-release. It is pinned, and the run's checks would surface a bad spec.
+- The first build of `swag` needs the network, unless the Go module cache already holds its modules. `tools/swag/go.sum` holds the hash of every module the build needs, so Go refuses a download that does not match. The binary prints its version as v2.0.0, because that is the string rc6 carries.

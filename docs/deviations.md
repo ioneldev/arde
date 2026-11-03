@@ -3,7 +3,7 @@
 Where the work breaks a project rule or convention on purpose, and what that costs. The source of truth is the [Deviations section of the design](superpowers/specs/2026-11-01-arde-design.md#deviations). This page is a summary.
 
 - **One-implementation interface.** `LanguageAdapter` has only `GoAdapter`. It was asked for, and it gives fast tests through a fake. The cost is an abstraction with one real use.
-- **Large interface.** `LanguageAdapter` ends with twelve methods, more than interface segregation prefers. Eight exist today, and the other four arrive with the renderer, the spec generator and the edit checks, each with its implementation. It can split once a second language shows the right seams.
+- **Large interface.** `LanguageAdapter` ends with twelve methods, more than interface segregation prefers. Nine exist today, and the other three arrive with the renderer and the edit checks, each with its implementation. It can split once a second language shows the right seams.
 - **Library in the domain.** Domain models use Pydantic. This avoids two parallel type systems, and the cost is a dependency in the inner layer.
 - **Two languages.** The Go helper adds a language and a top-level tools directory, because the AST and call-graph libraries exist only in Go.
 - **Pre-release tool.** `swag` v2.0.0-rc6 is the only option found that can describe the polymorphic `Specs` field. It is pinned.

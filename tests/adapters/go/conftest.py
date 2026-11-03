@@ -8,6 +8,7 @@ from shop_support import SHOP
 
 from arde.adapters.language.go.adapter import GoAdapter
 from arde.adapters.language.go.goinspect_client import build_goinspect
+from arde.adapters.language.go.swag import build_swag
 
 
 @pytest.fixture(scope="session")
@@ -15,9 +16,14 @@ def goinspect_binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return build_goinspect(tmp_path_factory.mktemp("arde-bin"))
 
 
+@pytest.fixture(scope="session")
+def swag_binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return build_swag(tmp_path_factory.mktemp("arde-swag"))
+
+
 @pytest.fixture
-def adapter(goinspect_binary: Path) -> GoAdapter:
-    return GoAdapter(goinspect_binary)
+def adapter(goinspect_binary: Path, swag_binary: Path) -> GoAdapter:
+    return GoAdapter(goinspect_binary, swag=swag_binary)
 
 
 # A private copy of the fixture service, which a test may edit.
