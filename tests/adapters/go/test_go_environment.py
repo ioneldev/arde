@@ -9,6 +9,7 @@ against the public checksum database. Go itself decides which value wins, so the
 import json
 import os
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -85,8 +86,12 @@ class StandInGoEnv:
         return {**self.extras, **{name: resolved[name] for name in command.argv[3:]}}
 
 
+# On the way out too: the cache lasts as long as the process, so a stand-in's values would otherwise
+# reach every Go command of the tests that run after this file.
 @pytest.fixture(autouse=True)
-def read_the_user_file_afresh() -> None:
+def read_the_user_file_afresh() -> Iterator[None]:
+    go_environment._user_settings.cache_clear()
+    yield
     go_environment._user_settings.cache_clear()
 
 
