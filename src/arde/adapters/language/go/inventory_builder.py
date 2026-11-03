@@ -11,11 +11,11 @@ from pydantic import TypeAdapter, ValidationError
 from arde.adapters.language.go.goinspect_client import (
     TOO_LONG_TO_PRINT,
     CallMatch,
-    DeclarationReply,
-    FieldReply,
+    Declaration,
+    PatternName,
+    RouteReport,
     RouteSite,
-    RoutesReply,
-    UnmatchedPattern,
+    StructField,
 )
 from arde.application.ports import ProfileProblem
 from arde.domain.base import Frozen, describe_problems, one_line, printable_name
@@ -52,11 +52,11 @@ _DECLARATION_TEXT: TypeAdapter[str] = TypeAdapter(DeclarationText)
 
 class SourceReading(Frozen):
     main_package: str
-    service: RoutesReply
+    service: RouteReport
     matches: tuple[CallMatch, ...]
-    unmatched_patterns: tuple[UnmatchedPattern, ...]
-    declarations: tuple[DeclarationReply, ...]
-    fields: tuple[FieldReply, ...]
+    unmatched_patterns: tuple[PatternName, ...]
+    declarations: tuple[Declaration, ...]
+    fields: tuple[StructField, ...]
     make_targets: tuple[str, ...]
 
 
@@ -157,7 +157,7 @@ def build_inventory(reading: SourceReading) -> Inventory:
     )
 
 
-def _stop_where_a_path_changes(service: RoutesReply) -> None:
+def _stop_where_a_path_changes(service: RouteReport) -> None:
     if service.stripped_prefixes:
         raise RouteNotUnderstoodError(
             service.stripped_prefixes[0],
@@ -385,7 +385,7 @@ def _target_name(target: _MakeTarget) -> str:
     return _NAME_TEXT.validate_python(target.name)
 
 
-def _declaration_id(declaration: DeclarationReply) -> str:
+def _declaration_id(declaration: Declaration) -> str:
     return _DECLARATION_TEXT.validate_python(declaration.id)
 
 
@@ -414,7 +414,7 @@ def _literal(match: CallMatch, name: str) -> str:
     )
 
 
-def _listed_fields(fields: Iterable[FieldReply]) -> list[FieldReply]:
+def _listed_fields(fields: Iterable[StructField]) -> list[StructField]:
     in_service = [field for field in fields if not field.file.endswith("_test.go")]
     response_structs = {
         (field.file, field.struct) for field in in_service if _may_hold_a_json_key(field)
@@ -427,17 +427,17 @@ def _listed_fields(fields: Iterable[FieldReply]) -> list[FieldReply]:
 
 
 # A tag too long to print may hold a json key, and passing over it would lose the struct silently.
-def _may_hold_a_json_key(field: FieldReply) -> bool:
+def _may_hold_a_json_key(field: StructField) -> bool:
     return field.tag == TOO_LONG_TO_PRINT or field.json_tag is not None
 
 
 # An embedded field is left out: its own fields are promoted into the parent's JSON, and the
 # inventory has no way to say so. docs/limitations.md lists this.
-def _is_listed(field: FieldReply) -> bool:
+def _is_listed(field: StructField) -> bool:
     return field.name[:1].isupper() and not field.embedded and field.json_tag != "-"
 
 
-def _response_field(field: FieldReply) -> ResponseField:
+def _response_field(field: StructField) -> ResponseField:
     if TOO_LONG_TO_PRINT in (field.tag, field.go_type):
         raise _Unreadable(f"field {field.struct}.{field.name} has a tag or type too long to read")
     name, *options = (field.json_tag or "").split(",")

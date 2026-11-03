@@ -21,10 +21,10 @@ from arde.adapters.language.go.goinspect_client import (
     GOINSPECT_REPLY_LIMIT,
     GOINSPECT_SOURCE,
     CallMatch,
-    DeclarationReply,
+    Declaration,
     GoinspectClient,
+    PatternName,
     SourcePlace,
-    UnmatchedPattern,
     WrapperCall,
     build_goinspect,
 )
@@ -154,7 +154,7 @@ def test_matches_hand_the_patterns_over_as_a_file(stand_in: StandIn, folder: Pat
             literals={"name": "PORT"},
         ),
     )
-    assert reply.unmatched_patterns == (UnmatchedPattern(kind="param", call="^q$"),)
+    assert reply.unmatched_patterns == (PatternName(kind="param", call="^q$"),)
     assert stand_in.file_it_was_given == [
         {"kind": "env", "call": r"^os\.Getenv$", "args": {"name": 0}}
     ]
@@ -655,6 +655,6 @@ def test_a_routes_reply_with_no_package_folders_is_refused(stand_in: StandIn, fo
 
 
 def test_a_declaration_reads_as_the_id_changed_declarations_uses() -> None:
-    reply = DeclarationReply(file="web/a.go", kind="func", name="server.quote", hash="h", line=3)
+    reply = Declaration(file="web/a.go", kind="func", name="server.quote", hash="h", line=3)
 
     assert reply.id == "web/a.go::func server.quote"

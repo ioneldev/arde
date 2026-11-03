@@ -36,13 +36,13 @@ BAD_PATTERNS_MARK = "goinspect: bad patterns: "
 BAD_MAIN_PACKAGE_MARK = "goinspect: bad main_package: "
 
 
-class CompareReply(Frozen):
+class CompareReport(Frozen):
     changed: tuple[str, ...]
     added: tuple[str, ...]
     removed: tuple[str, ...]
 
 
-class DeclarationReply(Frozen):
+class Declaration(Frozen):
     file: str
     kind: str
     name: str
@@ -54,7 +54,7 @@ class DeclarationReply(Frozen):
         return f"{self.file}::{self.kind} {self.name}"
 
 
-class FieldReply(Frozen):
+class StructField(Frozen):
     file: str
     package: str
     struct: str
@@ -67,9 +67,9 @@ class FieldReply(Frozen):
     embedded: bool
 
 
-class DeclarationsReply(Frozen):
-    declarations: tuple[DeclarationReply, ...]
-    fields: tuple[FieldReply, ...]
+class DeclarationReport(Frozen):
+    declarations: tuple[Declaration, ...]
+    fields: tuple[StructField, ...]
 
 
 class CallMatch(Frozen):
@@ -83,15 +83,15 @@ class CallMatch(Frozen):
     literals: dict[str, str]
 
 
-class UnmatchedPattern(Frozen):
+class PatternName(Frozen):
     kind: str
     call: str
 
 
-class MatchReply(Frozen):
+class MatchReport(Frozen):
     matches: tuple[CallMatch, ...]
     # The patterns that matched no call anywhere in the tree.
-    unmatched_patterns: tuple[UnmatchedPattern, ...]
+    unmatched_patterns: tuple[PatternName, ...]
 
 
 class RouteSite(CallMatch):
@@ -112,7 +112,7 @@ class WrapperCall(SourcePlace):
     kind: str
 
 
-class RoutesReply(Frozen):
+class RouteReport(Frozen):
     # Folders of the packages that make up the service, from the repo root. The root reads ".".
     package_folders: tuple[str, ...]
     # The files of those packages that this machine's build compiles.
@@ -125,7 +125,7 @@ class RoutesReply(Frozen):
     wrapper_calls: tuple[WrapperCall, ...]
 
 
-class FingerprintsReply(Frozen):
+class FingerprintReport(Frozen):
     fingerprints: dict[str, str]
     reach: dict[str, tuple[str, ...]]
     # The ids that name no function of the service.
@@ -182,26 +182,26 @@ class GoinspectClient:
     def __init__(self, binary: Path) -> None:
         self._binary = binary.resolve()
 
-    def compare(self, old_dir: Path, new_dir: Path) -> CompareReply:
+    def compare(self, old_dir: Path, new_dir: Path) -> CompareReport:
         old, new = old_dir.resolve(), new_dir.resolve()
         arguments = ("compare", "--old", str(old), "--new", str(new))
-        return self._ask(_Question(arguments, CompareReply, cwd=old))
+        return self._ask(_Question(arguments, CompareReport, cwd=old))
 
-    def declarations(self, repo: Path) -> DeclarationsReply:
+    def declarations(self, repo: Path) -> DeclarationReport:
         resolved = repo.resolve()
         return self._ask(
-            _Question(("declarations", str(resolved)), DeclarationsReply, cwd=resolved)
+            _Question(("declarations", str(resolved)), DeclarationReport, cwd=resolved)
         )
 
-    def matches(self, repo: Path, patterns: Sequence[ExtractionPattern]) -> MatchReply:
+    def matches(self, repo: Path, patterns: Sequence[ExtractionPattern]) -> MatchReport:
         resolved = repo.resolve()
         with _json_file(_as_plain_data(patterns)) as patterns_file:
             arguments = ("match", "--patterns", str(patterns_file), str(resolved))
-            return self._ask(_Question(arguments, MatchReply, cwd=resolved))
+            return self._ask(_Question(arguments, MatchReport, cwd=resolved))
 
     def routes(
         self, repo: Path, patterns: Sequence[ExtractionPattern], *, main_package: str
-    ) -> RoutesReply:
+    ) -> RouteReport:
         resolved = repo.resolve()
         with _json_file(_as_plain_data(patterns)) as patterns_file:
             arguments = (
@@ -212,14 +212,14 @@ class GoinspectClient:
                 main_package,
                 str(resolved),
             )
-            return self._ask(_Question(arguments, RoutesReply, cwd=resolved))
+            return self._ask(_Question(arguments, RouteReport, cwd=resolved))
 
     # A file, because an id can hold a comma: (*example.com/x.pair[K, V]).serve.
     def fingerprints(
         self, repo: Path, roots: Sequence[str], *, main_package: str
-    ) -> FingerprintsReply:
+    ) -> FingerprintReport:
         if not roots:
-            return FingerprintsReply(fingerprints={}, reach={}, unresolved=(), without_body=())
+            return FingerprintReport(fingerprints={}, reach={}, unresolved=(), without_body=())
         resolved = repo.resolve()
         with _json_file(list(roots)) as roots_file:
             arguments = (
@@ -230,7 +230,7 @@ class GoinspectClient:
                 main_package,
                 str(resolved),
             )
-            return self._ask(_Question(arguments, FingerprintsReply, cwd=resolved))
+            return self._ask(_Question(arguments, FingerprintReport, cwd=resolved))
 
     def _ask[T: Frozen](self, question: "_Question[T]") -> T:
         command = ChildCommand(

@@ -9,12 +9,12 @@ import pytest
 from arde.adapters.language.go.goinspect_client import (
     TOO_LONG_TO_PRINT,
     CallMatch,
-    DeclarationReply,
-    FieldReply,
+    Declaration,
+    PatternName,
+    RouteReport,
     RouteSite,
-    RoutesReply,
     SourcePlace,
-    UnmatchedPattern,
+    StructField,
     WrapperCall,
 )
 from arde.adapters.language.go.inventory_builder import (
@@ -84,8 +84,8 @@ def field(
     file: str = "dto.go",
     tag: str = "",
     package: str = "billing",
-) -> FieldReply:
-    return FieldReply(
+) -> StructField:
+    return StructField(
         file=file,
         package=package,
         struct=struct,
@@ -98,8 +98,8 @@ def field(
     )
 
 
-def declaration(name: str, *, file: str = "main.go", kind: str = "func") -> DeclarationReply:
-    return DeclarationReply(file=file, kind=kind, name=name, hash="h", line=3)
+def declaration(name: str, *, file: str = "main.go", kind: str = "func") -> Declaration:
+    return Declaration(file=file, kind=kind, name=name, hash="h", line=3)
 
 
 def folders_of(files: Iterable[str]) -> tuple[str, ...]:
@@ -109,20 +109,20 @@ def folders_of(files: Iterable[str]) -> tuple[str, ...]:
 # Unless a test says otherwise, every file it names belongs to the service and to this build.
 def inventory_of(
     *found: CallMatch,
-    fields: tuple[FieldReply, ...] = (),
+    fields: tuple[StructField, ...] = (),
     make_targets: tuple[str, ...] = (),
-    declarations: tuple[DeclarationReply, ...] = (),
+    declarations: tuple[Declaration, ...] = (),
     stripped_prefixes: tuple[SourcePlace, ...] = (),
     wrapper_prefixes: tuple[SourcePlace, ...] = (),
     folders: tuple[str, ...] | None = None,
     build_files: tuple[str, ...] | None = None,
     wrapper_calls: tuple[WrapperCall, ...] = (),
-    unmatched_patterns: tuple[UnmatchedPattern, ...] = (),
+    unmatched_patterns: tuple[PatternName, ...] = (),
 ) -> Inventory:
     sites = tuple(item for item in found if isinstance(item, RouteSite))
     matches = tuple(item for item in found if not isinstance(item, RouteSite))
     files = [item.file for item in (*matches, *fields, *declarations)]
-    service = RoutesReply(
+    service = RouteReport(
         package_folders=folders_of(files) if folders is None else folders,
         build_files=tuple(files) if build_files is None else build_files,
         sites=sites,
@@ -808,8 +808,8 @@ def test_a_pattern_that_matched_nothing_is_carried_with_its_kind() -> None:
     inventory = inventory_of(
         registering(Lit("GET /x")),
         unmatched_patterns=(
-            UnmatchedPattern(kind="param", call=r"^q\.Get$"),
-            UnmatchedPattern(kind="env", call=r"^setting$"),
+            PatternName(kind="param", call=r"^q\.Get$"),
+            PatternName(kind="env", call=r"^setting$"),
         ),
     )
 
@@ -820,8 +820,8 @@ def test_an_unmatched_pattern_with_a_line_break_or_past_its_limit_does_not_stop_
     inventory = inventory_of(
         registering(Lit("GET /x")),
         unmatched_patterns=(
-            UnmatchedPattern(kind="env", call="a\nb\x1b"),
-            UnmatchedPattern(kind="env", call="x" * (2 * PATTERN_LIMIT)),
+            PatternName(kind="env", call="a\nb\x1b"),
+            PatternName(kind="env", call="x" * (2 * PATTERN_LIMIT)),
         ),
     )
 
@@ -975,11 +975,11 @@ def test_make_targets_pass_through() -> None:
     assert inventory.make_targets == ("serve", "unit")
 
 
-def fields_of(*fields: FieldReply) -> tuple[ResponseField, ...]:
+def fields_of(*fields: StructField) -> tuple[ResponseField, ...]:
     return with_one_route_and(fields).response_fields
 
 
-def with_one_route_and(fields: tuple[FieldReply, ...]) -> Inventory:
+def with_one_route_and(fields: tuple[StructField, ...]) -> Inventory:
     return inventory_of(registering(Lit("GET /ping")), fields=fields)
 
 
@@ -1093,7 +1093,7 @@ def test_a_struct_in_a_test_file_is_not_a_response() -> None:
     assert found == ()
 
 
-def fields_and_dropped(*fields: FieldReply) -> tuple[tuple[ResponseField, ...], tuple[str, ...]]:
+def fields_and_dropped(*fields: StructField) -> tuple[tuple[ResponseField, ...], tuple[str, ...]]:
     inventory = with_one_route_and(fields)
     return inventory.response_fields, inventory.dropped
 

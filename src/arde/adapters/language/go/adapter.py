@@ -11,7 +11,7 @@ from arde.adapters.language.go.directives import files_differ_only_in_ordinary_c
 from arde.adapters.language.go.discovery_guidance import DISCOVERY_GUIDANCE
 from arde.adapters.language.go.goinspect_client import (
     GoinspectClient,
-    UnmatchedPattern,
+    PatternName,
     build_goinspect,
 )
 from arde.adapters.language.go.inventory_builder import SourceReading, build_inventory
@@ -126,7 +126,7 @@ def go_adapter(bin_dir: Path) -> LanguageAdapter:
     return GoAdapter(build_goinspect(bin_dir))
 
 
-def _of_the_profile(unmatched: Iterable[UnmatchedPattern]) -> tuple[UnmatchedPattern, ...]:
+def _of_the_profile(unmatched: Iterable[PatternName]) -> tuple[PatternName, ...]:
     default = (DEFAULT_ENV_PATTERN.kind, DEFAULT_ENV_PATTERN.call)
     return tuple(pattern for pattern in unmatched if (pattern.kind, pattern.call) != default)
 
