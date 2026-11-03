@@ -58,6 +58,21 @@ NOT_FOUND = Reply(404, b"404 page not found\n", (TEXT,))
 
 
 @dataclass(frozen=True)
+class Drip:
+    at_once: bytes
+    byte_by_byte: bytes
+
+
+# Each byte comes well inside the time one read may wait, so only a deadline on the whole
+# exchange stops the probe. Forty bytes take two seconds.
+DRIP_GAP_S = 0.05
+DRIPS = {
+    "/drip-body": Drip(b"HTTP/1.0 200 OK\r\nContent-Length: 40\r\n\r\n", b"x" * 40),
+    "/drip-headers": Drip(b"", b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok"),
+}
+
+
+@dataclass(frozen=True)
 class Seen:
     method: str
     target: str
@@ -90,6 +105,9 @@ class StandInHandler(http.server.BaseHTTPRequestHandler):
         self.server.seen.append(Seen(self.command, target, self.headers.get("Host", "")))
         if target == "/hang-up":
             return
+        if target in DRIPS:
+            self.drip(DRIPS[target])
+            return
         if target == "/slow":
             time.sleep(1)
         reply = REPLIES.get(target, NOT_FOUND)
@@ -100,6 +118,16 @@ class StandInHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         if with_body:
             self.wfile.write(reply.body)
+
+    def drip(self, drip: Drip) -> None:
+        try:
+            self.wfile.write(drip.at_once)
+            for byte in drip.byte_by_byte:
+                time.sleep(DRIP_GAP_S)
+                self.wfile.write(bytes([byte]))
+        # The probe gave up and closed the connection, as it should.
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def log_message(self, format: str, *args: object) -> None:
         pass
@@ -318,6 +346,22 @@ def test_a_service_that_does_not_answer_in_time_is_a_tool_error(
     assert outcome.is_error
     assert "GET /slow got no response" in outcome.content
     assert log.find("GET", "/slow") is None
+
+
+@pytest.mark.parametrize("target", ["/drip-body", "/drip-headers"])
+def test_a_service_that_drips_its_reply_is_stopped_at_the_deadline(
+    service: StandInService, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    monkeypatch.setattr(http_tool, "PROBE_TIMEOUT_S", 0.3)
+    log = ProbeLog()
+    started_at = time.monotonic()
+
+    outcome = probe(service, target, log=log)
+
+    assert time.monotonic() - started_at < 1
+    assert outcome.is_error
+    assert f"GET {target} got no response" in outcome.content
+    assert log.find("GET", target) is None
 
 
 def test_a_service_that_hangs_up_without_a_reply_is_a_tool_error(service: StandInService) -> None:

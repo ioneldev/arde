@@ -6,6 +6,9 @@ the model wrote them, and it never follows a redirect.
 """
 
 import http.client
+import socket
+import time
+from collections.abc import Buffer
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -23,7 +26,7 @@ from arde.application.probe_log import ProbeLog
 from arde.application.tool_schema import strict_tool_schema
 from arde.domain.facts import ProbeRecord
 
-# Each wait on the socket, not the whole request: http.client has no overall deadline.
+# The whole exchange: the connection, the status line, the headers and the body.
 PROBE_TIMEOUT_S: float = 10
 # A recorded body is kept whole, so a larger one is refused rather than cut.
 RECORDED_BODY_LIMIT_BYTES = 1024 * 1024
@@ -81,9 +84,45 @@ def local_service_client() -> ServiceClient:
     return LocalServiceClient()
 
 
+class _Deadline:
+    def __init__(self, seconds: float) -> None:
+        self._seconds = seconds
+        self._ends_at = time.monotonic() + seconds
+
+    def remaining_s(self) -> float:
+        remaining = self._ends_at - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"no whole reply within {self._seconds} s")
+        return remaining
+
+
+# A socket timeout bounds one read, so a service that sends a byte at a time would never trip
+# it. Each read here may wait only as long as the whole exchange has left.
+class _SocketWithDeadline(socket.socket):
+    def __init__(self, connected: socket.socket, deadline: _Deadline) -> None:
+        super().__init__(fileno=connected.detach())
+        self._deadline = deadline
+
+    # http.client reads the status line, the headers and the body through this one method.
+    def recv_into(self, buffer: Buffer, nbytes: int = 0, flags: int = 0) -> int:
+        self.settimeout(self._deadline.remaining_s())
+        return super().recv_into(buffer, nbytes, flags)
+
+
+class _ConnectionWithDeadline(http.client.HTTPConnection):
+    def __init__(self, netloc: str, deadline: _Deadline) -> None:
+        super().__init__(netloc)
+        self._deadline = deadline
+
+    def connect(self) -> None:
+        self.timeout = self._deadline.remaining_s()
+        super().connect()
+        self.sock = _SocketWithDeadline(self.sock, self._deadline)
+
+
 def _exchange(service: ServiceHandle, request: HttpRequest) -> _Reply:
     address = urlsplit(service.base_url)
-    connection = http.client.HTTPConnection(address.netloc, timeout=PROBE_TIMEOUT_S)
+    connection = _ConnectionWithDeadline(address.netloc, _Deadline(PROBE_TIMEOUT_S))
     try:
         connection.request(request.method, address.path.rstrip("/") + request.path_and_query)
         response = connection.getresponse()
