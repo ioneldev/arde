@@ -79,74 +79,94 @@ type foundDeclaration struct {
 	pos  token.Pos
 }
 
-type declarationCollector struct {
-	path         string
-	source       *parsedSource
-	timesSeen    map[string]int
-	declarations []declaration
+func declarationsIn(path string, source *parsedSource) []declaration {
+	timesSeen := map[string]int{}
+	declarations := []declaration{}
+	for _, found := range foundDeclarationsIn(source.syntax) {
+		declarations = append(declarations, declaration{
+			File: path,
+			Kind: found.kind,
+			Name: found.uniqueName(timesSeen),
+			Hash: found.hash,
+			Line: source.lineOf(found.pos),
+		})
+	}
+	return declarations
 }
 
-func declarationsIn(path string, source *parsedSource) []declaration {
-	collector := &declarationCollector{
-		path:         path,
-		source:       source,
-		timesSeen:    map[string]int{},
-		declarations: []declaration{},
+// uniqueName keeps ids unique within a file. Go allows several init functions and several
+// blank identifiers in one file, and each must stay separately addressable.
+func (found foundDeclaration) uniqueName(timesSeen map[string]int) string {
+	key := found.kind + " " + found.name
+	timesSeen[key]++
+	if timesSeen[key] == 1 {
+		return found.name
 	}
-	for _, topLevel := range source.syntax.Decls {
+	return fmt.Sprintf("%s#%d", found.name, timesSeen[key])
+}
+
+func foundDeclarationsIn(syntax *ast.File) []foundDeclaration {
+	found := []foundDeclaration{}
+	for _, topLevel := range syntax.Decls {
 		switch topLevel := topLevel.(type) {
 		case *ast.FuncDecl:
-			collector.addFunc(topLevel)
+			found = append(found, foundFunc(topLevel))
 		case *ast.GenDecl:
-			collector.addGenDecl(topLevel)
+			found = append(found, foundInGroup(topLevel)...)
 		}
 	}
-	return collector.declarations
+	return found
 }
 
-func (collector *declarationCollector) addFunc(function *ast.FuncDecl) {
-	collector.add(foundDeclaration{
+func foundFunc(function *ast.FuncDecl) foundDeclaration {
+	return foundDeclaration{
 		kind: "func",
 		name: functionName(function),
 		hash: hashOfDump(function),
 		pos:  function.Name.Pos(),
-	})
-}
-
-func (collector *declarationCollector) addGenDecl(group *ast.GenDecl) {
-	switch group.Tok {
-	case token.TYPE:
-		collector.addTypes(group)
-	case token.VAR:
-		collector.addVars(group)
-	case token.CONST:
-		collector.addConsts(group)
 	}
 }
 
-func (collector *declarationCollector) addTypes(group *ast.GenDecl) {
+func foundInGroup(group *ast.GenDecl) []foundDeclaration {
+	switch group.Tok {
+	case token.TYPE:
+		return foundTypes(group)
+	case token.VAR:
+		return foundVars(group)
+	case token.CONST:
+		return foundConsts(group)
+	}
+	return nil
+}
+
+func foundTypes(group *ast.GenDecl) []foundDeclaration {
+	found := []foundDeclaration{}
 	for _, spec := range group.Specs {
 		typeSpec := spec.(*ast.TypeSpec)
-		collector.add(foundDeclaration{
+		found = append(found, foundDeclaration{
 			kind: "type",
 			name: typeSpec.Name.Name,
 			hash: hashOfDump(typeSpec),
 			pos:  typeSpec.Name.Pos(),
 		})
 	}
+	return found
 }
 
-func (collector *declarationCollector) addVars(group *ast.GenDecl) {
+func foundVars(group *ast.GenDecl) []foundDeclaration {
+	found := []foundDeclaration{}
 	for _, spec := range group.Specs {
 		valueSpec := spec.(*ast.ValueSpec)
 		hash := hashOfDump(valueSpec)
 		for _, name := range valueSpec.Names {
-			collector.add(foundDeclaration{kind: "var", name: name.Name, hash: hash, pos: name.Pos()})
+			found = append(found, foundDeclaration{kind: "var", name: name.Name, hash: hash, pos: name.Pos()})
 		}
 	}
+	return found
 }
 
-func (collector *declarationCollector) addConsts(group *ast.GenDecl) {
+func foundConsts(group *ast.GenDecl) []foundDeclaration {
+	found := []foundDeclaration{}
 	var lastValueSource *ast.ValueSpec
 	for index, spec := range group.Specs {
 		valueSpec := spec.(*ast.ValueSpec)
@@ -156,30 +176,10 @@ func (collector *declarationCollector) addConsts(group *ast.GenDecl) {
 		meaning := constMeaning{spec: valueSpec, valueSource: lastValueSource, iotaValue: index}
 		hash := meaning.hash()
 		for _, name := range valueSpec.Names {
-			collector.add(foundDeclaration{kind: "const", name: name.Name, hash: hash, pos: name.Pos()})
+			found = append(found, foundDeclaration{kind: "const", name: name.Name, hash: hash, pos: name.Pos()})
 		}
 	}
-}
-
-func (collector *declarationCollector) add(found foundDeclaration) {
-	collector.declarations = append(collector.declarations, declaration{
-		File: collector.path,
-		Kind: found.kind,
-		Name: collector.uniqueName(found.kind, found.name),
-		Hash: found.hash,
-		Line: collector.source.lineOf(found.pos),
-	})
-}
-
-// uniqueName keeps ids unique within a file. Go allows several init functions and several
-// blank identifiers in one file, and each must stay separately addressable.
-func (collector *declarationCollector) uniqueName(kind, name string) string {
-	key := kind + " " + name
-	collector.timesSeen[key]++
-	if collector.timesSeen[key] == 1 {
-		return name
-	}
-	return fmt.Sprintf("%s#%d", name, collector.timesSeen[key])
+	return found
 }
 
 func functionName(function *ast.FuncDecl) string {
@@ -228,7 +228,6 @@ func mentionsIota(values []ast.Expr) bool {
 }
 
 func structFieldsIn(path string, source *parsedSource) []structField {
-	reader := fieldReader{path: path, source: source}
 	fields := []structField{}
 	for _, topLevel := range source.syntax.Decls {
 		group, isGenDecl := topLevel.(*ast.GenDecl)
@@ -239,40 +238,32 @@ func structFieldsIn(path string, source *parsedSource) []structField {
 			typeSpec := spec.(*ast.TypeSpec)
 			structType, isStruct := ast.Unparen(typeSpec.Type).(*ast.StructType)
 			if isStruct {
-				fields = append(fields, reader.fieldsOf(typeSpec.Name.Name, structType)...)
+				owner := structField{File: path, Package: source.syntax.Name.Name, Struct: typeSpec.Name.Name}
+				fields = append(fields, source.fieldsOf(owner, structType)...)
 			}
 		}
 	}
 	return fields
 }
 
-type fieldReader struct {
-	path   string
-	source *parsedSource
-}
-
-func (reader fieldReader) fieldsOf(structName string, structType *ast.StructType) []structField {
+// fieldsOf reads a struct's fields. owner holds what they all share.
+func (source *parsedSource) fieldsOf(owner structField, structType *ast.StructType) []structField {
 	fields := []structField{}
 	for _, field := range structType.Fields.List {
-		tag := tagText(field)
-		template := structField{
-			File:    reader.path,
-			Package: reader.source.syntax.Name.Name,
-			Struct:  structName,
-			Tag:     tag,
-			JSONTag: jsonKeyOf(tag),
-			GoType:  boundedExprString(field.Type),
-		}
-		fields = append(fields, reader.namedAs(template, field)...)
+		template := owner
+		template.Tag = tagText(field)
+		template.JSONTag = jsonKeyOf(template.Tag)
+		template.GoType = boundedExprString(field.Type)
+		fields = append(fields, source.namedAs(template, field)...)
 	}
 	return fields
 }
 
 // namedAs makes one record per declared name, or a single embedded record named after the type.
-func (reader fieldReader) namedAs(template structField, field *ast.Field) []structField {
+func (source *parsedSource) namedAs(template structField, field *ast.Field) []structField {
 	if len(field.Names) == 0 {
 		template.Name = typeBaseName(field.Type)
-		template.Line = reader.source.lineOf(field.Type.Pos())
+		template.Line = source.lineOf(field.Type.Pos())
 		template.Embedded = true
 		return []structField{template}
 	}
@@ -280,7 +271,7 @@ func (reader fieldReader) namedAs(template structField, field *ast.Field) []stru
 	for _, name := range field.Names {
 		record := template
 		record.Name = name.Name
-		record.Line = reader.source.lineOf(name.Pos())
+		record.Line = source.lineOf(name.Pos())
 		records = append(records, record)
 	}
 	return records
