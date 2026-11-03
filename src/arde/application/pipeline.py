@@ -1,10 +1,12 @@
 """A run: one fixed sequence of steps, from a resolved source to a commit in the workspace clone.
 
 Each step is a small function, so _document reads as the flow. Agents work only inside the steps
-that need them. A red baseline stops the run before any paid call. A finding goes back to the
-agent that owns it for a round of repair, and a finding left after the last round stops the run
-before the commit. The profile, wiki, manifest, sections and snapshot are saved only once every
-check has passed, so a failed run leaves the last good run's state as it was.
+that need them. A red baseline stops the run before any paid call. Once the code checks pass on
+an attempt, the blind judge tests whether its docs let a reader predict the service. A finding
+goes back to the agent that owns it for a round of repair, and a finding left after the last
+round stops the run before the commit. The profile, wiki, manifest, sections and snapshot are
+saved only once every check has passed, so a failed run leaves the last good run's state as it
+was.
 """
 
 import hashlib
@@ -18,6 +20,7 @@ from pathlib import Path
 
 from arde.application.agents import discovery, docs_writer
 from arde.application.agents import explore as explore_agent
+from arde.application.agents import judge as judge_agent
 from arde.application.agents.discovery import discover_profile
 from arde.application.agents.docs_writer import (
     DocsRequest,
@@ -27,6 +30,7 @@ from arde.application.agents.docs_writer import (
     write_docs,
 )
 from arde.application.agents.explore import ExploreRequest, ExploreResult, explore
+from arde.application.agents.judge import JudgeRequest, read_judge_docs, run_judge
 from arde.application.changes import (
     NO_CHANGES,
     RunChanges,
@@ -37,11 +41,13 @@ from arde.application.changes import (
     restore_last_pages,
 )
 from arde.application.checks_runner import Check, CheckContext, ServicePair, run_checks
+from arde.application.judge_scoring import JudgeScope, required_items
 from arde.application.manifest_store import load_manifest, save_manifest
 from arde.application.models_config import Role
 from arde.application.pipeline_deps import PipelineDeps
 from arde.application.ports import (
     CheckResult,
+    HttpRequest,
     LanguageAdapter,
     RenderManifest,
     RenderOutcome,
@@ -88,12 +94,16 @@ from arde.domain.report import ExitCode, RepairRound, RunReport
 
 # The branch a URL run commits its result on, followed by the run's id.
 BRANCH_PREFIX = "arde/run-"
-AGENT_ROLES: tuple[Role, ...] = ("discovery", "explore", "docs")
+AGENT_ROLES: tuple[Role, ...] = ("discovery", "explore", "docs", "judge")
 # How much of a message or a warning the report keeps. The trace and debug.log keep the rest.
 MESSAGE_LIMIT = 8_000
 WARNING_LIMIT = 2_000
 # How much of what the repo's own checks printed a red baseline's message shows.
 CHECKS_OUTPUT_SHOWN = 2_000
+JUDGE_SKIPPED = (
+    "The blind judge did not run, because --skip-judge was given, so nothing tested whether a "
+    "reader of the docs can predict the service's replies."
+)
 
 
 @dataclass(frozen=True)
@@ -108,6 +118,7 @@ class RunRequest(Frozen):
     source: ResolvedSource
     # A new, empty folder from the store, for the copies, the service logs and report.json.
     run_dir: Path
+    skip_judge: bool = False
 
 
 # The errors a run raises itself. Each names what to do next.
@@ -193,6 +204,8 @@ class _Run:
     deps: RunDeps
     started_s: float = field(default_factory=time.monotonic)
     warnings: list[str] = field(default_factory=list)
+    # What the judge was excused from, and why, each line once.
+    exemptions: list[str] = field(default_factory=list)
     repair_rounds: list[RepairRound] = field(default_factory=list)
 
     @property
@@ -223,6 +236,14 @@ class _Run:
     def keep(self, lines: Iterable[str]) -> None:
         """Keeps each line for the report. The agent that found it has traced it already."""
         self._keep_new(lines)
+
+    def exempt(self, lines: Iterable[str]) -> None:
+        """Keeps each exemption for the report once, and traces it."""
+        for line in lines:
+            shown = _shown(line, WARNING_LIMIT)
+            if shown not in self.exemptions:
+                self.exemptions.append(shown)
+                self.tracer.event("exemption", role="judge", summary=shown)
 
     # A repair runs a step again, which notes again much of what it noted the first time.
     def _keep_new(self, lines: Iterable[str]) -> list[str]:
@@ -557,6 +578,8 @@ def _restore_last_pages(output_repo: Path, run: _Run) -> None:
 
 def _verify(basis: _Basis, *, output: _Output, run: _Run) -> _Output:
     """The output once every check passes on it, after the rounds of repair the loop allows."""
+    if run.request.skip_judge:
+        run.warn([JUDGE_SKIPPED])
     verification = _Verification(basis=basis, run=run, wiki=output.wiki, output=output)
     left = run_with_repairs(verification, tracer=run.tracer)
     if left:
@@ -568,7 +591,9 @@ def _verify(basis: _Basis, *, output: _Output, run: _Run) -> _Output:
 class _Verification:
     """The checks, and each agent run again on what they found. It is the loop's VerifyStep.
 
-    Round n follows the n-th check: its repairs and the check after it are attempt n.
+    Round n follows the n-th check: its repairs and the check after it are attempt n. The judge
+    runs on an attempt only once its code checks find nothing, on the same output and services,
+    so its findings are that attempt's findings.
     """
 
     basis: _Basis
@@ -581,9 +606,16 @@ class _Verification:
     # What the last check found, which the round after it repairs.
     found: list[Finding] = field(default_factory=list)
     checks_run: int = 0
+    # The requests whose mismatch the last judge confirmed, which the next judge sends again, so
+    # a repair is judged on the very request that showed the problem.
+    judged_wrong: tuple[HttpRequest, ...] = ()
 
     def check(self) -> list[Finding]:
-        self.found = _check(self.basis, output=self.output, attempt=self.checks_run, run=self.run)
+        attempt = _Attempt(basis=self.basis, output=self.output, number=self.checks_run)
+        with _checking(attempt, run=self.run) as services:
+            self.found = _code_checks(attempt, services=services, run=self.run)
+            if not self.found and not self.run.request.skip_judge:
+                self.found = self._judge(services.after)
         self.checks_run += 1
         return self.found
 
@@ -625,38 +657,87 @@ class _Verification:
             repaired_fact_ids=self.repaired_fact_ids,
         )
 
+    def _judge(self, service: ServiceHandle) -> list[Finding]:
+        required = required_items(
+            JudgeScope(
+                inventory=self.basis.reading.inventory,
+                wiki=self.output.wiki,
+                changed_ids=self._changed_fact_ids(),
+                again=self.judged_wrong,
+            )
+        )
+        self.run.exempt(required.exemptions)
+        # The last good run's judge passed every page whose facts are unchanged.
+        if required.is_empty():
+            self.run.tracer.event(
+                "judge_skipped", reason="no fact that a request can test changed since the last run"
+            )
+            return []
+        with self.run.step("judge"):
+            docs = read_judge_docs(self.output.repo, self.output.spec_path)
+            judged = run_judge(
+                JudgeRequest(docs=docs, service=service, required=required), self.run.shared
+            )
+            self.run.tracer.event("check_result", check="judge", findings=len(judged.findings))
+        self.judged_wrong = tuple(mismatch.prediction.request for mismatch in judged.confirmed)
+        return list(judged.findings)
+
+    # The facts the docs were written again for: those that changed or came since the last run,
+    # and those a repair changed. None on a first run, when the judge must try every item.
+    def _changed_fact_ids(self) -> frozenset[str] | None:
+        last, now = self.basis.last.wiki, self.output.wiki
+        if not last.facts:
+            return None
+        came = {fact.id for fact in now.facts} - {fact.id for fact in last.facts}
+        return changed_fact_ids(last, now) | self.repaired_fact_ids | came
+
+
+@dataclass(frozen=True)
+class _Attempt:
+    basis: _Basis
+    output: _Output
+    number: int
+
 
 # Both services start afresh for each attempt and stop when its checks end, so the two that the
 # behaviour check compares have answered the same requests, and none runs during a repair.
-def _check(basis: _Basis, *, output: _Output, attempt: int, run: _Run) -> list[Finding]:
+@contextmanager
+def _checking(attempt: _Attempt, *, run: _Run) -> Iterator[ServicePair]:
+    """The attempt's checks step, with its before and after services running."""
+    basis = attempt.basis
     with run.step("checks"), ExitStack() as services:
         before = services.enter_context(
             _running_service(
                 basis.input_repo,
                 profile=basis.profile,
-                log=_service_log(run, "before", attempt=attempt),
+                log=_service_log(run, "before", attempt=attempt.number),
                 run=run,
             )
         )
         after = services.enter_context(
             _running_service(
-                output.repo,
+                attempt.output.repo,
                 profile=basis.profile,
-                log=_service_log(run, "after", attempt=attempt),
+                log=_service_log(run, "after", attempt=attempt.number),
                 run=run,
             )
         )
-        context = CheckContext(
-            input_repo=basis.input_repo,
-            output_repo=output.repo,
-            profile=basis.profile,
-            inventory=basis.reading.inventory,
-            wiki=output.wiki,
-            render=output.rendered.result,
-            spec_path=output.spec_path,
-            services=ServicePair(before=before, after=after),
-        )
-        return run_checks(_the_checks(basis.last.manifest, run), context)
+        yield ServicePair(before=before, after=after)
+
+
+def _code_checks(attempt: _Attempt, *, services: ServicePair, run: _Run) -> list[Finding]:
+    basis, output = attempt.basis, attempt.output
+    context = CheckContext(
+        input_repo=basis.input_repo,
+        output_repo=output.repo,
+        profile=basis.profile,
+        inventory=basis.reading.inventory,
+        wiki=output.wiki,
+        render=output.rendered.result,
+        spec_path=output.spec_path,
+        services=services,
+    )
+    return run_checks(_the_checks(basis.last.manifest, run), context)
 
 
 def _the_checks(manifest: RenderManifest, run: _Run) -> list[Check]:
@@ -779,6 +860,7 @@ def _prompt_hashes(adapter: LanguageAdapter) -> dict[str, str]:
         "discovery": discovery.system_prompt(adapter),
         "explore": explore_agent.SYSTEM_PROMPT,
         "docs": docs_writer.system_prompt(),
+        "judge": judge_agent.SYSTEM_PROMPT,
     }
     return {
         role: hashlib.sha256(text.encode("utf-8")).hexdigest() for role, text in prompts.items()
@@ -883,7 +965,7 @@ def _report(
             "next_action": _shown(next_action, MESSAGE_LIMIT),
             "findings": tuple(_shown_finding(finding) for finding in findings),
             "warnings": tuple(run.warnings),
-            "exemptions": (),
+            "exemptions": tuple(run.exemptions),
             "change_labels": (),
             "cost_usd": sum(role.cost_usd for role in totals.values()),
             "duration_s": round(time.monotonic() - run.started_s, 3),

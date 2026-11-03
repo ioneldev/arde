@@ -6,7 +6,7 @@ import shutil
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from pipeline_support import git
+from pipeline_support import a_prediction, git, judging
 from scripted_model import calling, tool_call
 from shop_facts import BAD_PIECES, LISTING, NOTHING, TEA, a_rule, covering_facts, quote
 from shop_support import SHOP_INVENTORY, shop_profile
@@ -88,7 +88,18 @@ def a_first_run_on_the_shop() -> list[LLMResponse]:
         writing_a_section(NO_DISCOUNT_SECTION, NO_DISCOUNT.id),
         writing_a_section(PORT_SECTION, PORT_RULE.id),
         writing_a_section("How to change the shop safely.", NO_DISCOUNT.id),
+        *judging_the_shop(),
     ]
+
+
+def judging_the_shop() -> list[LLMResponse]:
+    """A judge that predicts the running shop right, trying each route, param and error code."""
+    return judging(
+        a_prediction("/", **{"items.0.sku": "tea-100", "items.0.price_cents": 450}),
+        a_prediction("/items/tea-100?pieces=2", pieces=2, charge_cents=900),
+        a_prediction("/items/tea-100?pieces=0", 400, code="bad_pieces"),
+        a_prediction("/items/nothing", 404, code="unknown_sku"),
+    )
 
 
 @dataclass

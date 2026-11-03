@@ -1,4 +1,5 @@
-"""The command line: uv run arde --repo <url or path> [--branch B] [--json] [--max-usd N].
+"""The command line: uv run arde --repo <url or path> [--branch B] [--json] [--max-usd N]
+[--skip-judge].
 
 The one place that wires adapters into the application. It never prompts, so it can run
 unattended. Bad input stops it before any work: no key, a cap that is not a positive number, or a
@@ -104,6 +105,7 @@ class Arguments:
     branch: str | None
     as_json: bool
     max_usd: float
+    skip_judge: bool
 
 
 @dataclass(frozen=True)
@@ -159,7 +161,11 @@ def parse_arguments(
     with redirect_stdout(out), redirect_stderr(err):
         parsed = _parser().parse_args(argv)
     return Arguments(
-        repo=parsed.repo, branch=parsed.branch, as_json=parsed.json, max_usd=parsed.max_usd
+        repo=parsed.repo,
+        branch=parsed.branch,
+        as_json=parsed.json,
+        max_usd=parsed.max_usd,
+        skip_judge=parsed.skip_judge,
     )
 
 
@@ -180,6 +186,14 @@ def _parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_USD,
         help=f"stop the run once it has spent this much on the model (default {DEFAULT_MAX_USD:g})",
     )
+    parser.add_argument(
+        "--skip-judge",
+        action="store_true",
+        help=(
+            "do not run the blind judge, which tests whether a reader of the docs can predict "
+            "the service's replies; the report says it did not run"
+        ),
+    )
     return parser
 
 
@@ -198,7 +212,8 @@ def _run(arguments: Arguments, *, wiring: Wiring, console: Console) -> int:
         failed = _report_before_the_run(error, run_dir=run_dir)
         return _publish(trace.redacted_report(failed), console)
     deps = _deps(ready, wiring=wiring, tracer=tracer, client=client)
-    report = run_pipeline(RunRequest(source=ready.source, run_dir=run_dir), deps)
+    request = RunRequest(source=ready.source, run_dir=run_dir, skip_judge=arguments.skip_judge)
+    report = run_pipeline(request, deps)
     return _publish(trace.redacted_report(report), console)
 
 

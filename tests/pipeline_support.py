@@ -45,6 +45,7 @@ from arde.application.ports import (
     ServiceHandle,
     SourceQuote,
     Tool,
+    ToolCall,
     ToolOutcome,
 )
 from arde.application.probe_log import ProbeLog
@@ -247,9 +248,12 @@ class FakeService:
     """Answers GET /things with the list, and every other path as when nothing serves it."""
 
     requested: list[HttpRequest] = field(default_factory=list)
+    # The service each request went to, in the same order.
+    handles: list[ServiceHandle] = field(default_factory=list)
 
     def send_request(self, service: ServiceHandle, request: HttpRequest) -> ProbeRecord:
         self.requested.append(request)
+        self.handles.append(service)
         found = request.path_and_query == "/things"
         return ProbeRecord(
             kind="probe",
@@ -351,7 +355,12 @@ def exploring(*facts: Fact, injections: tuple[str, ...] = ()) -> list[LLMRespons
 
 
 def a_first_run_script() -> list[LLMResponse]:
-    return [submitting_the_profile(), *exploring(), *summarising(THINGS_FACT.id)]
+    return [
+        submitting_the_profile(),
+        *exploring(),
+        *summarising(THINGS_FACT.id),
+        *judging_clean(),
+    ]
 
 
 # The overview and the change guide rest on every fact, so every first run writes them: the
@@ -374,6 +383,28 @@ def a_section(markdown: str, fact_id: str) -> LLMResponse:
             "submit_section", markdown=markdown, used_fact_ids=[fact_id], suspected_injections=[]
         )
     )
+
+
+# The judge runs once the code checks pass, and its finish is refused until its requests have
+# tried each required item: on a first run of the stand-ins, GET /things.
+def a_prediction(path_and_query: str = "/things", status: int = 200, **fields: object) -> ToolCall:
+    return tool_call(
+        "predict_and_call",
+        method="GET",
+        path_and_query=path_and_query,
+        status=status,
+        fields=fields,
+    )
+
+
+def judging(*predictions: ToolCall) -> list[LLMResponse]:
+    """The judge's two turns: every prediction at once, then finish."""
+    return [calling(*predictions), calling(tool_call("finish"))]
+
+
+def judging_clean(*predictions: ToolCall) -> list[LLMResponse]:
+    """A judge whose every prediction is right, GET /things unless the caller names others."""
+    return judging(*(predictions or (a_prediction(),)))
 
 
 @dataclass

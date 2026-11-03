@@ -12,13 +12,17 @@ from pathlib import Path
 
 import pytest
 from pipeline_support import (
+    THINGS_FACT,
     FakeAdapter,
     FakeRunner,
     FakeService,
     FakeToolbox,
     a_first_run_script,
     a_git_repo,
+    exploring,
     git,
+    submitting_the_profile,
+    summarising,
 )
 
 from arde.adapters.llm.fake import FakeLLM
@@ -145,6 +149,11 @@ def test_the_cost_cap_defaults_to_10_dollars() -> None:
     assert parse_arguments(["--repo", "x"]).max_usd == 10
 
 
+def test_the_judge_runs_unless_skip_judge_is_given() -> None:
+    assert parse_arguments(["--repo", "x"]).skip_judge is False
+    assert parse_arguments(["--repo", "x", "--skip-judge"]).skip_judge is True
+
+
 @pytest.mark.parametrize("cap", ["0", "-1", "nan", "inf"])
 def test_a_cost_cap_that_is_not_a_positive_number_exits_2(home: Path, repo: Path, cap: str) -> None:
     stand_ins = Stand_ins()
@@ -213,6 +222,17 @@ def test_a_local_run_succeeds_and_says_where_the_output_is(home: Path, repo: Pat
 
     assert code == ExitCode.OK, outputs.err.getvalue()
     assert "output" in outputs.out.getvalue()
+
+
+def test_a_run_with_skip_judge_calls_no_judge_and_says_so(home: Path, repo: Path) -> None:
+    script = [submitting_the_profile(), *exploring(), *summarising(THINGS_FACT.id)]
+    stand_ins = Stand_ins(script=script)
+
+    code, outputs = run_arde("--repo", str(repo), "--json", "--skip-judge", stand_ins=stand_ins)
+
+    report = RunReport.model_validate_json(outputs.out.getvalue())
+    assert (code, report.status) == (ExitCode.OK, "success"), report.message
+    assert any(warning.startswith("The blind judge did not run") for warning in report.warnings)
 
 
 def test_json_flag_prints_only_runreport_on_stdout(home: Path, repo: Path) -> None:

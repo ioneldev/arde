@@ -18,9 +18,12 @@ from pipeline_support import (
     a_change_guide,
     a_check_result,
     a_first_run_script,
+    a_prediction,
     an_inventory,
     an_overview,
     exploring,
+    judging,
+    judging_clean,
     submitting_the_profile,
     summarising,
 )
@@ -29,6 +32,7 @@ from scripted_model import USAGE, calling, tool_call
 from arde.application.agents.discovery import system_prompt as discovery_prompt
 from arde.application.agents.docs_writer import system_prompt as docs_prompt
 from arde.application.agents.explore import SYSTEM_PROMPT as EXPLORE_PROMPT
+from arde.application.agents.judge import SYSTEM_PROMPT as JUDGE_PROMPT
 from arde.application.pipeline import run_pipeline
 from arde.application.ports import LLMResponse, ProviderError, RouteHashes
 from arde.application.profile_store import save_profile
@@ -107,6 +111,7 @@ def test_the_steps_run_in_order(tmp_path: Path) -> None:
         "spec",
         "docs",
         "checks",
+        "judge",
         "commit",
         "save",
     ]
@@ -150,6 +155,7 @@ def test_the_checks_run_on_both_copies_with_both_services(tmp_path: Path) -> Non
         "spec_matches_inventory",
         "live_contract",
         "docs_grounding",
+        "judge",
     }
 
 
@@ -346,7 +352,12 @@ def test_suspected_injections_reach_the_warnings(tmp_path: Path) -> None:
             "submit_profile", **PROFILE, suspected_injections=[{"file": "README.md", "line": 4}]
         )
     )
-    script = [discovery, *exploring(injections=("main.go:2",)), *summarising(THINGS_FACT.id)]
+    script = [
+        discovery,
+        *exploring(injections=("main.go:2",)),
+        *summarising(THINGS_FACT.id),
+        *judging_clean(),
+    ]
 
     report = run(a_rig(tmp_path, script))
 
@@ -481,15 +492,17 @@ def test_run_start_records_commit_tool_versions_models_and_prompt_hashes(tmp_pat
         "discovery": "claude-opus-5-5",
         "explore": "claude-opus-5-5",
         "docs": "claude-opus-5-5",
+        "judge": "claude-opus-5-5",
     }
     hashes = start["prompt_sha256"]
     assert isinstance(hashes, dict)
-    assert set(hashes) == {"discovery", "explore", "docs"}
+    assert set(hashes) == {"discovery", "explore", "docs", "judge"}
     import hashlib
 
     assert hashes["discovery"] == hashlib.sha256(discovery_prompt(rig.adapter).encode()).hexdigest()
     assert hashes["explore"] == hashlib.sha256(EXPLORE_PROMPT.encode()).hexdigest()
     assert hashes["docs"] == hashlib.sha256(docs_prompt().encode()).hexdigest()
+    assert hashes["judge"] == hashlib.sha256(JUDGE_PROMPT.encode()).hexdigest()
 
 
 def test_run_end_has_per_role_totals(tmp_path: Path) -> None:
@@ -592,6 +605,7 @@ def a_documented_repo(tmp_path: Path) -> Rig:
         writing_a_section("Things come back in the order they were added.", "rule.order"),
         writing_a_section("Set THINGS_PORT to choose the port.", "rule.port"),
         a_change_guide("rule.order"),
+        *judging_clean(),
     ]
     rig = a_rig(tmp_path, script)
     assert run(rig).status == "success"
@@ -682,6 +696,12 @@ def reading_limit() -> FakeAdapter:
     return FakeAdapter(inventory=an_inventory(params=(Param(name="limit"),)))
 
 
+# The judge must set the limit in a request. The stand-in service answers only the bare path, so
+# a judge that predicts it right predicts 404 for any query.
+def judging_the_limit() -> list[LLMResponse]:
+    return judging(a_prediction("/things"), a_prediction("/things?limit=5", 404))
+
+
 # Measured on a re-run: maxQty went from 10 to 20, and only the API page, which code renders, said
 # 20. The business rules had used the endpoint fact and still said 10, because only the changed
 # fact's own topic, api, counted as stale.
@@ -695,6 +715,7 @@ def test_a_section_that_used_a_changed_fact_of_another_topic_is_written_again(
         writing_a_section("At most 10 things come back.", ORDER_RULE.id, CAPPED_THINGS.id),
         writing_a_section("Set THINGS_PORT to choose the port.", PORT_RULE.id),
         a_change_guide(ORDER_RULE.id),
+        *judging_the_limit(),
     ]
     assert run(a_rig(tmp_path, first_script, adapter=reading_limit())).status == "success"
     raised_limit = LIMIT.model_copy(update={"maximum": 20})
@@ -704,6 +725,8 @@ def test_a_section_that_used_a_changed_fact_of_another_topic_is_written_again(
         an_overview(ORDER_RULE.id),
         writing_a_section("At most 20 things come back.", ORDER_RULE.id, raised.id),
         a_change_guide(ORDER_RULE.id),
+        # The changed endpoint fact requires its route and its limit param.
+        *judging_the_limit(),
     ]
     second = Rig(tmp_path=tmp_path, script=second_script, adapter=reading_limit())
 

@@ -24,6 +24,7 @@ from end_to_end_support import (
     a_repo_of,
     commit_all,
     exploring_the_shop,
+    judging_the_shop,
     submitting_the_shop_profile,
     writing_a_section,
 )
@@ -170,7 +171,11 @@ THE_MAXIMUM_FINDING = ("live_contract", "explore", "GET /items/{sku} query param
 @pytest.mark.integration
 def test_a_bound_explore_got_wrong_is_repaired_and_the_run_commits(arde: Arde, shop: Path) -> None:
     cloned = git(shop, "rev-parse", "HEAD").strip()
-    script = [*a_first_attempt_whose_maximum_is_wrong(), *a_repair_that_sets_the_maximum_to(50)]
+    script = [
+        *a_first_attempt_whose_maximum_is_wrong(),
+        *a_repair_that_sets_the_maximum_to(50),
+        *judging_the_shop(),
+    ]
 
     code, report, err = arde.run("--repo", shop.as_uri(), script=script)
 

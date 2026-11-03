@@ -25,9 +25,11 @@ class Tracer(Protocol):
 
     Event kinds: run_start, step_start, step_end, model_call, model_error, tool_call, correction,
     agent_end, check_result, repair, warning and run_end, prompt, the hash of an agent's system
-    prompt, and changes, what a later run found changed since the snapshot. The tracer stamps each
-    event, so callers pass no time. A field named summary may be any length: the tracer cuts it,
-    after redaction.
+    prompt, and changes, what a later run found changed since the snapshot. The judge adds
+    prediction, recorded before its request is sent, mismatch, judge_note, judge_noise and
+    judge_confirmed, what a re-test made of a mismatch, clarity, exemption and judge_skipped. The
+    tracer stamps each event, so callers pass no time. A field named summary may be any length:
+    the tracer cuts it, after redaction.
     """
 
     def event(self, kind: str, **fields: object) -> None: ...

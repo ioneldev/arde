@@ -21,6 +21,7 @@ from pipeline_support import (
     a_change_guide,
     an_overview,
     exploring,
+    judging_clean,
     submitting_the_profile,
     summarising,
 )
@@ -83,9 +84,11 @@ def first_message(request: LLMRequest) -> str:
 
 def agent_of(request: LLMRequest) -> str:
     names = tool_names(request)
-    return (
-        "discovery" if "submit_profile" in names else "explore" if "add_facts" in names else "docs"
-    )
+    if "submit_profile" in names:
+        return "discovery"
+    if "add_facts" in names:
+        return "explore"
+    return "judge" if "predict_and_call" in names else "docs"
 
 
 # Every agent run starts with one message, the run's context.
@@ -114,8 +117,14 @@ def an_attempt(fact: Fact, *, injections: tuple[str, ...] = ()) -> list[LLMRespo
     return [*exploring(fact, injections=injections), *summarising(fact.id)]
 
 
+# The judge runs on the attempt whose code checks pass, the second.
 def an_explore_repair(tmp_path: Path, **changes: object) -> Rig:
-    script = [submitting_the_profile(), *an_attempt(UNPROBED_THINGS), *an_attempt(THINGS_FACT)]
+    script = [
+        submitting_the_profile(),
+        *an_attempt(UNPROBED_THINGS),
+        *an_attempt(THINGS_FACT),
+        *judging_clean(),
+    ]
     return Rig(tmp_path=tmp_path, script=script, **changes)  # type: ignore[arg-type]
 
 
@@ -181,6 +190,7 @@ def test_a_repair_round_runs_explore_then_writes_and_checks_the_output_again(
         "spec",
         "docs",
         "checks",
+        "judge",
         "commit",
         "save",
     ]
@@ -286,6 +296,7 @@ def test_a_warning_both_attempts_give_is_reported_once(tmp_path: Path) -> None:
         submitting_the_profile(),
         *an_attempt(UNPROBED_THINGS, injections=("main.go:2",)),
         *an_attempt(THINGS_FACT, injections=("main.go:2",)),
+        *judging_clean(),
     ]
     rig = Rig(tmp_path=tmp_path, script=script)
 
@@ -306,12 +317,14 @@ def writing_the_sections(business_rules: str) -> list[LLMResponse]:
     ]
 
 
+# The judge's replies come last, for the attempt whose code checks pass, when one does.
 def a_docs_repair(tmp_path: Path, *, repaired_section: str, **changes: object) -> Rig:
     script = [
         submitting_the_profile(),
         *exploring(THINGS_FACT, ORDER_RULE),
         *writing_the_sections(f"Read {UNKNOWN_ADDRESS} before you add things."),
         *writing_the_sections(repaired_section),
+        *judging_clean(),
     ]
     return Rig(tmp_path=tmp_path, script=script, **changes)  # type: ignore[arg-type]
 
@@ -330,6 +343,7 @@ def test_a_docs_finding_is_repaired_by_docs_alone(tmp_path: Path) -> None:
         *["explore"] * 3,
         *["docs"] * 3,
         *["docs"] * 3,
+        *["judge"] * 2,
     ]
     sections = first_turns_of(rig, "docs")
     first, repair = sections[:3], sections[3:]
@@ -409,6 +423,7 @@ def test_a_section_whose_facts_a_repair_changed_is_written_again(tmp_path: Path)
             writing_a_section("Things come back in the order they were added.", ORDER_RULE.id),
             writing_a_section("Set THINGS_PORT to choose the port.", PORT_RULE.id),
             a_change_guide(ORDER_RULE.id),
+            *judging_clean(),
         ],
     )
     assert run(first).status == "success"
@@ -427,6 +442,8 @@ def test_a_section_whose_facts_a_repair_changed_is_written_again(tmp_path: Path)
             an_overview(ORDER_RULE.id),
             writing_a_section("In the order they were added, again.", ORDER_RULE.id),
             a_change_guide(ORDER_RULE.id),
+            # The repair changed the endpoint fact, so the judge must try its route.
+            *judging_clean(),
         ],
         adapter=FakeAdapter(changed=["main.go::func things"]),
     )
