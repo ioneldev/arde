@@ -2032,9 +2032,10 @@ func main() {
 
 // A value of a module type that serves requests itself is anchored at its ServeHTTP, which is the
 // whole handler, and the methods of a module type the handler hands to an interface are roots,
-// because the static graph cannot follow a call through the interface.
+// because the static graph cannot follow a call through the interface. Only those an interface can
+// call are: render is unexported, and ServeHTTP's own walk reaches it.
 func TestRoutesAnchorsAValueThatServesItselfAtItsServeHTTP(t *testing.T) {
-	itemsMethods := []string{"(*example.com/depot.items).ServeHTTP", "(*example.com/depot.items).render"}
+	itemsMethods := []string{"(*example.com/depot.items).ServeHTTP"}
 	cases := map[string]struct {
 		argument   string
 		wantAnchor string
@@ -2050,8 +2051,8 @@ func TestRoutesAnchorsAValueThatServesItselfAtItsServeHTTP(t *testing.T) {
 		"behind middleware":             {`logged(&items{})`, "(*example.com/depot.items).ServeHTTP", "items", append(slices.Clone(itemsMethods), "example.com/depot.logged")},
 		"a conversion of a function":    {`apiFunc(failing)`, "example.com/depot.failing", "failing", []string{"(example.com/depot.apiFunc).ServeHTTP", "example.com/depot.failing"}},
 		"a factory of its own type":     {`newItems()`, "example.com/depot.newItems", "newItems", append(slices.Clone(itemsMethods), "example.com/depot.newItems")},
-		"middleware given its own type": {`logged(newItems())`, "example.com/depot.newItems", "newItems", []string{"(*example.com/depot.items).ServeHTTP", "(*example.com/depot.items).render", "example.com/depot.logged", "example.com/depot.newItems"}},
-		"a handler holding another":     {`&guard{next: newItems()}`, "(*example.com/depot.guard).ServeHTTP", "guard", []string{"(*example.com/depot.guard).ServeHTTP", "(*example.com/depot.items).ServeHTTP", "(*example.com/depot.items).render", "example.com/depot.newItems"}},
+		"middleware given its own type": {`logged(newItems())`, "example.com/depot.newItems", "newItems", []string{"(*example.com/depot.items).ServeHTTP", "example.com/depot.logged", "example.com/depot.newItems"}},
+		"a handler holding another":     {`&guard{next: newItems()}`, "(*example.com/depot.guard).ServeHTTP", "guard", []string{"(*example.com/depot.guard).ServeHTTP", "(*example.com/depot.items).ServeHTTP", "example.com/depot.newItems"}},
 	}
 
 	for name, test := range cases {
@@ -2234,6 +2235,44 @@ func main() {
 		if identity[pair[0]] == identity[pair[1]] {
 			t.Errorf("%s and %s: want two identities", pair[0], pair[1])
 		}
+	}
+}
+
+// The reviewer's o1: the handler hands s to an interface, and reflect cannot call an unexported
+// method, so only an exported one, or one an interface of its own package names, can be reached.
+func TestRoutesRootsAtTheMethodsAnInterfaceCanCall(t *testing.T) {
+	source := `package main
+
+import (
+	"fmt"
+	"net/http"
+)
+
+type ItemStore interface{ Items() []string }
+
+type server struct{ items []string }
+
+func (s *server) Items() []string                               { return s.items }
+func (s *server) audit(msg string)                              { fmt.Println(msg) }
+func (s *server) login(w http.ResponseWriter, r *http.Request) { s.audit("login") }
+
+func record(a interface{ audit(msg string) }) { a.audit("record") }
+
+func itemsHandler(store ItemStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, store.Items()) }
+}
+
+func main() {
+	s := &server{}
+	record(s)
+	http.Handle("GET /items", itemsHandler(s))
+}
+`
+	site := onlySite(t, source)
+
+	want := []string{"(*example.com/depot.server).Items", "(*example.com/depot.server).audit", "example.com/depot.itemsHandler"}
+	if !reflect.DeepEqual(site.Roots, want) {
+		t.Fatalf("got %v, want %v", site.Roots, want)
 	}
 }
 

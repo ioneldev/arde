@@ -321,6 +321,32 @@ func plainHandler() http.Handler { return http.HandlerFunc(nil) }
 	}
 }
 
+// The reviewer's o2: slog.Info("serving", "server", s) hands s to any. Only an exported method, or
+// one an interface of its own package names, can be called through it.
+func TestFingerprintFollowsOnlyTheMethodsAnInterfaceCanCall(t *testing.T) {
+	source := `package shop
+
+import "fmt"
+
+type namer interface{ name() string }
+
+type server struct{ title string }
+
+func (s *server) String() string   { return s.title }
+func (s *server) name() string     { return s.title }
+func (s *server) audit(msg string) { fmt.Println("audit", msg) }
+
+func items() string { return fmt.Sprint(&server{}) }
+`
+	root := writeModule(t, "shop", map[string]string{"shop.go": source})
+
+	reach := fingerprintsOf(t, root, "shop.items").Reach["shop.items"]
+
+	if want := []string{"(*shop.server).String", "(*shop.server).name", "shop.items"}; !reflect.DeepEqual(reach, want) {
+		t.Fatalf("got %v, want %v", reach, want)
+	}
+}
+
 func TestFingerprintTakesNoMethodsOfATypeFromOutsideTheModule(t *testing.T) {
 	source := "package shop\n\nimport \"net/http\"\n\nfunc plainHandler() http.Handler { return http.HandlerFunc(nil) }\n"
 	root := writeModule(t, "shop", map[string]string{"shop.go": source})

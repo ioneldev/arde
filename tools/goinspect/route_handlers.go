@@ -549,8 +549,8 @@ func (reader handlerReader) concreteTypeOf(value ast.Expr) []types.Type {
 	return []types.Type{valueType}
 }
 
-// methodsOf is every method of a named type of the module, promoted ones included, on value and
-// pointer receivers alike.
+// methodsOf is every method of a named type of the module that an interface can call, promoted
+// ones included, on value and pointer receivers alike.
 func (reader handlerReader) methodsOf(handedType types.Type) []*types.Func {
 	named := namedBehind(handedType)
 	if named == nil || !reader.service.declares(named) {
@@ -558,7 +558,8 @@ func (reader handlerReader) methodsOf(handedType types.Type) []*types.Func {
 	}
 	methods := []*types.Func{}
 	for selection := range types.NewMethodSet(types.NewPointer(named)).Methods() {
-		if method, isFunction := selection.Obj().(*types.Func); isFunction && reader.service.holds(method.Origin()) {
+		method, isFunction := selection.Obj().(*types.Func)
+		if isFunction && reader.service.holds(method.Origin()) && reader.service.canBeCalledThroughAnInterface(method) {
 			methods = append(methods, method)
 		}
 	}

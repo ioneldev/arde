@@ -732,3 +732,78 @@ def test_a_method_value_registered_from_two_methods_keeps_its_anchor(
         "GET /healthz": (health, ()),
         "GET /readyz": (health, ()),
     }
+
+
+# The reviewer's o1 and o2: a handler that hands the server to an interface, or logs it, reached
+# every method of the server, so an edit to any of them moved the route.
+STORES = """package main
+
+import (
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+)
+
+type ItemStore interface{ Items() []string }
+type OrderStore interface{ Orders() []string }
+
+type server struct {
+	mux    *http.ServeMux
+	items  []string
+	orders []string
+}
+
+func (s *server) Items() []string  { return s.items }
+func (s *server) Orders() []string { return s.orders }
+func (s *server) audit(msg string) { fmt.Println("audit", msg) }
+func (s *server) login(w http.ResponseWriter, r *http.Request) {
+	s.audit("login")
+	fmt.Fprint(w, "hi")
+}
+func (s *server) report(w http.ResponseWriter, r *http.Request) {
+	slog.Info("serving", "server", s)
+	fmt.Fprint(w, len(s.items))
+}
+
+func itemsHandler(store ItemStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, store.Items()) }
+}
+
+func ordersHandler(store OrderStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, store.Orders()) }
+}
+
+func (s *server) routes() {
+	s.mux.Handle("GET /items", itemsHandler(s))
+	s.mux.Handle("GET /orders", ordersHandler(s))
+	s.mux.HandleFunc("POST /login", s.login)
+	s.mux.HandleFunc("GET /report", s.report)
+}
+
+func main() {
+	s := &server{mux: http.NewServeMux(), items: []string{"a"}, orders: []string{"o"}}
+	s.routes()
+	http.ListenAndServe(":"+os.Getenv("PORT"), s.mux)
+}
+"""
+
+
+def test_an_edit_to_a_method_no_interface_can_call_moves_only_the_routes_that_call_it(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(tmp_path, STORES)
+
+    moved = moved_by(adapter, repo, old='"audit", msg', new='"audited", msg')
+
+    assert moved == {"POST /login"}
+
+
+def test_an_edit_to_a_method_an_interface_can_call_still_moves_the_route(
+    adapter: GoAdapter, tmp_path: Path
+) -> None:
+    repo = a_service(tmp_path, STORES)
+
+    moved = moved_by(adapter, repo, old="return s.items }", new="return s.items[:0] }")
+
+    assert "GET /items" in moved
