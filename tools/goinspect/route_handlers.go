@@ -375,7 +375,7 @@ func (reader handlerReader) anchorAt(innermost ast.Expr) handlerRoot {
 // serveMethodOfAValue anchors a value of a module type that serves requests itself, such as
 // &itemsHandler{...} or a variable of that type, at its ServeHTTP, which is the whole handler. A
 // call is a factory's. A value of a function type holds code no reading can name, and a value of an
-// interface can be of any type.
+// interface can be of any type, and so can one whose ServeHTTP comes from an interface it embeds.
 func (reader handlerReader) serveMethodOfAValue(innermost ast.Expr) handlerRoot {
 	if _, isCall := innermost.(*ast.CallExpr); isCall {
 		return handlerRoot{}
@@ -389,7 +389,7 @@ func (reader handlerReader) serveMethodOfAValue(innermost ast.Expr) handlerRoot 
 	}
 	method, _, _ := types.LookupFieldOrMethod(valueType, true, nil, "ServeHTTP")
 	serve, isMethod := method.(*types.Func)
-	if !isMethod || !hasTheHandlersShape(serve.Signature()) || !reader.service.holds(serve.Origin()) {
+	if !isMethod || isInterfaceMethod(serve) || !hasTheHandlersShape(serve.Signature()) || !reader.service.holds(serve.Origin()) {
 		return handlerRoot{}
 	}
 	return handlerRoot{function: serve, name: nameOfAValue(innermost)}

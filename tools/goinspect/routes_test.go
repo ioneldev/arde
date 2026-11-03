@@ -2238,6 +2238,37 @@ func main() {
 	}
 }
 
+// The reviewer's e1: the struct gets its ServeHTTP from an interface of the module it embeds, so the
+// code that serves is whatever the field holds, and the interface's method has no body to anchor.
+func TestRoutesGivesNoAnchorToAValueThatServesThroughAnEmbeddedInterface(t *testing.T) {
+	source := `package main
+
+import "net/http"
+
+type Handler interface {
+	ServeHTTP(w http.ResponseWriter, r *http.Request)
+}
+
+type itemsHandler struct{}
+
+func (itemsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {}
+
+type logged struct {
+	Handler
+	name string
+}
+
+func main() {
+	http.Handle("GET /items", logged{Handler: itemsHandler{}, name: "items"})
+}
+`
+	site := onlySite(t, source)
+
+	if site.HandlerID != nil || site.HandlerLine != nil || len(site.Roots) != 0 {
+		t.Fatalf("want no anchor, got %v at %v with roots %v", site.HandlerID, site.HandlerLine, site.Roots)
+	}
+}
+
 // The reviewer's o1: the handler hands s to an interface, and reflect cannot call an unexported
 // method, so only an exported one, or one an interface of its own package names, can be reached.
 func TestRoutesRootsAtTheMethodsAnInterfaceCanCall(t *testing.T) {
