@@ -39,6 +39,7 @@ EVERY_VARIABLE_OF_THE_GENERIC_LIST_AND_THE_TOOLCHAIN = (
     "GOFLAGS",
     "GOENV",
     *TOOLCHAIN_VARIABLES,
+    *USER_SETTINGS,
 )
 
 
@@ -110,7 +111,7 @@ def stand_in(monkeypatch: pytest.MonkeyPatch, **kwargs: object) -> StandInGoEnv:
     return go
 
 
-@pytest.mark.parametrize("name", TOOLCHAIN_VARIABLES)
+@pytest.mark.parametrize("name", (*TOOLCHAIN_VARIABLES, *USER_SETTINGS))
 def test_a_toolchain_variable_that_is_exported_reaches_a_command(
     clean_environment: pytest.MonkeyPatch, repo: Path, name: str
 ) -> None:

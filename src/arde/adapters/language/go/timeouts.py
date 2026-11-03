@@ -12,4 +12,4 @@ GO_LIST_TIMEOUT_S = 120
 # Reading three settings from the user's go env file.
 GO_ENV_TIMEOUT_S = 30
 # A profile's extra command can be anything, so it gets as long as the tests do.
-EXTRA_TEST_COMMAND_TIMEOUT_S = 600
+EXTRA_TEST_COMMAND_TIMEOUT_S = GO_TEST_TIMEOUT_S

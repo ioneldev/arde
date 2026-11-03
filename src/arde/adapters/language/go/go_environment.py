@@ -11,7 +11,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter, ValidationError
 
-from arde.adapters.child_env import child_environment
+from arde.adapters.child_env import child_environment, exported
 from arde.adapters.child_process import ChildCommand, run_child
 from arde.adapters.child_text import MESSAGE_TAIL_BYTES, bounded_text
 from arde.adapters.language.go.errors import GoCommandError
@@ -26,9 +26,6 @@ TOOLCHAIN_VARIABLES = (
     "GOMODCACHE",
     "GOROOT",
     "GOPROXY",
-    "GOPRIVATE",
-    "GONOPROXY",
-    "GONOSUMDB",
     "GOSUMDB",
     "GOINSECURE",
     "GOTOOLCHAIN",
@@ -58,21 +55,19 @@ DEFAULT_VARIABLES = {"GOTOOLCHAIN": "local"}
 
 
 def go_environment(repo: Path) -> dict[str, str]:
-    # An empty value counts as not exported: Go reads it as unset, which would undo the default.
-    exported = {
-        name: os.environ[name]
-        for name in TOOLCHAIN_VARIABLES
-        if os.environ.get(name) and name not in USER_SETTINGS
-    }
-    settings = {name: value for name, value in _user_settings().items() if value}
     return {
         **child_environment(),
         **DEFAULT_VARIABLES,
-        **exported,
-        **settings,
+        **_without_empty_values(exported(TOOLCHAIN_VARIABLES)),
+        **_without_empty_values(_user_settings()),
         **FIXED_VARIABLES,
         **_workspace(repo),
     }
+
+
+# Go reads an empty value as unset, so passing one on would undo a default.
+def _without_empty_values(variables: dict[str, str]) -> dict[str, str]:
+    return {name: value for name, value in variables.items() if value}
 
 
 # Go looks for a go.work in every folder above the one it runs in, so a file above the repo could
@@ -105,9 +100,8 @@ def _user_settings() -> dict[str, str]:
 
 
 def _probe_environment() -> dict[str, str]:
-    given = (*USER_SETTINGS, *PROBE_ONLY_VARIABLES)
-    exported = {name: os.environ[name] for name in given if name in os.environ}
-    return {**child_environment(), **exported, **PROBE_FIXED_VARIABLES}
+    given = exported((*USER_SETTINGS, *PROBE_ONLY_VARIABLES))
+    return {**child_environment(), **given, **PROBE_FIXED_VARIABLES}
 
 
 def _the_three_settings(reply_text: str) -> dict[str, str]:
