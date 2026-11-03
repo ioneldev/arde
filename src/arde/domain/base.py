@@ -35,9 +35,7 @@ def printable_name(name: str) -> str:
 # The characters no reader can see as themselves: every code point of the Unicode categories Cc
 # (controls), Cf (format characters, such as the direction controls, the zero-width space and the
 # byte order mark), Zl and Zp (the line and paragraph separators), as the Unicode database of this
-# Python lists them, and a test checks the list against it. A message shows each one escaped, and
-# text bound for a comment or a tag may hold none: Go refuses NUL and a byte order mark in a source
-# file, a separator makes one line read as two, and a direction control reorders what a reader sees.
+# Python lists them, and a test checks the list against it. A message shows each one escaped.
 UNPRINTABLE_RANGES: tuple[tuple[int, int], ...] = (
     (0x0000, 0x001F),
     (0x007F, 0x009F),
@@ -69,6 +67,21 @@ UNPRINTABLE_CHARACTERS = "".join(
 )
 _UNPRINTABLE_CHARACTER = re.compile(f"[{UNPRINTABLE_CHARACTERS}]")
 
+# The characters text bound for Go source may not hold, which are fewer: Go refuses NUL and a byte
+# order mark in a source file, a control or a separator makes one line read as two, and a direction
+# embedding, override or isolate reorders what a reader of the source sees around it. Every other
+# format character stays, because a language writes with it, as Persian does with the zero-width
+# non-joiner and an emoji with the joiner, or because it does nothing in a comment.
+REFUSED_RANGES: tuple[tuple[int, int], ...] = (
+    (0x0000, 0x001F),
+    (0x007F, 0x009F),
+    (0x2028, 0x202E),
+    (0x2066, 0x2069),
+    (0xFEFF, 0xFEFF),
+)
+_REFUSED_CHARACTERS = "".join(f"\\U{first:08x}-\\U{last:08x}" for first, last in REFUSED_RANGES)
+_REFUSED_CHARACTER = re.compile(f"[{_REFUSED_CHARACTERS}]")
+
 
 # Cut first, because one literal in a repo can run to many megabytes.
 def one_line(text: str, limit: int) -> str:
@@ -76,20 +89,23 @@ def one_line(text: str, limit: int) -> str:
     return " ".join(_UNPRINTABLE_CHARACTER.sub(" ", text[:limit]).split())
 
 
-def _require_clean_single_line(text: str) -> str:
-    if "\n" in text or "\r" in text:
-        raise ValueError("must be a single line: remove the line break")
-    if _UNPRINTABLE_CHARACTER.search(text):
-        raise ValueError(
-            "must hold no control, format or separator character, such as a byte order mark or "
-            "a direction control: remove it"
-        )
-    return text
+# The code point and where it is, because the character itself cannot be seen.
+def _require_no_refused_character(text: str) -> str:
+    refused = _REFUSED_CHARACTER.search(text)
+    if refused is None:
+        return text
+    where = f"U+{ord(refused[0]):04X} at offset {refused.start()}"
+    if refused[0] in "\n\r":
+        raise ValueError(f"must be a single line: remove the line break {where}")
+    raise ValueError(
+        "must be plain text, with no control character, line or paragraph separator, byte order "
+        f"mark or direction control: remove {where}"
+    )
 
 
 # Text the renderer writes into source comments. A second line there could be a compiler
 # directive, so a line break is refused when the model is built, not when it is rendered.
-SingleLine = Annotated[str, AfterValidator(_require_clean_single_line)]
+SingleLine = Annotated[str, AfterValidator(_require_no_refused_character)]
 
 
 # fullmatch rather than "^...$", because "$" also accepts a trailing newline.
@@ -109,7 +125,7 @@ def _matching(pattern: str, requirement: str) -> AfterValidator:
 # nothing more. Identifiers are ASCII only: a name outside it is refused rather than escaped.
 _IDENTIFIER = r"[A-Za-z_][A-Za-z0-9_]*"
 _TYPE_PREFIX = r"(?:\[\]|\*)*"  # stacks, as in []*Product
-_PLAIN_CHAR = rf"""[^\s"'`{UNPRINTABLE_CHARACTERS}]"""
+_PLAIN_CHAR = rf"""[^\s"'`{_REFUSED_CHARACTERS}]"""
 
 CodeIdentifier = Annotated[
     str,
@@ -138,6 +154,7 @@ ErrorCodeName = Annotated[
 
 RoutePattern = Annotated[
     str,
+    AfterValidator(_require_no_refused_character),
     _matching(
         rf"[A-Z]+ /{_PLAIN_CHAR}*",
         "a route: an upper-case method, one space, then a path that starts with / and has "
@@ -147,6 +164,7 @@ RoutePattern = Annotated[
 
 ParamName = Annotated[
     str,
+    AfterValidator(_require_no_refused_character),
     _matching(
         rf"{_PLAIN_CHAR}+",
         "a parameter name: use no whitespace, quotes or backticks",
@@ -190,6 +208,7 @@ def _require_no_hidden_folder(package: str) -> str:
 # it is given.
 MainPackage = Annotated[
     str,
+    AfterValidator(_require_no_refused_character),
     _matching(
         rf"\.(?:/{_PLAIN_CHAR}+)?",
         "a package in this repo: use . or a path that starts with ./, with no whitespace, quotes "
@@ -222,6 +241,7 @@ def _require_a_file_that_is_not_a_flag(path: str) -> str:
 
 MainFile = Annotated[
     RepoRelativePath,
+    AfterValidator(_require_no_refused_character),
     AfterValidator(_require_a_file_that_is_not_a_flag),
     _matching(
         rf"{_PLAIN_CHAR}+",
