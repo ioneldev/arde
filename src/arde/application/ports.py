@@ -1,15 +1,18 @@
 """The interfaces the application needs from the outside world. Adapters implement them."""
 
+import re
 from collections.abc import Callable, Sequence
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Annotated, Literal, Protocol
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
 
 from arde.application.models_config import RoleConfig
+from arde.application.probe_log import ProbeLog
 from arde.domain.base import CodeIdentifier, Frozen
 from arde.domain.errors import ArdeError
+from arde.domain.facts import ProbeRecord
 from arde.domain.inventory import Inventory, Route
 from arde.domain.profile import RepoProfile
 from arde.domain.report import ExitCode
@@ -295,4 +298,62 @@ class ServiceRunner(Protocol):
         cannot be stopped raises ServiceStopError. Neither replaces an error already on its way
         out: it is attached to that error as a note.
         """
+        ...
+
+
+# Printable ASCII with no space, so nothing in it can end the request line or start a header.
+_PATH_AND_QUERY = re.compile(r"/[!-~]*")
+
+
+def _require_path_and_query(text: str) -> str:
+    if _PATH_AND_QUERY.fullmatch(text) is None:
+        raise ValueError(
+            "must be a path and query that starts with /, such as /items?page=2, with no scheme "
+            "or host, and with every space, control character and character outside ASCII "
+            "percent-encoded"
+        )
+    return text
+
+
+class HttpRequest(Frozen):
+    """One request to a running service, which a model may have chosen.
+
+    The address is the service's own, so only the path and query come from here. GET and HEAD
+    alone, because a request must not change what the service holds.
+    """
+
+    method: Literal["GET", "HEAD"]
+    path_and_query: Annotated[str, AfterValidator(_require_path_and_query)]
+
+
+# Lives with the port, not the adapter, because application code catches it.
+class ProbeFailed(ServiceError):
+    """No usable reply came back.
+
+    There was no connection or no answer in time, the reply was not HTTP, or its body was too
+    large to record.
+    """
+
+
+class ServiceClient(Protocol):
+    def send_request(self, service: ServiceHandle, request: HttpRequest) -> ProbeRecord:
+        """Sends one request to the service and returns what came back, the whole body included.
+
+        Raises ProbeFailed when no usable reply came back. A redirect is returned, not followed.
+        """
+        ...
+
+
+class AgentToolbox(Protocol):
+    """The tools an agent may call.
+
+    They read the repo and probe the service, and none of them writes a file or runs a command.
+    """
+
+    def repo_tools(self, root: Path) -> tuple[Tool, ...]:
+        """list_files, read_file and grep, on the files inside root alone."""
+        ...
+
+    def http_probe_tool(self, service: ServiceHandle, log: ProbeLog) -> Tool:
+        """http_probe, which sends GET and HEAD to that service alone and records each reply."""
         ...
