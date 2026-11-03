@@ -1311,6 +1311,53 @@ func TestRoutesReadsASiteInsideAWrapperThatHoldsNoHandlerItIsGivenByItsOwnHandle
 	}
 }
 
+// A site that registers its own handler still runs whatever the call hands the wrapper through
+// another parameter, so the functions the call names there stay roots, as they are for every route
+// the wrapper registers.
+func TestRoutesRootsASiteWithItsOwnHandlerAtWhatTheCallHandsTheWrapper(t *testing.T) {
+	source := `package main
+
+import "net/http"
+
+type app struct{ mux *http.ServeMux }
+
+type middleware func(http.HandlerFunc) http.HandlerFunc
+
+func (a *app) get(path string, h http.HandlerFunc, wrap ...middleware) {
+	a.mux.HandleFunc("OPTIONS "+path, chain(preflight, wrap...))
+	a.mux.HandleFunc("GET "+path, chain(h, wrap...))
+}
+
+func chain(h http.HandlerFunc, wrap ...middleware) http.HandlerFunc {
+	for _, m := range wrap {
+		h = m(h)
+	}
+	return h
+}
+
+func requireAdmin(next http.HandlerFunc) http.HandlerFunc { return next }
+
+func preflight(w http.ResponseWriter, r *http.Request) {}
+
+func items(w http.ResponseWriter, r *http.Request) {}
+
+func main() {
+	a := &app{mux: http.NewServeMux()}
+	a.get("/items", items, requireAdmin)
+}
+`
+	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
+
+	roots := map[string][]string{}
+	for _, site := range routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: getOnA}).Sites {
+		roots[site.Literals["path"]] = site.Roots
+	}
+
+	if !slices.Contains(roots["OPTIONS /items"], "example.com/depot.requireAdmin") || !slices.Contains(roots["GET /items"], "example.com/depot.requireAdmin") {
+		t.Fatalf("want requireAdmin among the roots of both routes, got %v", roots)
+	}
+}
+
 func TestRoutesStopsAtAWrapperThatHandsItsPathToAnotherWrapper(t *testing.T) {
 	source := `package main
 

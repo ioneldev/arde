@@ -601,13 +601,17 @@ func (reader routeReader) wrapperCallAt(call routeCall) callReading {
 }
 
 // siteThrough reads the route one site of a wrapper registers at this call. The wrapper's code and
-// the functions its site names shape every request the route answers, so they are roots too.
+// the functions its site names shape every request the route answers, so they are roots too. A
+// site with a handler of its own can still run what the call hands the wrapper through another
+// parameter, such as middleware, so the functions named there are its roots as well, as they are
+// already for a site that reads the call's handler.
 func (reader routeReader) siteThrough(call routeCall, form wrapperForm, given handlerReading) routeSite {
 	shapedBy := append([]*types.Func{call.target()}, form.named...)
 	if form.ownHandler == nil {
 		return reader.siteAt(call, given.alsoRootedAt(shapedBy))
 	}
-	site := reader.siteAt(call, form.ownHandler.reading.alsoRootedAt(shapedBy))
+	handedOn := reader.functionsNamedInTheOtherArgumentsOf(call)
+	site := reader.siteAt(call, form.ownHandler.reading.alsoRootedAt(append(shapedBy, handedOn...)))
 	if site.HandlerID == nil {
 		site.Args["handler"] = form.ownHandler.text
 	}
@@ -662,6 +666,15 @@ func (reader routeReader) handlerAt(call routeCall) handlerReading {
 		return handlerReading{}
 	}
 	return handlers.read(registration{call: call.syntax, handler: position, others: call.otherPositions()})
+}
+
+func (reader routeReader) functionsNamedInTheOtherArgumentsOf(call routeCall) []*types.Func {
+	handlers := reader.handlersOf(call)
+	named := []*types.Func{}
+	for _, position := range call.otherPositions() {
+		named = append(named, handlers.functionsNamedIn(call.syntax.Args[position])...)
+	}
+	return named
 }
 
 // otherPositions are the arguments the route pattern names as neither the path, the method nor the
