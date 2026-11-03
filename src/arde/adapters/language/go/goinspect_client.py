@@ -99,10 +99,13 @@ class RouteSite(CallMatch):
     """A call that registers a route. In literals, the path is the pattern the call registers,
     when the compiler knows it: a wrapper's call holds the path the wrapper builds from it."""
 
-    # The exact function behind the handler and where it is declared, or None when it has none.
+    # The function the route's docs belong on and where it is declared, or None when none fits.
     handler_id: str | None
     handler_file: str | None
     handler_line: int | None
+    # Every function of the module the handler names, which the route's fingerprint covers. Empty
+    # when there is no handler_id.
+    roots: tuple[str, ...]
 
 
 class SourcePlace(Frozen):

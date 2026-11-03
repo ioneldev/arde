@@ -1,8 +1,9 @@
 """The Go language adapter: every Go idiom ARDE relies on, behind the LanguageAdapter port."""
 
+import hashlib
 import shutil
 import tempfile
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from pathlib import Path
 
@@ -98,16 +99,18 @@ class GoAdapter(LanguageAdapter):
         self, repo: Path, routes: Sequence[Route], *, main_package: str
     ) -> RouteHashes:
         require_no_link_leaves(repo)
-        roots, unhashed = _one_root_per_key(routes)
-        reply = self._goinspect.fingerprints(
-            repo, sorted(set(roots.values())), main_package=main_package
-        )
+        roots, unhashed = _roots_per_key(routes)
+        every_root = sorted({root for of_one_key in roots.values() for root in of_one_key})
+        reply = self._goinspect.fingerprints(repo, every_root, main_package=main_package)
         hashes: dict[str, str] = {}
-        for key, root in roots.items():
-            if root in reply.fingerprints:
-                hashes[key] = reply.fingerprints[root]
+        for key, of_the_key in roots.items():
+            missing = [root for root in of_the_key if root not in reply.fingerprints]
+            if not missing:
+                hashes[key] = _fingerprint_of(of_the_key, reply.fingerprints)
+            elif any(root in reply.without_body for root in missing):
+                unhashed[key] = "no body"
             else:
-                unhashed[key] = "no body" if root in reply.without_body else "no function"
+                unhashed[key] = "no function"
         return RouteHashes(hashes=hashes, unhashed=unhashed)
 
     def run_checks(self, repo: Path, profile: RepoProfile) -> CheckResult:
@@ -138,21 +141,32 @@ def _is_go_source(path: Path) -> bool:
 
 # Two routes can share a key: "GET /{$}" and "GET /" both read as "GET /", and one path can sit on
 # two muxes. A hash of one handler would then stand for both, and an edit to the other would not
-# move it. Only the function decides, so one function under two names still counts as one.
-def _one_root_per_key(
+# move it. Only the functions decide, so one function under two names still counts as one.
+def _roots_per_key(
     routes: Sequence[Route],
-) -> tuple[dict[str, str], dict[str, UnhashedReason]]:
+) -> tuple[dict[str, tuple[str, ...]], dict[str, UnhashedReason]]:
     routes_by_key: dict[str, list[Route]] = {}
     for route in routes:
         routes_by_key.setdefault(route.key, []).append(route)
-    roots: dict[str, str] = {}
+    roots: dict[str, tuple[str, ...]] = {}
     unhashed: dict[str, UnhashedReason] = {}
     for key, sharing in routes_by_key.items():
         route = sharing[0]
-        if len({other.handler_id or other.handler for other in sharing}) > 1:
+        if len({(other.handler_id or other.handler, other.roots) for other in sharing}) > 1:
             unhashed[key] = "shared key"
-        elif route.handler_id is not None:
-            roots[key] = route.handler_id
+        elif route.roots:
+            roots[key] = route.roots
         else:
             unhashed[key] = "inline" if route.handler == INLINE_HANDLER else "no function"
     return roots, unhashed
+
+
+# A route with one root keeps that root's own fingerprint, so a route whose handler names one
+# function hashes as it always has. Several roots hash their ids and fingerprints together.
+def _fingerprint_of(roots: tuple[str, ...], fingerprints: Mapping[str, str]) -> str:
+    if len(roots) == 1:
+        return fingerprints[roots[0]]
+    combined = hashlib.sha256()
+    for root in sorted(roots):
+        combined.update(f"{root}\x00{fingerprints[root]}\x00".encode())
+    return combined.hexdigest()

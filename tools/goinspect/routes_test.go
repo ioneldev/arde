@@ -23,6 +23,7 @@ type siteOutput struct {
 	HandlerID   *string           `json:"handler_id"`
 	HandlerFile *string           `json:"handler_file"`
 	HandlerLine *int              `json:"handler_line"`
+	Roots       []string          `json:"roots"`
 }
 
 type placeOutput struct {
@@ -256,15 +257,15 @@ func TestRoutesRootsAHandlerAtTheFunctionItNames(t *testing.T) {
 		"a factory":                    {"d.build()", "(*example.com/depot.desk).build", "d.build"},
 		"a factory that takes values":  {"makeHandler(3)", "example.com/depot.makeHandler", "makeHandler"},
 		"a factory inside a wrapper":   {"logged(d.build())", "(*example.com/depot.desk).build", "d.build"},
-		"a shape that returns an error": {
-			"adapted(d.failing)", "(*example.com/depot.desk).failing", "d.failing",
-		},
 	}
 
 	for name, test := range cases {
 		source := `package main
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+)
 
 type desk struct{}
 
@@ -276,12 +277,12 @@ func (d *desk) build() http.HandlerFunc { return d.list }
 
 func makeHandler(size int) http.HandlerFunc { return parcels }
 
-func logged(next http.HandlerFunc) http.HandlerFunc { return next }
+func logged(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) }
+}
 
-func timed(limit int, next http.HandlerFunc) http.HandlerFunc { return next }
-
-func adapted(next func(http.ResponseWriter, *http.Request) error) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) { _ = next(w, r) }
+func timed(limit int, next http.HandlerFunc) http.HandlerFunc {
+	return http.TimeoutHandler(next, time.Duration(limit), "late").ServeHTTP
 }
 
 func parcels(w http.ResponseWriter, r *http.Request) {}
@@ -351,8 +352,9 @@ func TestRoutesGivesNoRootWhenTheCompilerCannotNameTheFunction(t *testing.T) {
 		"a wrapper around a local variable": `logged(local)`,
 		"a wrapper around a field":          `logged(d.field)`,
 		"a wrapper around a literal":        `logged(func(w http.ResponseWriter, r *http.Request) {})`,
-		"a wrapper that takes two handlers": `either(parcels, depots)`,
 		"a value taken from a table":        `table["x"]`,
+		"a call the compiler cannot name":   `wrap(parcels)`,
+		"a factory given a literal":         `makeHandler(func() int { return 3 })`,
 	}
 
 	for name, argument := range cases {
@@ -370,9 +372,11 @@ var shared http.HandlerFunc
 
 var table = map[string]http.HandlerFunc{}
 
-func logged(next http.HandlerFunc) http.HandlerFunc { return next }
+func logged(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) }
+}
 
-func either(a, b http.HandlerFunc) http.HandlerFunc { return a }
+func makeHandler(size func() int) http.HandlerFunc { return parcels }
 
 func main() {
 	var api lister
@@ -381,13 +385,15 @@ func main() {
 	_ = d
 	local := http.HandlerFunc(parcels)
 	_ = local
+	wrap := logged
+	_ = wrap
 	http.HandleFunc("/x", ` + argument + `)
 }
 ` + handlerFuncs
 		site := onlySite(t, source)
 
-		if site.HandlerID != nil || site.HandlerFile != nil || site.HandlerLine != nil {
-			t.Errorf("%s: want no root, got %s %v %v", name, *site.HandlerID, site.HandlerFile, site.HandlerLine)
+		if site.HandlerID != nil || site.HandlerFile != nil || site.HandlerLine != nil || len(site.Roots) != 0 {
+			t.Errorf("%s: want no root, got %v %v %v %v", name, site.HandlerID, site.HandlerFile, site.HandlerLine, site.Roots)
 		}
 	}
 }
@@ -586,6 +592,8 @@ func TestRoutesTreatsAServeMuxHandlerAsAMountAndNotARoute(t *testing.T) {
 		"the default mux":           `http.DefaultServeMux`,
 		"a mux behind a wrapper":    `logged(inner)`,
 		"a mux behind two wrappers": `logged(logged(inner))`,
+		"a mux behind middleware of another module": `http.TimeoutHandler(inner, 1, "late")`,
+		"a mux a factory returns":                   `mounted()`,
 	}
 
 	for name, handler := range cases {
@@ -593,7 +601,11 @@ func TestRoutesTreatsAServeMuxHandlerAsAMountAndNotARoute(t *testing.T) {
 
 import "net/http"
 
-func logged(next http.Handler) http.Handler { return next }
+func logged(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+}
+
+func mounted() *http.ServeMux { return http.NewServeMux() }
 
 func main() {
 	inner := http.NewServeMux()
@@ -605,6 +617,149 @@ func main() {
 ` + handlerFuncs
 		if got, want := sitePaths(sitesOfSource(t, source)), []string{"/stock/items"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: got %v, want %v", name, got, want)
+		}
+	}
+}
+
+func TestRoutesReadsAMuxGivenToAFunctionThatDoesNotServeItAsARouteOfThatFunction(t *testing.T) {
+	source := `package main
+
+import "net/http"
+
+func listing(mux *http.ServeMux) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {}
+}
+
+func main() {
+	inner := http.NewServeMux()
+	inner.HandleFunc("/stock/items", parcels)
+	inner.Handle("/stock/", listing(inner))
+}
+` + handlerFuncs
+	sites := sitesOfSource(t, source)
+
+	if got, want := sitePaths(sites), []string{"/stock/", "/stock/items"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for _, site := range sites {
+		if id := site.HandlerID; site.Literals["path"] == "/stock/" && (id == nil || *id != "example.com/depot.listing") {
+			t.Errorf("got %v", id)
+		}
+	}
+}
+
+// depotID writes a function of the test module by its id. A method's id is written whole.
+func depotID(name string) string {
+	if strings.HasPrefix(name, "(") {
+		return name
+	}
+	return "example.com/depot." + name
+}
+
+// The anchor is the one function the route's docs belong on, and the roots are every function of
+// the module the handler names, which its fingerprint covers.
+func TestRoutesAnchorsAtTheFactoryAndRootsAtEveryFunctionTheHandlerNames(t *testing.T) {
+	cases := map[string]struct {
+		argument   string
+		wantAnchor string
+		wantShown  string
+		wantRoots  []string
+	}{
+		"a factory given a dependency": {
+			"handleList(d, renderError)", "handleList", "handleList", []string{"handleList", "renderError"},
+		},
+		"a factory that calls its handler itself": {
+			"spa(parcels)", "spa", "spa", []string{"parcels", "spa"},
+		},
+		"an adapter that calls a handler that returns an error": {
+			"adapted(d.failing)", "adapted", "adapted", []string{"(*example.com/depot.desk).failing", "adapted"},
+		},
+		"a function given two handlers": {
+			"either(parcels, depots)", "either", "either", []string{"depots", "either", "parcels"},
+		},
+		"a factory inside middleware": {
+			"logged(handleList(d, renderError))", "handleList", "handleList", []string{"handleList", "logged", "renderError"},
+		},
+		"a factory inside middleware of another module": {
+			`http.TimeoutHandler(d.build(), 1, "late")`, "(*example.com/depot.desk).build", "d.build", []string{"(*example.com/depot.desk).build"},
+		},
+		"a middleware chain": {
+			"chain(http.HandlerFunc(parcels), audited)", "parcels", "parcels", []string{"audited", "chain", "parcels"},
+		},
+		"middleware alone": {
+			"logged(http.HandlerFunc(parcels))", "parcels", "parcels", []string{"logged", "parcels"},
+		},
+		"a conversion of a handler that returns an error": {
+			"failable(d.failing)", "(*example.com/depot.desk).failing", "d.failing", []string{"(*example.com/depot.desk).failing"},
+		},
+		"a handler alone": {
+			"http.HandlerFunc(parcels)", "parcels", "parcels", []string{"parcels"},
+		},
+	}
+
+	for name, test := range cases {
+		source := `package main
+
+import "net/http"
+
+type desk struct{}
+
+func (d *desk) failing(w http.ResponseWriter, r *http.Request) error { return nil }
+
+func (d *desk) build() http.HandlerFunc { return nil }
+
+type failable func(http.ResponseWriter, *http.Request) error
+
+func (f failable) ServeHTTP(w http.ResponseWriter, r *http.Request) { _ = f(w, r) }
+
+func renderError(w http.ResponseWriter, r *http.Request, err error) {}
+
+func handleList(d *desk, fail func(http.ResponseWriter, *http.Request, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { fail(w, r, nil) }
+}
+
+func spa(fallback http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { fallback(w, r) }
+}
+
+func adapted(next func(http.ResponseWriter, *http.Request) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { _ = next(w, r) }
+}
+
+func either(a, b http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { a.ServeHTTP(w, r); b.ServeHTTP(w, r) }
+}
+
+func logged(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, r) })
+}
+
+func audited(next http.Handler) http.Handler { return logged(next) }
+
+func chain(h http.Handler, steps ...func(http.Handler) http.Handler) http.Handler {
+	for _, step := range steps {
+		h = step(h)
+	}
+	return h
+}
+
+func main() {
+	d := &desk{}
+	_ = d
+	http.Handle("/x", ` + test.argument + `)
+}
+` + handlerFuncs
+		site := onlySite(t, source)
+
+		wantRoots := []string{}
+		for _, root := range test.wantRoots {
+			wantRoots = append(wantRoots, depotID(root))
+		}
+		if site.HandlerID == nil || *site.HandlerID != depotID(test.wantAnchor) || site.Args["handler"] != test.wantShown {
+			t.Errorf("%s: anchor %v shown as %q, want %s", name, site.HandlerID, site.Args["handler"], test.wantAnchor)
+		}
+		if !reflect.DeepEqual(site.Roots, wantRoots) {
+			t.Errorf("%s: roots %v, want %v", name, site.Roots, wantRoots)
 		}
 	}
 }

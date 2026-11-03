@@ -437,22 +437,27 @@ func (d desk) list(w http.ResponseWriter, r *http.Request) {}
 
 func parcels(w http.ResponseWriter, r *http.Request) {}
 
+func fallingBackOn(fallback http.HandlerFunc) http.HandlerFunc { return fallback }
+
 func main() {
 	p := &pair[string, int]{}
 	http.HandleFunc("/generic", p.serve)
 	http.HandleFunc("/value", desk{}.list)
 	http.HandleFunc("/plain", parcels)
+	http.HandleFunc("/made", fallingBackOn(parcels))
 }
 `
 	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
 	ids := []string{}
 	for _, site := range routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: noPatterns}).Sites {
-		ids = append(ids, *site.HandlerID)
+		ids = append(ids, site.Roots...)
 	}
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
 
 	output := fingerprintsOf(t, root, ids...)
 
-	if len(ids) != 3 || len(output.Fingerprints) != 3 || len(output.Unresolved) != 0 {
+	if len(ids) != 4 || len(output.Fingerprints) != 4 || len(output.Unresolved) != 0 {
 		t.Fatalf("ids %v, fingerprints %v, unresolved %v", ids, output.Fingerprints, output.Unresolved)
 	}
 }

@@ -2,13 +2,15 @@
 
 Terms as ARDE uses them.
 
+**Anchor**: The one function a route's docs belong on, held in `Route.handler_id`: the handler when every call around it only wraps it, or else the outermost factory of the service that makes it. A route with no single such function has none, and gets facts and docs but no comment block.
+
 **Directive**: A comment that a compiler or a tool reads, such as `//go:build`, `//go:embed`, a cgo preamble or an example's `// Output:` line. Changing one can change behaviour, so the comment-only rule never takes one out of the comparison: it takes out only ordinary comment lines, a whole line that starts `// ` and is none of these, and the tags ARDE adds. A line like `//go:build` has no space after the slashes, which is how most directives are written. The Go tools also read `// +build`, `// #cgo` and `// Output:` with a space, so those are directives too.
 
 **Fact**: One checked statement about the target service, with an id, evidence (a code quote or a citation of a recorded request and response) and links to the declarations, routes or files it depends on. Facts are what the docs agent writes from.
 
 **Finding**: The result of a failed check. It names the check, who owns the repair (explore, docs or code), the subject, a message and the next action.
 
-**Inline handler**: A route whose handler is a function written in place, or another expression with no plain name to show. The inventory stores it as `(inline)`. A function written in place has no fingerprint, so the stale rule counts it as changed on every run.
+**Inline handler**: A route whose handler is a function written in place, or another expression with no plain name to show. The inventory stores it as `(inline)`. A handler that holds a function written in place anywhere, even as an argument to a factory, has no anchor and no fingerprint, because that function has no id to hash, so the stale rule counts it as changed on every run.
 
 **Inventory**: The routes, params, error codes, response fields, env vars and make targets that code extracts from the source using the profile's patterns. It is computed on every run and never stored, so an agent cannot invent an item that is not in it. A call that matched a pattern but gave nothing, because an argument was missing, empty or not a string literal, is listed in its `dropped` lines, so a missing item can be told from a call that was never found.
 
@@ -22,6 +24,6 @@ Terms as ARDE uses them.
 
 **Workspace**: The folder ARDE keeps for one target repo under `ARDE_HOME`. It holds the profile, the wiki, the snapshot and one folder per run. Deleting it makes the next run a full first run.
 
-**Fingerprint**: A hash of every function a route can reach in the call graph. It changes when any of them changes, so an edit deep in a helper flags every route that uses it.
+**Fingerprint**: A hash of every function a route's handler names, its roots in `Route.roots`, and of everything those reach in the call graph. The roots are the factory, the middleware and the handler alike. It changes when any of them changes, so an edit deep in a helper flags every route that uses it. A route with one root keeps that root's own hash.
 
 **Repair round**: One pass of sending a failed check's findings to the agent that owns the fix, then running the checks again. A run gets at most two.

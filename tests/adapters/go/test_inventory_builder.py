@@ -67,6 +67,7 @@ def a_site(
         handler_id=None,
         handler_file=None,
         handler_line=None,
+        roots=(),
     )
 
 
@@ -316,6 +317,7 @@ def test_a_route_keeps_where_it_is_registered_and_what_resolved_its_handler() ->
         handler_id="(*example.com/depot.desk).list",
         handler_file="web/desk.go",
         handler_line=30,
+        roots=("(*example.com/depot.desk).list", "example.com/depot.logged"),
     )
 
     assert routes_of(site) == (
@@ -328,14 +330,31 @@ def test_a_route_keeps_where_it_is_registered_and_what_resolved_its_handler() ->
             handler_id="(*example.com/depot.desk).list",
             handler_file="web/desk.go",
             handler_line=30,
+            roots=("(*example.com/depot.desk).list", "example.com/depot.logged"),
         ),
     )
 
 
-def resolved_site(path: str, handler_id: str, *, line: int = 1) -> RouteSite:
+def resolved_site(
+    path: str, handler_id: str, *, line: int = 1, roots: tuple[str, ...] | None = None
+) -> RouteSite:
     return a_site(line=line, path=Lit(path), handler="rs.List").model_copy(
-        update={"handler_id": handler_id, "handler_file": "h.go", "handler_line": 3}
+        update={
+            "handler_id": handler_id,
+            "handler_file": "h.go",
+            "handler_line": 3,
+            "roots": (handler_id,) if roots is None else roots,
+        }
     )
+
+
+def test_one_anchor_with_different_middleware_at_one_key_stays_two_routes() -> None:
+    routes = routes_of(
+        resolved_site("GET /x", "a.List", roots=("a.List", "a.logged")),
+        resolved_site("GET /x", "a.List", roots=("a.List", "a.timed"), line=9),
+    )
+
+    assert [route.roots for route in routes] == [("a.List", "a.logged"), ("a.List", "a.timed")]
 
 
 def test_one_function_registered_twice_at_one_key_is_one_route_at_its_first_place() -> None:

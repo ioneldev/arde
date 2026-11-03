@@ -601,6 +601,7 @@ ROUTES_REPLY = {
             "handler_id": "(*example.com/depot.desk).list",
             "handler_file": "web/desk.go",
             "handler_line": 30,
+            "roots": ["(*example.com/depot.desk).list", "example.com/depot.logged"],
         }
     ],
     "stripped_prefixes": [{"file": "web/files.go", "line": 4}],
@@ -626,6 +627,7 @@ def test_routes_hand_over_the_patterns_and_the_main_package_and_read_the_reply(
     assert (site.file, site.line, site.literals) == ("web/router.go", 9, {"path": "/api/x"})
     assert site.handler_id == "(*example.com/depot.desk).list"
     assert (site.handler_file, site.handler_line) == ("web/desk.go", 30)
+    assert site.roots == ("(*example.com/depot.desk).list", "example.com/depot.logged")
     assert reply.stripped_prefixes == (SourcePlace(file="web/files.go", line=4),)
     assert reply.unread_sites == (
         UnreadSite(file="web/router.go", line=6, problem="builds its path"),
@@ -639,6 +641,7 @@ def test_a_site_with_no_root_reads_as_none(stand_in: StandIn, folder: Path) -> N
         "handler_id": None,
         "handler_file": None,
         "handler_line": None,
+        "roots": [],
     }
     stand_in.replies_with(json.dumps({**ROUTES_REPLY, "sites": [unresolved]}))
 

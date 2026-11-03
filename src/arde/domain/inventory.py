@@ -43,11 +43,16 @@ class Route(Frozen):
     handler: NameText
     file: FileText
     line: int
-    # The exact function behind the route, and where it is declared. None when the source does not
-    # name one, as with a function written in place, a local variable or a field.
+    # The one function the route's docs belong on, and where it is declared: the handler, or the
+    # factory that makes it. None when no single function fits, as with a function written in
+    # place, a local variable or a field.
     handler_id: FunctionText | None = None
     handler_file: FileText | None = None
     handler_line: int | None = None
+    # Every function of the service the handler expression names, handler_id among them: the
+    # factory, the middleware and a function handed over as a value. The fingerprint covers them
+    # all. Empty when handler_id is None.
+    roots: tuple[FunctionText, ...] = ()
 
     @property
     def key(self) -> str:

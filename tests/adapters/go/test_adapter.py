@@ -1,5 +1,6 @@
 """The Go adapter against real Go: goinspect, the toolchain and the shop fixture service."""
 
+import hashlib
 import json
 import os
 import re
@@ -49,7 +50,14 @@ def edit(path: Path, old: str, *, new: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
-def a_route(method: str, path: str, *, handler: str, handler_id: str | None = None) -> Route:
+def a_route(
+    method: str,
+    path: str,
+    *,
+    handler: str,
+    handler_id: str | None = None,
+    roots: tuple[str, ...] | None = None,
+) -> Route:
     return Route(
         method=method,
         path=path,
@@ -57,6 +65,7 @@ def a_route(method: str, path: str, *, handler: str, handler_id: str | None = No
         file="web/server.go",
         line=1,
         handler_id=handler_id,
+        roots=roots if roots is not None else (handler_id,) if handler_id else (),
     )
 
 
@@ -120,6 +129,7 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
             handler_id="(*example.com/shop/web.server).listing",
             handler_file="web/handlers.go",
             handler_line=12,
+            roots=("(*example.com/shop/web.server).listing",),
         ),
         Route(
             method="GET",
@@ -130,6 +140,7 @@ def test_inventory_on_shop(adapter: GoAdapter) -> None:
             handler_id="(*example.com/shop/web.server).quote",
             handler_file="web/handlers.go",
             handler_line=20,
+            roots=("(*example.com/shop/web.server).quote",),
         ),
     )
     assert inventory.params == (Param(name="pieces"),)
@@ -1270,6 +1281,47 @@ def test_two_routes_that_share_a_key_and_a_function_keep_their_fingerprint(
     ]
 
     assert sorted(hashes_of(adapter, SHOP, routes=routes).hashes) == ["GET /"]
+
+
+def test_one_anchor_with_different_roots_under_one_key_shares_no_fingerprint(
+    adapter: GoAdapter,
+) -> None:
+    routes = [
+        a_route("GET", "/", handler="s.listing", handler_id=LISTING),
+        a_route("GET", "/", handler="s.listing", handler_id=LISTING, roots=(LISTING, QUOTE)),
+    ]
+
+    assert hashes_of(adapter, SHOP, routes=routes).unhashed == {"GET /": "shared key"}
+
+
+def test_a_route_with_several_roots_hashes_their_fingerprints_together(
+    adapter: GoAdapter,
+) -> None:
+    alone = hashes_of(
+        adapter,
+        SHOP,
+        routes=[
+            a_route("GET", "/a", handler="s.listing", handler_id=LISTING),
+            a_route("GET", "/b", handler="s.quote", handler_id=QUOTE),
+        ],
+    ).hashes
+    together = a_route("GET", "/", handler="s.listing", handler_id=LISTING, roots=(QUOTE, LISTING))
+
+    combined = hashes_of(adapter, SHOP, routes=[together]).hashes["GET /"]
+
+    expected = hashlib.sha256(
+        f"{LISTING}\x00{alone['GET /a']}\x00{QUOTE}\x00{alone['GET /b']}\x00".encode()
+    ).hexdigest()
+    assert combined == expected
+
+
+def test_a_route_with_several_roots_has_no_fingerprint_when_one_names_no_function(
+    adapter: GoAdapter,
+) -> None:
+    ghost = "(*example.com/shop/web.server).gone"
+    route = a_route("GET", "/", handler="s.listing", handler_id=LISTING, roots=(LISTING, ghost))
+
+    assert hashes_of(adapter, SHOP, routes=[route]).unhashed == {"GET /": "no function"}
 
 
 def test_a_route_with_a_function_and_one_without_share_no_fingerprint(adapter: GoAdapter) -> None:

@@ -289,12 +289,14 @@ def _of_kind(matches: Iterable[CallMatch], kind: str) -> list[CallMatch]:
     return [match for match in matches if match.kind == kind]
 
 
-# One function registered twice under one key is one route, at its first place. Two functions under
-# one key stay two rows, so a mounted router's routes do not merge away.
+# One handler registered twice under one key is one route, at its first place. Two functions under
+# one key stay two rows, so a mounted router's routes do not merge away, and so do two handlers
+# with one anchor and different middleware, whose fingerprints differ.
 def _one_row_per_route(routes: Iterable[Route]) -> tuple[Route, ...]:
-    rows: dict[tuple[str, str, str], Route] = {}
+    rows: dict[tuple[str, str, str, tuple[str, ...]], Route] = {}
     for route in sorted(routes, key=_route_order):
-        rows.setdefault((route.method, route.path, route.handler_id or route.handler), route)
+        handler = route.handler_id or route.handler
+        rows.setdefault((route.method, route.path, handler, route.roots), route)
     return tuple(rows.values())
 
 
@@ -342,6 +344,7 @@ def _route(site: RouteSite, *, method: str, path: str) -> Route:
             handler_id=site.handler_id,
             handler_file=site.handler_file,
             handler_line=site.handler_line,
+            roots=site.roots,
         )
     except ValidationError as error:
         problem = describe_problems(error, whole="the route")

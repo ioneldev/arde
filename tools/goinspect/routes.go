@@ -54,13 +54,15 @@ type routeRequest struct {
 }
 
 // routeSite is one call that registers a route. Literals holds the path it registers when the
-// compiler knows it, and Args the path and the handler as written. A handler with a root reads as
-// the root's name.
+// compiler knows it, and Args the path and the handler as written. A handler with an anchor reads
+// as the anchor's name. Roots holds the id of every function of the module the handler names, and
+// is empty when there is no anchor.
 type routeSite struct {
 	callMatch
-	HandlerID   *string `json:"handler_id"`
-	HandlerFile *string `json:"handler_file"`
-	HandlerLine *int    `json:"handler_line"`
+	HandlerID   *string  `json:"handler_id"`
+	HandlerFile *string  `json:"handler_file"`
+	HandlerLine *int     `json:"handler_line"`
+	Roots       []string `json:"roots"`
 }
 
 // wrapperCall is a call inside a function that a pattern of the same kind matches. It hands on what
@@ -116,7 +118,12 @@ func findRoutes(request routeRequest) (routeReport, error) {
 		return routeReport{}, err
 	}
 	calls := service.calls()
-	reader := routeReader{service: service, patterns: patterns, wrappers: wrappersIn(calls, patterns)}
+	reader := routeReader{
+		service:  service,
+		patterns: patterns,
+		wrappers: wrappersIn(calls, patterns),
+		bodies:   service.functionBodies(),
+	}
 	return reader.withWrapperForms(calls).report(calls), nil
 }
 
@@ -146,6 +153,7 @@ type routeReader struct {
 	service  loadedService
 	patterns []callPattern
 	wrappers wrappersByKind
+	bodies   functionBodies
 	// forms holds, for each route wrapper of the module, the form of each site inside it that
 	// registers a path it is given. A wrapper with a site that cannot be read is in unreadWrappers.
 	forms          map[*types.Func][]wrapperForm
@@ -486,14 +494,14 @@ func (reader routeReader) registrationAt(call routeCall) callReading {
 }
 
 func (reader routeReader) handlerAt(call routeCall) handlerReading {
-	handlers := handlerReader{info: call.info, service: reader.service}
+	handlers := handlerReader{info: call.info, service: reader.service, bodies: reader.bodies}
 	return handlers.read(call.argument("handler"))
 }
 
 // siteAt leaves the path to the caller, which knows what the call registers.
 func (reader routeReader) siteAt(call routeCall, handler handlerReading) routeSite {
-	site := routeSite{callMatch: reader.matchAt(call)}
-	reader.nameTheRoot(&site, handler.root)
+	site := routeSite{callMatch: reader.matchAt(call), Roots: []string{}}
+	reader.nameTheAnchor(&site, handler)
 	return site
 }
 
@@ -509,19 +517,26 @@ func (reader routeReader) matchAt(call routeCall) callMatch {
 	}
 }
 
-// nameTheRoot leaves a function with no place in the repo unnamed, because it has no declaration
-// a comment could go on and nothing of the repo's to hash.
-func (reader routeReader) nameTheRoot(site *routeSite, root handlerRoot) {
-	if root.function == nil {
+// nameTheAnchor leaves a function with no place in the repo unnamed, because it has no declaration
+// a comment could go on and nothing of the repo's to hash. A route with no anchor has no roots
+// either, because a hash of some of its code would not move for an edit to the rest.
+func (reader routeReader) nameTheAnchor(site *routeSite, handler handlerReading) {
+	anchor := handler.anchor
+	if anchor.function == nil {
 		return
 	}
-	place, isInTheRepo := reader.service.placeOf(root.function.Pos())
+	place, isInTheRepo := reader.service.placeOf(anchor.function.Pos())
 	if !isInTheRepo {
 		return
 	}
-	id := functionID(root.function)
-	site.Args["handler"] = reader.service.printerSource().textOf(root.name)
+	id := functionID(anchor.function)
+	site.Args["handler"] = reader.service.printerSource().textOf(anchor.name)
 	site.HandlerID, site.HandlerFile, site.HandlerLine = &id, &place.File, &place.Line
+	for _, root := range handler.roots {
+		if _, isInTheRepo := reader.service.placeOf(root.Pos()); isInTheRepo {
+			site.Roots = append(site.Roots, functionID(root))
+		}
+	}
 }
 
 // functionID names one function exactly, across packages. fingerprints finds a root by this text.

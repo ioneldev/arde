@@ -64,7 +64,7 @@ echo '["(*catalog/internal/httpapi.handlers).index"]' > /tmp/roots.json
 go run . fingerprints --roots /tmp/roots.json --main ./cmd/server ../../../catalog-poc
 ```
 
-`fingerprints` takes the ids that `routes` prints as `handler_id`, in a JSON file, because an id can hold a comma.
+`fingerprints` takes the ids that `routes` prints as `roots`, in a JSON file, because an id can hold a comma.
 
 The walkthrough will add a worked example: edit a copy of `catalog-poc`, then watch which hashes change.
 

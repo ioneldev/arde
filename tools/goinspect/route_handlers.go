@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"go/ast"
 	"go/types"
 	"slices"
@@ -8,16 +9,19 @@ import (
 
 const serveMuxType = "*net/http.ServeMux"
 
-// handlerRoot is the function a route's fingerprint starts from, and the expression that names it.
+// handlerRoot is a function of the module named in a handler, and the expression that names it.
 type handlerRoot struct {
 	function *types.Func
 	name     ast.Expr
 }
 
-// handlerReading is what a registration's handler says: the function behind it, and whether it is
-// a mount, whose mux's own routes are listed where they are registered.
+// handlerReading is what a registration's handler says. The anchor is the one function the route's
+// docs belong on, and the roots are every function of the module the handler names, which the
+// route's fingerprint covers. A mount registers a mux, whose own routes are listed where they are
+// registered.
 type handlerReading struct {
-	root    handlerRoot
+	anchor  handlerRoot
+	roots   []*types.Func
 	isMount bool
 }
 
@@ -25,55 +29,88 @@ type handlerReading struct {
 type handlerReader struct {
 	info    *types.Info
 	service loadedService
+	bodies  functionBodies
 }
 
+// read gives a handler that holds a function written in place neither anchor nor roots: that
+// function has no id to hash and no declaration to carry docs.
 func (reader handlerReader) read(handler ast.Expr) handlerReading {
-	innermost := reader.innermost(handler)
-	if innermost == nil {
+	if handler == nil || holdsAFunctionLiteral(handler) {
 		return handlerReading{}
 	}
-	return handlerReading{root: reader.rootOf(innermost), isMount: reader.isMount(innermost)}
+	innermost := reader.innermost(handler)
+	reading := handlerReading{anchor: reader.anchorAt(innermost), isMount: reader.isMount(innermost)}
+	if reading.anchor.function != nil {
+		reading.roots = reader.functionsNamedIn(handler)
+	}
+	return reading
 }
 
-// innermost takes off what wraps a handler: parentheses, a conversion such as http.HandlerFunc(x),
-// and a call that takes exactly one handler, such as logged(x). It returns nil for nil.
+func holdsAFunctionLiteral(expression ast.Expr) bool {
+	found := false
+	ast.Inspect(expression, func(node ast.Node) bool {
+		_, isLiteral := node.(*ast.FuncLit)
+		found = found || isLiteral
+		return !found
+	})
+	return found
+}
+
+// innermost takes off every call that only wraps the handler, and stops at the first that does
+// more. That one is a factory when the module declares it.
 func (reader handlerReader) innermost(handler ast.Expr) ast.Expr {
-	if handler == nil {
-		return nil
-	}
 	expression := ast.Unparen(handler)
 	call, isCall := expression.(*ast.CallExpr)
 	if !isCall {
 		return expression
 	}
-	if reader.info.Types[call.Fun].IsType() && len(call.Args) == 1 {
-		return reader.innermost(call.Args[0])
-	}
-	if wrapped := reader.handlerArgumentsOf(call); len(wrapped) == 1 {
-		return reader.innermost(wrapped[0])
+	if wrapped, onlyWraps := reader.wrappedBy(call); onlyWraps {
+		return reader.innermost(wrapped)
 	}
 	return expression
 }
 
-func (reader handlerReader) handlerArgumentsOf(call *ast.CallExpr) []ast.Expr {
-	return slices.DeleteFunc(slices.Clone(call.Args), func(argument ast.Expr) bool {
-		return !isHandlerType(reader.info.TypeOf(argument))
-	})
+// wrappedBy says which handler a call only wraps: the argument of a conversion such as
+// http.HandlerFunc(x), the one handler given to another module's function such as
+// http.TimeoutHandler, or the one handler given to a function of this module that passes it on.
+// A call the compiler cannot name could do anything with its handler, so it does not only wrap.
+func (reader handlerReader) wrappedBy(call *ast.CallExpr) (ast.Expr, bool) {
+	if reader.info.Types[call.Fun].IsType() && len(call.Args) == 1 {
+		return call.Args[0], true
+	}
+	positions := reader.handlerPositionsOf(call)
+	target := serviceCall{syntax: call, info: reader.info}.target()
+	if len(positions) != 1 || target == nil {
+		return nil, false
+	}
+	wrapped := call.Args[positions[0]]
+	if !reader.service.holds(target) {
+		return wrapped, true
+	}
+	return wrapped, reader.bodies.passesOn(target, parameterAt(target, positions[0]))
 }
 
+func (reader handlerReader) handlerPositionsOf(call *ast.CallExpr) []int {
+	positions := []int{}
+	for position, argument := range call.Args {
+		if isHandlerType(reader.info.TypeOf(argument)) {
+			positions = append(positions, position)
+		}
+	}
+	return positions
+}
+
+// isMount reads the type, so a factory that returns a mux, such as api.Mux(), mounts it too.
 func (reader handlerReader) isMount(handler ast.Expr) bool {
 	handlerType := reader.info.TypeOf(handler)
 	return handlerType != nil && handlerType.String() == serveMuxType
 }
 
-// rootOf finds the function behind the innermost handler. Only a function of this service's own
-// source has a root: anything else has no body to hash, and a hash of nothing would never move. A
-// call still holding handlers took several of them, and a root at one would miss edits to the rest.
-func (reader handlerReader) rootOf(handler ast.Expr) handlerRoot {
-	if call, isCall := handler.(*ast.CallExpr); isCall && len(reader.handlerArgumentsOf(call)) > 0 {
-		return handlerRoot{}
-	}
-	name := nameBehind(handler)
+// anchorAt names the function behind the innermost handler: a function of the module, or the
+// factory a call that does more than wrap reaches. Anything else has no declaration for the docs
+// and no body to hash, so the route has no anchor.
+func (reader handlerReader) anchorAt(innermost ast.Expr) handlerRoot {
+	name := nameBehind(innermost)
 	function := reader.functionNamedBy(name)
 	if function == nil {
 		return handlerRoot{}
@@ -95,6 +132,22 @@ func nameBehind(handler ast.Expr) ast.Expr {
 			return typed
 		}
 	}
+}
+
+// functionsNamedIn is every function of the module the handler names, at any depth and in id order:
+// the factory, the middleware, the handler and a function handed over as a value alike.
+func (reader handlerReader) functionsNamedIn(handler ast.Expr) []*types.Func {
+	found := []*types.Func{}
+	ast.Inspect(handler, func(node ast.Node) bool {
+		if identifier, isIdentifier := node.(*ast.Ident); isIdentifier {
+			if function := reader.functionNamedBy(identifier); function != nil {
+				found = append(found, function)
+			}
+		}
+		return true
+	})
+	slices.SortFunc(found, func(a, b *types.Func) int { return cmp.Compare(functionID(a), functionID(b)) })
+	return slices.CompactFunc(found, func(a, b *types.Func) bool { return functionID(a) == functionID(b) })
 }
 
 func (reader handlerReader) functionNamedBy(name ast.Expr) *types.Func {
@@ -119,25 +172,83 @@ func isInterfaceMethod(function *types.Func) bool {
 	return receiver != nil && types.IsInterface(receiver.Type())
 }
 
-// isHandlerType is true for what can serve a request: a function that takes a response writer and
-// a request, whatever else it takes or returns, and a value with such a ServeHTTP method. A call
-// that takes one of these is middleware, and any other call is a factory.
+// isHandlerType is true for what can serve a request: a function of the handler's shape, or a value
+// with a ServeHTTP method of that shape.
 func isHandlerType(candidate types.Type) bool {
 	if candidate == nil {
 		return false
 	}
 	if signature, isFunction := candidate.Underlying().(*types.Signature); isFunction {
-		return takesAResponseAndARequest(signature)
+		return hasTheHandlersShape(signature)
 	}
 	method, _, _ := types.LookupFieldOrMethod(candidate, true, nil, "ServeHTTP")
 	function, isFunction := method.(*types.Func)
-	return isFunction && takesAResponseAndARequest(function.Signature())
+	return isFunction && hasTheHandlersShape(function.Signature())
 }
 
-func takesAResponseAndARequest(signature *types.Signature) bool {
-	parameters := []string{}
-	for parameter := range signature.Params().Variables() {
-		parameters = append(parameters, parameter.Type().String())
+// hasTheHandlersShape is true for exactly a response writer and a request, returning nothing or an
+// error. A function that takes more, such as renderError(w, r, err), is a dependency and no handler.
+func hasTheHandlersShape(signature *types.Signature) bool {
+	parameters, results := signature.Params(), signature.Results()
+	takesARequest := parameters.Len() == 2 &&
+		parameters.At(0).Type().String() == "net/http.ResponseWriter" &&
+		parameters.At(1).Type().String() == "*net/http.Request"
+	returnsAtMostAnError := results.Len() == 0 || results.Len() == 1 && results.At(0).Type().String() == "error"
+	return takesARequest && returnsAtMostAnError
+}
+
+// functionBodies holds the body of each function the service declares, to read what one does with
+// a handler it is given.
+type functionBodies map[*types.Func]functionBody
+
+type functionBody struct {
+	block *ast.BlockStmt
+	info  *types.Info
+}
+
+func (service loadedService) functionBodies() functionBodies {
+	bodies := functionBodies{}
+	for _, loaded := range service.packages {
+		for _, file := range loaded.Syntax {
+			for _, declaration := range file.Decls {
+				function, isFunction := declaration.(*ast.FuncDecl)
+				if !isFunction || function.Body == nil {
+					continue
+				}
+				if declared, isDeclared := loaded.TypesInfo.Defs[function.Name].(*types.Func); isDeclared {
+					bodies[declared] = functionBody{block: function.Body, info: loaded.TypesInfo}
+				}
+			}
+		}
 	}
-	return slices.Contains(parameters, "net/http.ResponseWriter") && slices.Contains(parameters, "*net/http.Request")
+	return bodies
+}
+
+// passesOn is true when the function's body calls ServeHTTP on the parameter, or passes it to a
+// call whose result serves requests, as middleware does. A function that calls the parameter
+// itself, as one that falls back on it does, is a factory with a dependency.
+func (bodies functionBodies) passesOn(function *types.Func, parameter *types.Var) bool {
+	body, isDeclared := bodies[function]
+	if !isDeclared || parameter == nil {
+		return false
+	}
+	found := false
+	ast.Inspect(body.block, func(node ast.Node) bool {
+		if call, isCall := node.(*ast.CallExpr); isCall {
+			found = found || body.servesThrough(call, parameter) || body.handsOn(call, parameter)
+		}
+		return !found
+	})
+	return found
+}
+
+func (body functionBody) servesThrough(call *ast.CallExpr, parameter *types.Var) bool {
+	selector, isSelector := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	return isSelector && selector.Sel.Name == "ServeHTTP" && refersTo(body.info, selector.X, parameter)
+}
+
+func (body functionBody) handsOn(call *ast.CallExpr, parameter *types.Var) bool {
+	return isHandlerType(body.info.TypeOf(call)) && slices.ContainsFunc(call.Args, func(argument ast.Expr) bool {
+		return refersTo(body.info, argument, parameter)
+	})
 }
