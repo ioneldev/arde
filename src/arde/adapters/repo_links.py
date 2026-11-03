@@ -6,6 +6,7 @@ a list of file names would have to know every carrier. This file knows no langua
 """
 
 import os
+import stat
 from pathlib import Path
 
 from arde.adapters.child_process import describe_os_error
@@ -60,9 +61,15 @@ def links_leaving(repo: Path) -> list[str]:
     for folder, subfolders, files in os.walk(root, onerror=_stop_the_walk):
         for name in (*subfolders, *files):
             path = os.path.join(folder, name)
-            if os.path.islink(path) and not is_inside(os.path.realpath(path), root):
+            if _is_a_link(path) and not is_inside(os.path.realpath(path), root):
                 found.append(os.path.relpath(path, root))
     return sorted(found)
+
+
+# lstat itself, because os.path.islink answers False for a path it cannot reach, and a folder that
+# can be listed but not entered would hide a link that way.
+def _is_a_link(path: str) -> bool:
+    return stat.S_ISLNK(os.lstat(path).st_mode)
 
 
 # A folder that cannot be listed could hide a link, so it must not be passed over.

@@ -251,6 +251,25 @@ def test_a_folder_that_cannot_be_read_stops_the_gate_and_is_not_passed_over(repo
     assert stopped.value.next_action
 
 
+# The folder can be listed but not entered, so its names are known and what they are is not.
+@pytest.mark.skipif(os.geteuid() == 0, reason="root enters every folder")
+def test_a_link_in_a_folder_that_can_be_listed_but_not_entered_stops_the_gate(
+    repo: Path, secret: Path
+) -> None:
+    listed_only = repo / "d"
+    listed_only.mkdir()
+    (listed_only / "go.mod").symlink_to(secret)
+    listed_only.chmod(0o444)
+    try:
+        with pytest.raises(RepoNotReadableError) as stopped:
+            require_no_link_leaves(repo)
+    finally:
+        listed_only.chmod(0o755)
+
+    assert FAKE_SECRET not in str(stopped.value)
+    assert stopped.value.exit_code == ExitCode.BAD_USAGE
+
+
 def test_a_tree_too_deep_for_one_path_stops_the_gate_because_it_could_hide_a_link(
     repo: Path,
 ) -> None:
