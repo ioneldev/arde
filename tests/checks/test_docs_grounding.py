@@ -456,3 +456,21 @@ def test_no_docs_folder_gives_no_findings(tmp_path: Path) -> None:
     context = a_context(tmp_path, inventory=INVENTORY)
 
     assert DocsGrounding().run(context) == []
+
+
+# Aliases let a few lines of YAML stand for millions of values, so walking them could take the
+# check down. A block that uses one is read as commands, even when every value is grounded.
+def test_yaml_that_uses_an_alias_is_read_as_commands(tmp_path: Path) -> None:
+    probe = ProbeRecord(
+        kind="probe",
+        method="GET",
+        path_and_query="/things/1",
+        status=200,
+        content_type="application/json",
+        body='{"label":"a blue widget"}',
+    )
+    lines = ["a: &x [a blue widget]", "b: *x"]
+
+    found = grounding(tmp_path, {"api.md": a_block(*lines, language="yaml")}, probes=(probe,))
+
+    assert {f"docs/api.md: {line}" for line in lines} <= set(subjects(found))

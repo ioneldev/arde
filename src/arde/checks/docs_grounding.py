@@ -433,6 +433,9 @@ def _parsed(block: CodeBlock) -> object:
         data = json.loads(text)
         return data if isinstance(data, dict | list) else None
     if block.language in ("yaml", "yml"):
+        # An alias lets a few lines stand for millions of values, and walking them is the cost.
+        if any(isinstance(event, yaml.AliasEvent) for event in yaml.parse(text)):
+            return None
         data = yaml.safe_load(text)
         return data if isinstance(data, dict) else None
     if block.language == "toml":
