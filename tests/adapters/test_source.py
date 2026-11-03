@@ -267,7 +267,7 @@ def test_no_go_mod_detected_by_adapter_not_source(tmp_path: Path) -> None:
     dest = copied(repo, tmp_path / "copy")
 
     assert (dest / "README.md").is_file()
-    assert not GoAdapter(Path("unused")).detects(dest)
+    assert not GoAdapter(Path("unused"), swag=Path("unused")).detects(dest)
 
 
 # Local sources: links
