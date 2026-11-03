@@ -1,6 +1,6 @@
 # Phase 3: Checks that prove the run
 
-**Status:** not started
+**Status:** built (cut scope); waiting for Ionel's gate
 
 This spec says what this phase delivers and how we know it's done. The reasoning lives in the [design](../superpowers/specs/2026-11-01-arde-design.md), and the step-by-step tasks live in the [plan](../superpowers/plans/2026-11-01-arde.md). The plan's "Scope for finishing on 2026-11-03" section cuts this phase to three tasks.
 
@@ -8,9 +8,9 @@ This spec says what this phase delivers and how we know it's done. The reasoning
 
 | Task | What | Status |
 |---|---|---|
-| 18 | Agent-edit and behaviour checks | Not started |
-| 19 | Contract checks: spec, wiki and the live service, with the grounding rule | Not started |
-| 21 | Repair loop, one round | Not started |
+| 18 | Agent-edit and behaviour checks | Done |
+| 19 | Contract checks: spec, wiki and the live service, with the grounding rule | Done |
+| 21 | Repair loop, one round | Done |
 | 20, 22, 23 | Docs checks, blind judge, write-back | Moved: 20 folds into 19 where cheap; 22 and 23 go to DESIGN.md as "one more week" |
 
 ## Purpose

@@ -1,6 +1,6 @@
 # Phase 2: Thin first run
 
-**Status:** in progress
+**Status:** built; waiting for Ionel's gate
 
 This spec says what this phase delivers and how we know it's done. The reasoning lives in the [design](../superpowers/specs/2026-11-01-arde-design.md), and the step-by-step tasks live in the [plan](../superpowers/plans/2026-11-01-arde.md). The plan's amendment sections override its task text, and its "Scope for finishing on 2026-11-03" section says what is built today.
 
@@ -8,16 +8,16 @@ This spec says what this phase delivers and how we know it's done. The reasoning
 
 | Task | What | Status |
 |---|---|---|
-| 10 | Source resolution and workspace | In progress |
-| 11 | Agent tools: read-only repo tools and a local HTTP probe | In progress |
-| 12 | Discovery agent and profile validation | Not started |
-| 13 | Explore agent, fact validation and wiki store | Not started |
-| 14 | Comment and tag renderer | In progress |
-| 15 | Spec generation with `swag` | In progress |
-| 16 | Docs agent, reference tables and README link | Not started |
-| 17 | First-run pipeline, CLI and report, then the first real run | Not started |
-| Review | One scoped pass over Phases 2 and 3 (R133, R134) | Not started |
-| Gate | Ionel reviews, understands and tests | Not started |
+| 10 | Source resolution and workspace | Done |
+| 11 | Agent tools: read-only repo tools and a local HTTP probe | Done |
+| 12 | Discovery agent and profile validation | Done |
+| 13 | Explore agent, fact validation and wiki store | Done |
+| 14 | Comment and tag renderer | Done |
+| 15 | Spec generation with `swag` | Done |
+| 16 | Docs agent, reference tables and README link | Done |
+| 17 | First-run pipeline, CLI and report, then the first real run | Done |
+| Review | One scoped pass over Phases 2 and 3 (R133, R134) | Done: 3 findings fixed (R138) |
+| Gate | Ionel reviews, understands and tests | Guide written: [walkthrough](../decisions/phase-2-walkthrough.md) |
 
 ## Purpose
 

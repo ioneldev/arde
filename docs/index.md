@@ -31,6 +31,7 @@ What each phase built, why, and how to test it.
 
 - [Phase 0 walkthrough](decisions/phase-0-walkthrough.md)
 - [Phase 1 walkthrough](decisions/phase-1-walkthrough.md)
+- [Phase 2 and 3 walkthrough](decisions/phase-2-walkthrough.md)
 - [First real runs](decisions/first-real-run.md): what the runs on `catalog-poc` and the hostile fixture cost and found
 
 ## Phase specs
