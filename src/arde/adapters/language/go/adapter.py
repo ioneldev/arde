@@ -7,9 +7,10 @@ from collections.abc import Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from pathlib import Path
 
-from arde.adapters.language.go import toolchain
+from arde.adapters.language.go import gofmt, toolchain
 from arde.adapters.language.go.directives import files_differ_only_in_ordinary_comments
 from arde.adapters.language.go.discovery_guidance import DISCOVERY_GUIDANCE
+from arde.adapters.language.go.edit_checks import edit_findings
 from arde.adapters.language.go.goinspect_client import (
     GoinspectClient,
     PatternName,
@@ -22,12 +23,14 @@ from arde.adapters.language.go.swag import build_swag, run_swag
 from arde.adapters.repo_links import require_no_link_leaves
 from arde.application.ports import (
     CheckResult,
+    EditCheckRequest,
     LanguageAdapter,
     RenderOutcome,
     RenderRequest,
     RouteHashes,
     UnhashedReason,
 )
+from arde.domain.findings import Finding
 from arde.domain.inventory import INLINE_HANDLER, Inventory, Route
 from arde.domain.profile import ExtractionPattern, RepoProfile
 
@@ -141,6 +144,16 @@ class GoAdapter(LanguageAdapter):
     def generate_spec(self, repo: Path, profile: RepoProfile) -> Path:
         require_no_link_leaves(repo)
         return run_swag(repo, profile, swag=self._swag)
+
+    def format_issues(self, repo: Path) -> set[str]:
+        require_no_link_leaves(repo)
+        return gofmt.unformatted_files(repo)
+
+    # Both gates first: goinspect follows a link, and so does reading a file to compare its lines.
+    def check_agent_edits(self, request: EditCheckRequest) -> list[Finding]:
+        require_no_link_leaves(request.before)
+        require_no_link_leaves(request.after)
+        return edit_findings(request, self._goinspect.compare(request.before, request.after))
 
 
 # The return type is the static proof that GoAdapter satisfies the port: mypy fails here when

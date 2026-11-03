@@ -526,7 +526,7 @@ def _outcome(files: Sequence[_RenderedFile]) -> RenderOutcome:
     added_lines: dict[str, tuple[str, ...]] = {}
     tag_changes: dict[str, tuple[str, ...]] = {}
     for one in changed:
-        gained = _gained_lines(one.before, one.after)
+        gained = [line.text for line in unmatched_lines(one.after, other=one.before)]
         comments = tuple(line for line in gained if line.startswith("//"))
         code = tuple(line for line in gained if not line.startswith("//"))
         if comments:
@@ -543,18 +543,27 @@ def _outcome(files: Sequence[_RenderedFile]) -> RenderOutcome:
     )
 
 
-# Each line of the new text that the old text does not account for, with its spacing collapsed.
-def _gained_lines(before: str, after: str) -> list[str]:
-    unmatched = Counter(_collapsed(line) for line in before.split("\n"))
-    gained: list[str] = []
-    for line in after.split("\n"):
-        collapsed = _collapsed(line)
-        if unmatched[collapsed] > 0:
-            unmatched[collapsed] -= 1
+class NumberedLine(NamedTuple):
+    # Counted from 1.
+    number: int
+    # With its spacing collapsed.
+    text: str
+
+
+# Each line of text that other does not account for, in file order. Each line of other accounts
+# for one line of text, wherever it is. The edit checks compare a run's copies with this too, so
+# that a line the render reports gaining reads exactly as their comparison reads it.
+def unmatched_lines(text: str, *, other: str) -> list[NumberedLine]:
+    available = Counter(collapsed_line(line) for line in other.split("\n"))
+    unmatched: list[NumberedLine] = []
+    for number, line in enumerate(text.split("\n"), start=1):
+        collapsed = collapsed_line(line)
+        if available[collapsed] > 0:
+            available[collapsed] -= 1
         else:
-            gained.append(collapsed)
-    return gained
+            unmatched.append(NumberedLine(number, collapsed))
+    return unmatched
 
 
-def _collapsed(line: str) -> str:
+def collapsed_line(line: str) -> str:
     return " ".join(line.split())

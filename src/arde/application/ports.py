@@ -13,6 +13,7 @@ from arde.application.probe_log import ProbeLog
 from arde.domain.base import CodeIdentifier, Frozen, MainFile, SingleLine
 from arde.domain.errors import ArdeError
 from arde.domain.facts import ProbeRecord, Wiki
+from arde.domain.findings import Finding
 from arde.domain.inventory import Inventory, Route
 from arde.domain.profile import RepoProfile
 from arde.domain.report import ExitCode
@@ -231,6 +232,17 @@ class RenderOutcome(Frozen):
     manifest: RenderManifest
 
 
+class EditCheckRequest(Frozen):
+    """The copy a run started from, the copy it wrote into, and what its render reported."""
+
+    before: Path
+    after: Path
+    render: RenderResult
+    # What the last run wrote, which this run's render removed before it wrote: the manifest the
+    # render was given, not the one it returned.
+    manifest: RenderManifest
+
+
 class LanguageAdapter(Protocol):
     """Everything ARDE knows about one language. Each method holds an idiom of that language.
 
@@ -304,6 +316,24 @@ class LanguageAdapter(Protocol):
 
         The YAML form is written beside it, and nothing else in the repo changes. A tool that
         cannot read the annotations raises an ArdeError that quotes the end of what it printed.
+        """
+        ...
+
+    def format_issues(self, repo: Path) -> set[str]:
+        """The source files, from the repo root, that the language's formatter would change.
+
+        A file it cannot read is listed too, as the formatter's own check would fail on it.
+        """
+        ...
+
+    def check_agent_edits(self, request: EditCheckRequest) -> list[Finding]:
+        """What the after copy changed beyond what the render reports writing, as findings.
+
+        Each line the after copy gained must be one the render wrote, or a line of the before copy
+        with the language's allowed tags added or taken out. Each line it lost must be an
+        annotation, a line the manifest lists, or an empty comment. A source file added or
+        removed, a change to code, and a change to a file the build reads to find its
+        dependencies are findings too. Code owns every one, because no agent can repair them.
         """
         ...
 
