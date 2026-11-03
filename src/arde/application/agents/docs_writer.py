@@ -1,9 +1,9 @@
 """The docs: one narrative section per topic by the docs agent, everything else by code.
 
-The agent sees the wiki's facts without their code quotes, and the probes its section's own facts
-cite. It has no tool but submit_section, so it never sees source code. Code writes every file:
-the API reference, each page's mark and title, the error table where a section asks for it, and
-the README's link to the docs.
+The agent sees the wiki's facts without their code quotes, the probes its section's own facts
+cite, and on a repair what the checks found wrong. It has no tool but submit_section, so it never
+sees source code. Code writes every file: the API reference, each page's mark and title, the error
+table where a section asks for it, and the README's link to the docs.
 """
 
 import json
@@ -19,11 +19,13 @@ from arde.application.agent_loop import Accepted, AgentSpec, Rejected, SubmitToo
 from arde.application.pipeline_deps import PipelineDeps
 from arde.application.ports import ToolDef, Tracer
 from arde.application.reference_tables import api_reference, error_table, longest_backtick_run
+from arde.application.repair import findings_for_prompt
 from arde.application.section_store import load_sections
 from arde.application.tool_schema import strict_tool_schema
 from arde.domain.base import Frozen, SingleLine, printable_name
 from arde.domain.errors import ArdeError
 from arde.domain.facts import Fact, ProbeCitation, ProbeRecord, Topic, Wiki
+from arde.domain.findings import Finding
 from arde.domain.inventory import Inventory
 from arde.domain.report import ExitCode
 
@@ -90,6 +92,7 @@ class SectionSubmission(Frozen):
 class SectionRequest(Frozen):
     topic: Topic
     wiki: Wiki
+    repair_findings: tuple[Finding, ...] = ()
 
     @field_validator("topic")
     @classmethod
@@ -114,6 +117,9 @@ class DocsRequest(Frozen):
     # The topics whose facts changed since the last run. A section is written anyway when its
     # facts came or went, or when sections.yaml or the repo does not hold it.
     stale_topics: frozenset[Topic]
+    # What the checks found wrong with the last attempt's docs or facts, shown to every section
+    # this request writes.
+    repair_findings: tuple[Finding, ...] = ()
 
 
 class DocsResult(Frozen):
@@ -188,7 +194,11 @@ def write_docs(request: DocsRequest, deps: PipelineDeps) -> DocsResult:
     to_write = _topics_to(actions, "write")
     _refuse_pages_arde_did_not_write(request.repo, ["api", *to_write])
     results = [
-        write_section(SectionRequest(topic=topic, wiki=request.wiki), deps) for topic in to_write
+        write_section(
+            SectionRequest(topic=topic, wiki=request.wiki, repair_findings=request.repair_findings),
+            deps,
+        )
+        for topic in to_write
     ]
     pages: dict[Topic, str] = {"api": _page("api", api_reference(request.wiki, request.inventory))}
     pages.update({result.topic: result.text for result in results})
@@ -326,6 +336,8 @@ def _user_prompt(request: SectionRequest) -> str:
         else "The section's own facts cite no recorded probe.",
         *(_probe_for_prompt(probe) for probe in probes),
     ]
+    if request.repair_findings:
+        parts.append(findings_for_prompt(request.repair_findings))
     # A probe body or a fact may hold a lone surrogate, which no request can encode.
     return "\n\n".join(parts).encode("utf-8", "backslashreplace").decode("utf-8")
 
