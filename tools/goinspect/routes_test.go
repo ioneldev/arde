@@ -42,10 +42,17 @@ type wrapperCallOutput struct {
 }
 
 type unreadSiteOutput struct {
-	File      string       `json:"file"`
-	Line      int          `json:"line"`
-	Problem   string       `json:"problem"`
-	WrittenAt *placeOutput `json:"written_at"`
+	File      string         `json:"file"`
+	Line      int            `json:"line"`
+	Problem   string         `json:"problem"`
+	WrittenAt *placeOutput   `json:"written_at"`
+	Through   *throughOutput `json:"through"`
+}
+
+type throughOutput struct {
+	Method      string   `json:"method"`
+	Interface   string   `json:"interface"`
+	SatisfiedBy []string `json:"satisfied_by"`
 }
 
 type routesOutput struct {
@@ -1304,6 +1311,53 @@ func TestRoutesReadsASiteInsideAWrapperThatHoldsNoHandlerItIsGivenByItsOwnHandle
 	}
 }
 
+// A site that registers its own handler still runs whatever the call hands the wrapper through
+// another parameter, so the functions the call names there stay roots, as they are for every route
+// the wrapper registers.
+func TestRoutesRootsASiteWithItsOwnHandlerAtWhatTheCallHandsTheWrapper(t *testing.T) {
+	source := `package main
+
+import "net/http"
+
+type app struct{ mux *http.ServeMux }
+
+type middleware func(http.HandlerFunc) http.HandlerFunc
+
+func (a *app) get(path string, h http.HandlerFunc, wrap ...middleware) {
+	a.mux.HandleFunc("OPTIONS "+path, chain(preflight, wrap...))
+	a.mux.HandleFunc("GET "+path, chain(h, wrap...))
+}
+
+func chain(h http.HandlerFunc, wrap ...middleware) http.HandlerFunc {
+	for _, m := range wrap {
+		h = m(h)
+	}
+	return h
+}
+
+func requireAdmin(next http.HandlerFunc) http.HandlerFunc { return next }
+
+func preflight(w http.ResponseWriter, r *http.Request) {}
+
+func items(w http.ResponseWriter, r *http.Request) {}
+
+func main() {
+	a := &app{mux: http.NewServeMux()}
+	a.get("/items", items, requireAdmin)
+}
+`
+	root := writeModule(t, "example.com/depot", map[string]string{"main.go": source})
+
+	roots := map[string][]string{}
+	for _, site := range routesOf(t, routeQuery{root: root, mainPackage: ".", patterns: getOnA}).Sites {
+		roots[site.Literals["path"]] = site.Roots
+	}
+
+	if !slices.Contains(roots["OPTIONS /items"], "example.com/depot.requireAdmin") || !slices.Contains(roots["GET /items"], "example.com/depot.requireAdmin") {
+		t.Fatalf("want requireAdmin among the roots of both routes, got %v", roots)
+	}
+}
+
 func TestRoutesStopsAtAWrapperThatHandsItsPathToAnotherWrapper(t *testing.T) {
 	source := `package main
 
@@ -1460,7 +1514,7 @@ func TestRoutesStopsAtAUseOfAFunctionThatRegistersRoutesOtherThanADirectCall(t *
 	for name, test := range cases {
 		source := aRegistrarUsedAs(test.use)
 
-		got := unreadSitesOf(t, source, getOnA)
+		got := withoutTheInterfaces(unreadSitesOf(t, source, getOnA))
 
 		want := []unreadSiteOutput{{File: "main.go", Line: lineHolding(t, source, test.use), Problem: test.problem}}
 		if !reflect.DeepEqual(got, want) {
@@ -1474,11 +1528,62 @@ func TestRoutesStopsAtAUseOfAFunctionThatRegistersRoutesOtherThanADirectCall(t *
 func TestRoutesStopsAtACallThroughAnInterfaceThatAPatternMatchesToo(t *testing.T) {
 	source := aRegistrarUsedAs(`r.get("/items", parcels)`)
 
-	got := unreadSitesOf(t, source, getAnywhere)
+	got := withoutTheInterfaces(unreadSitesOf(t, source, getAnywhere))
 
 	want := []unreadSiteOutput{{File: "main.go", Line: lineHolding(t, source, `r.get("/items"`), Problem: "called through an interface"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+// withoutTheInterfaces leaves the place and the problem of each site, for a test about those alone.
+func withoutTheInterfaces(sites []unreadSiteOutput) []unreadSiteOutput {
+	for index := range sites {
+		sites[index].Through = nil
+	}
+	return sites
+}
+
+// The reviewer's q3a: a Router interface over *http.ServeMux. The stop names the method, the
+// interface and every type behind it, so a person can tell which registration to make direct.
+func TestRoutesNamesTheInterfaceAndTheTypesBehindACallThroughIt(t *testing.T) {
+	source := `package main
+
+import "net/http"
+
+type Router interface {
+	Handle(pattern string, handler http.Handler)
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
+func registerRoutes(r Router) {
+	r.HandleFunc("GET /items", parcels)
+}
+
+func main() {
+	registerRoutes(http.NewServeMux())
+}
+` + handlerFuncs
+
+	got := unreadSitesOf(t, source, noPatterns)
+
+	want := []unreadSiteOutput{{
+		File: "main.go", Line: lineHolding(t, source, "r.HandleFunc"), Problem: "called through an interface",
+		Through: &throughOutput{Method: "HandleFunc", Interface: "main.Router", SatisfiedBy: []string{"*http.ServeMux"}},
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestRoutesNamesEveryTypeOfTheServiceBehindACallThroughAnInterface(t *testing.T) {
+	source := aRegistrarUsedAs(`r.get("/items", parcels)`)
+
+	got := unreadSitesOf(t, source, getOnA)
+
+	want := &throughOutput{Method: "get", Interface: "main.registrar", SatisfiedBy: []string{"*main.app", "*main.outer", "main.outer"}}
+	if len(got) != 1 || !reflect.DeepEqual(got[0].Through, want) {
+		t.Fatalf("got %+v, want one site through %+v", got, want)
 	}
 }
 
@@ -2032,9 +2137,10 @@ func main() {
 
 // A value of a module type that serves requests itself is anchored at its ServeHTTP, which is the
 // whole handler, and the methods of a module type the handler hands to an interface are roots,
-// because the static graph cannot follow a call through the interface.
+// because the static graph cannot follow a call through the interface. Only those an interface can
+// call are: render is unexported, and ServeHTTP's own walk reaches it.
 func TestRoutesAnchorsAValueThatServesItselfAtItsServeHTTP(t *testing.T) {
-	itemsMethods := []string{"(*example.com/depot.items).ServeHTTP", "(*example.com/depot.items).render"}
+	itemsMethods := []string{"(*example.com/depot.items).ServeHTTP"}
 	cases := map[string]struct {
 		argument   string
 		wantAnchor string
@@ -2050,8 +2156,8 @@ func TestRoutesAnchorsAValueThatServesItselfAtItsServeHTTP(t *testing.T) {
 		"behind middleware":             {`logged(&items{})`, "(*example.com/depot.items).ServeHTTP", "items", append(slices.Clone(itemsMethods), "example.com/depot.logged")},
 		"a conversion of a function":    {`apiFunc(failing)`, "example.com/depot.failing", "failing", []string{"(example.com/depot.apiFunc).ServeHTTP", "example.com/depot.failing"}},
 		"a factory of its own type":     {`newItems()`, "example.com/depot.newItems", "newItems", append(slices.Clone(itemsMethods), "example.com/depot.newItems")},
-		"middleware given its own type": {`logged(newItems())`, "example.com/depot.newItems", "newItems", []string{"(*example.com/depot.items).ServeHTTP", "(*example.com/depot.items).render", "example.com/depot.logged", "example.com/depot.newItems"}},
-		"a handler holding another":     {`&guard{next: newItems()}`, "(*example.com/depot.guard).ServeHTTP", "guard", []string{"(*example.com/depot.guard).ServeHTTP", "(*example.com/depot.items).ServeHTTP", "(*example.com/depot.items).render", "example.com/depot.newItems"}},
+		"middleware given its own type": {`logged(newItems())`, "example.com/depot.newItems", "newItems", []string{"(*example.com/depot.items).ServeHTTP", "example.com/depot.logged", "example.com/depot.newItems"}},
+		"a handler holding another":     {`&guard{next: newItems()}`, "(*example.com/depot.guard).ServeHTTP", "guard", []string{"(*example.com/depot.guard).ServeHTTP", "(*example.com/depot.items).ServeHTTP", "example.com/depot.newItems"}},
 	}
 
 	for name, test := range cases {
@@ -2234,6 +2340,75 @@ func main() {
 		if identity[pair[0]] == identity[pair[1]] {
 			t.Errorf("%s and %s: want two identities", pair[0], pair[1])
 		}
+	}
+}
+
+// The reviewer's e1: the struct gets its ServeHTTP from an interface of the module it embeds, so the
+// code that serves is whatever the field holds, and the interface's method has no body to anchor.
+func TestRoutesGivesNoAnchorToAValueThatServesThroughAnEmbeddedInterface(t *testing.T) {
+	source := `package main
+
+import "net/http"
+
+type Handler interface {
+	ServeHTTP(w http.ResponseWriter, r *http.Request)
+}
+
+type itemsHandler struct{}
+
+func (itemsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {}
+
+type logged struct {
+	Handler
+	name string
+}
+
+func main() {
+	http.Handle("GET /items", logged{Handler: itemsHandler{}, name: "items"})
+}
+`
+	site := onlySite(t, source)
+
+	if site.HandlerID != nil || site.HandlerLine != nil || len(site.Roots) != 0 {
+		t.Fatalf("want no anchor, got %v at %v with roots %v", site.HandlerID, site.HandlerLine, site.Roots)
+	}
+}
+
+// The reviewer's o1: the handler hands s to an interface, and reflect cannot call an unexported
+// method, so only an exported one, or one an interface of its own package names, can be reached.
+func TestRoutesRootsAtTheMethodsAnInterfaceCanCall(t *testing.T) {
+	source := `package main
+
+import (
+	"fmt"
+	"net/http"
+)
+
+type ItemStore interface{ Items() []string }
+
+type server struct{ items []string }
+
+func (s *server) Items() []string                               { return s.items }
+func (s *server) audit(msg string)                              { fmt.Println(msg) }
+func (s *server) login(w http.ResponseWriter, r *http.Request) { s.audit("login") }
+
+func record(a interface{ audit(msg string) }) { a.audit("record") }
+
+func itemsHandler(store ItemStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, store.Items()) }
+}
+
+func main() {
+	s := &server{}
+	record(s)
+	http.Handle("GET /items", itemsHandler(s))
+}
+`
+	site := onlySite(t, source)
+
+	want := []string{"(*example.com/depot.server).Items", "(*example.com/depot.server).audit", "example.com/depot.itemsHandler"}
+	if !reflect.DeepEqual(site.Roots, want) {
+		t.Fatalf("got %v, want %v", site.Roots, want)
 	}
 }
 

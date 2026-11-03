@@ -144,10 +144,22 @@ UnreadProblem = Literal[
 ]
 
 
+class InterfaceCall(Frozen):
+    """A call through an interface that a type with a function registering routes satisfies."""
+
+    method: str
+    interface: str
+    # Each type behind the interface whose method of that name registers routes, such as
+    # *http.ServeMux, with packages named by their names.
+    satisfied_by: tuple[str, ...]
+
+
 class UnreadSite(SourcePlace):
     problem: UnreadProblem
     # Where the function around the site writes a parameter the site registers, when that is why.
     written_at: SourcePlace | None
+    # The call through an interface, when that is why.
+    through: InterfaceCall | None
 
 
 class RouteReport(Frozen):

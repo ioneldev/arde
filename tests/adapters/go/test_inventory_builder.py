@@ -10,6 +10,7 @@ from arde.adapters.language.go.goinspect_client import (
     TOO_LONG_TO_PRINT,
     CallMatch,
     Declaration,
+    InterfaceCall,
     PatternName,
     RouteReport,
     RouteSite,
@@ -564,6 +565,34 @@ def test_a_path_shows_no_direction_control_in_the_message_that_stops_the_run() -
     assert "\u2066" not in str(stopped.value)
 
 
+# The boundary review's paths: Persian "books" with its non-joiner, an emoji joined with a joiner,
+# a Hebrew word ending in a direction mark, and a soft hyphen. A comment carries each as it is.
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/\u06a9\u062a\u0627\u0628\u200c\u0647\u0627",
+        "/team/\U0001f469\u200d\U0001f4bb",
+        "/\u05e9\u05dc\u05d5\u05dd\u200f",
+        "/inter\u00adnational",
+    ],
+    ids=["zero-width non-joiner", "zero-width joiner", "right-to-left mark", "soft hyphen"],
+)
+def test_a_path_with_a_format_character_a_language_writes_with_is_read_as_a_route(
+    path: str,
+) -> None:
+    [route] = routes_of(registering(Lit(f"GET {path}")))
+
+    assert route.path == path
+
+
+def test_a_path_with_a_direction_override_stops_the_run_and_names_it_and_where() -> None:
+    with pytest.raises(RouteNotUnderstoodError) as stopped:
+        routes_of(registering(Lit("GET /items\u202egpj.exe")))
+
+    assert "U+202E at offset 6" in str(stopped.value)
+    assert "\u202e" not in str(stopped.value)
+
+
 def test_a_path_that_does_not_start_with_a_slash_is_shown_on_one_clean_line() -> None:
     with pytest.raises(RouteNotUnderstoodError) as stopped:
         routes_of(registering(Lit("evil.example/\x1b[2J")))
@@ -608,7 +637,7 @@ def test_the_file_named_by_a_prefix_stop_is_printed_safely() -> None:
 
 
 def stopped_at_an_unread_site(problem: UnreadProblem) -> RouteNotUnderstoodError:
-    site = UnreadSite(file="web/router.go", line=8, problem=problem, written_at=None)
+    site = UnreadSite(file="web/router.go", line=8, problem=problem, written_at=None, through=None)
     with pytest.raises(RouteNotUnderstoodError) as stopped:
         inventory_of(registering(Lit("GET /items")), unread_sites=(site,))
     return stopped.value
@@ -622,7 +651,7 @@ def stopped_at_an_unread_site(problem: UnreadProblem) -> RouteNotUnderstoodError
         ("registers nothing", "registers no route"),
         ("method is not a constant", "method argument is not a constant"),
         ("used as a value", "used here other than in a direct call"),
-        ("called through an interface", "goes through an interface"),
+        ("called through an interface", "goes through an interface that a type with"),
         ("mounts a mux", "hands a mux to a function"),
         ("method is empty", "method argument is empty"),
     ],
@@ -641,7 +670,13 @@ def test_a_site_goinspect_cannot_read_stops_the_run_names_the_place_and_says_why
 
 def test_a_wrapper_that_writes_a_parameter_it_registers_names_the_write() -> None:
     write = SourcePlace(file="web/route\x1bs.go", line=6)
-    site = UnreadSite(file="web/router.go", line=8, problem="builds its path", written_at=write)
+    site = UnreadSite(
+        file="web/router.go",
+        line=8,
+        problem="builds its path",
+        written_at=write,
+        through=None,
+    )
 
     with pytest.raises(RouteNotUnderstoodError) as stopped:
         inventory_of(registering(Lit("GET /items")), unread_sites=(site,))
@@ -651,6 +686,50 @@ def test_a_wrapper_that_writes_a_parameter_it_registers_names_the_write() -> Non
     assert "written at web/route\\u001bs.go:6" in str(stopped.value)
 
 
+# The reviewer's q3a: the stop said a function satisfies an interface, and never named the mux.
+def test_a_call_through_an_interface_names_it_and_the_types_behind_it() -> None:
+    through = InterfaceCall(
+        method="HandleFunc", interface="main.Router", satisfied_by=("*http.ServeMux",)
+    )
+    site = UnreadSite(
+        file="main.go",
+        line=17,
+        problem="called through an interface",
+        written_at=None,
+        through=through,
+    )
+
+    with pytest.raises(RouteNotUnderstoodError) as stopped:
+        inventory_of(registering(Lit("GET /items")), unread_sites=(site,))
+
+    assert (
+        "calls `HandleFunc` through the interface `main.Router`, which `*http.ServeMux` "
+        "satisfies, so a route registered that way cannot be read"
+    ) in str(stopped.value)
+    assert "docs/limitations.md" in stopped.value.next_action
+    assert "Do not narrow" in stopped.value.next_action
+
+
+def test_a_call_through_an_interface_shows_what_it_names_on_one_clean_line() -> None:
+    through = InterfaceCall(
+        method="get", interface="main.r\u202eouter", satisfied_by=("*main.app", "main.out\x1ber")
+    )
+    site = UnreadSite(
+        file="main.go",
+        line=17,
+        problem="called through an interface",
+        written_at=None,
+        through=through,
+    )
+
+    with pytest.raises(RouteNotUnderstoodError) as stopped:
+        inventory_of(registering(Lit("GET /items")), unread_sites=(site,))
+
+    assert "\u202e" not in str(stopped.value)
+    assert "\x1b" not in str(stopped.value)
+    assert "`*main.app` and `main.out er` satisfy" in str(stopped.value)
+
+
 def test_a_wrapper_that_builds_its_path_is_told_how_to_name_a_method_parameter() -> None:
     error = stopped_at_an_unread_site("builds its path")
 
@@ -658,7 +737,9 @@ def test_a_wrapper_that_builds_its_path_is_told_how_to_name_a_method_parameter()
 
 
 def test_the_file_named_by_an_unread_site_is_printed_safely() -> None:
-    site = UnreadSite(file="e\x1bvil.go", line=2, problem="registers nothing", written_at=None)
+    site = UnreadSite(
+        file="e\x1bvil.go", line=2, problem="registers nothing", written_at=None, through=None
+    )
 
     with pytest.raises(RouteNotUnderstoodError) as stopped:
         inventory_of(registering(Lit("GET /items")), unread_sites=(site,))
@@ -1160,6 +1241,14 @@ def test_a_tagged_field_keeps_the_go_name_the_json_name_and_the_declared_type() 
         declared_type="int64",
         may_be_absent=False,
     )
+
+
+def test_a_json_name_with_a_zero_width_non_joiner_is_read_as_the_fields_name() -> None:
+    persian = "\u0646\u0627\u0645\u200c\u0647\u0627"
+
+    [found] = fields_of(field("Book", "Names", json_tag=persian))
+
+    assert found.json_name == persian
 
 
 def test_a_field_keeps_the_package_that_declares_it() -> None:

@@ -23,6 +23,9 @@ type loadedService struct {
 	modulePath string
 	packages   []*packages.Package
 	folders    []string
+	// namesInInterfaces holds, for each package of the module, the method names its interfaces
+	// declare, interface literals included.
+	namesInInterfaces map[*types.Package]map[string]bool
 }
 
 func loadService(dir, mainPackage string) (loadedService, error) {
@@ -43,7 +46,36 @@ func loadService(dir, mainPackage string) (loadedService, error) {
 	if err != nil {
 		return loadedService{}, err
 	}
+	service.namesInInterfaces = namesInInterfacesOf(service.packages)
 	return service, nil
+}
+
+func namesInInterfacesOf(loaded []*packages.Package) map[*types.Package]map[string]bool {
+	names := map[*types.Package]map[string]bool{}
+	for _, service := range loaded {
+		declared := map[string]bool{}
+		for _, file := range service.Syntax {
+			ast.Inspect(file, func(node ast.Node) bool {
+				if declaring, isInterface := node.(*ast.InterfaceType); isInterface {
+					for _, method := range declaring.Methods.List {
+						for _, name := range method.Names {
+							declared[name.Name] = true
+						}
+					}
+				}
+				return true
+			})
+		}
+		names[service.Types] = declared
+	}
+	return names
+}
+
+// canBeCalledThroughAnInterface is true for an exported method, and for an unexported one whose
+// name an interface of its own package declares. reflect cannot call an unexported method, and an
+// interface of any other package cannot name it.
+func (service loadedService) canBeCalledThroughAnInterface(method *types.Func) bool {
+	return method.Exported() || service.namesInInterfaces[method.Pkg()][method.Name()]
 }
 
 // findMainPackage leaves it to the go command to say what the text names. A file has no module in

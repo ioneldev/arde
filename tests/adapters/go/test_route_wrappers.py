@@ -290,8 +290,8 @@ CALLS_THE_INTERFACE = 'func viaInterface(r registrar) { r.get("/orders", items) 
     [
         (PASSES_IT_ON, "registerShop(a.get)", GET_ON_A, 27, "other than in a direct call"),
         (PASSES_IT_ON, 'g := a.get; g("/direct", items)', GET_ON_A, 27, "other than in a direct"),
-        (CALLS_THE_INTERFACE, "viaInterface(a)", GET_ON_A, 22, "goes through an interface"),
-        (CALLS_THE_INTERFACE, "viaInterface(a)", GET_ANYWHERE, 22, "goes through an interface"),
+        (CALLS_THE_INTERFACE, "viaInterface(a)", GET_ON_A, 22, "the interface `main.registrar`"),
+        (CALLS_THE_INTERFACE, "viaInterface(a)", GET_ANYWHERE, 22, "which `*main.app` satisfies"),
     ],
     ids=["passed as an argument", "held in a variable", "an interface", "an interface it matches"],
 )

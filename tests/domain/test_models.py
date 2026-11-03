@@ -725,36 +725,92 @@ def test_names_refuse_control_characters(build: Callable[[str], object], char: s
         build(f"before{char}after")
 
 
-# Each one changes what a reader sees and is not seen itself, so it can hide or reorder text.
-HIDES_FROM_A_READER = {
+# Each one reorders what a reader of the source sees around it, so text bound for Go source may
+# hold none.
+REORDERS_THE_SOURCE = {
+    "left-to-right embedding": "\u202a",
     "right-to-left override": "\u202e",
     "first strong isolate": "\u2068",
+    "pop directional isolate": "\u2069",
+}
+
+# Each one is a format character a language writes with, or one that does nothing in a comment, so
+# refusing it would refuse the language: Persian writes the non-joiner, and an emoji holds joiners.
+KEPT_IN_THE_SOURCE = {
+    "zero-width non-joiner": "\u200c",
+    "zero-width joiner": "\u200d",
     "left-to-right mark": "\u200e",
     "right-to-left mark": "\u200f",
     "arabic letter mark": "\u061c",
     "zero-width space": "\u200b",
-    "zero-width joiner": "\u200d",
     "soft hyphen": "\u00ad",
     "a tag character": "\U000e0041",
 }
 
+# The names that take any letter but whitespace, quotes and backticks. The rest are ASCII only.
+PLAIN_NAME_TARGETS = {
+    name: build
+    for name, build in INJECTION_TARGETS.items()
+    if name in {"param name", "endpoint route"}
+}
+IDENTIFIER_TARGETS = {
+    name: build for name, build in INJECTION_TARGETS.items() if name not in PLAIN_NAME_TARGETS
+}
 
-@pytest.mark.parametrize("char", HIDES_FROM_A_READER.values(), ids=HIDES_FROM_A_READER.keys())
+
+@pytest.mark.parametrize("char", REORDERS_THE_SOURCE.values(), ids=REORDERS_THE_SOURCE.keys())
 @pytest.mark.parametrize("build", FREE_TEXT_FIELDS.values(), ids=FREE_TEXT_FIELDS.keys())
-def test_free_text_refuses_a_character_that_hides_from_a_reader(
+def test_free_text_refuses_a_direction_control_and_names_it_and_where(
     build: Callable[[str], object], char: str
 ) -> None:
-    with pytest.raises(ValidationError, match="format"):
+    with pytest.raises(ValidationError, match=rf"U\+{ord(char):04X} at offset 6"):
         build(f"before{char}after")
 
 
-@pytest.mark.parametrize("char", HIDES_FROM_A_READER.values(), ids=HIDES_FROM_A_READER.keys())
+@pytest.mark.parametrize("char", REORDERS_THE_SOURCE.values(), ids=REORDERS_THE_SOURCE.keys())
 @pytest.mark.parametrize("build", INJECTION_TARGETS.values(), ids=INJECTION_TARGETS.keys())
-def test_names_refuse_a_character_that_hides_from_a_reader(
+def test_names_refuse_a_direction_control(build: Callable[[str], object], char: str) -> None:
+    with pytest.raises(ValidationError, match="must be"):
+        build(f"before{char}after")
+
+
+@pytest.mark.parametrize("char", KEPT_IN_THE_SOURCE.values(), ids=KEPT_IN_THE_SOURCE.keys())
+@pytest.mark.parametrize("build", FREE_TEXT_FIELDS.values(), ids=FREE_TEXT_FIELDS.keys())
+def test_free_text_keeps_a_format_character_a_language_writes_with(
+    build: Callable[[str], object], char: str
+) -> None:
+    build(f"before{char}after")
+
+
+@pytest.mark.parametrize("char", KEPT_IN_THE_SOURCE.values(), ids=KEPT_IN_THE_SOURCE.keys())
+@pytest.mark.parametrize("build", PLAIN_NAME_TARGETS.values(), ids=PLAIN_NAME_TARGETS.keys())
+def test_plain_names_keep_a_format_character_a_language_writes_with(
+    build: Callable[[str], object], char: str
+) -> None:
+    build(f"before{char}after")
+
+
+@pytest.mark.parametrize("char", KEPT_IN_THE_SOURCE.values(), ids=KEPT_IN_THE_SOURCE.keys())
+@pytest.mark.parametrize("build", IDENTIFIER_TARGETS.values(), ids=IDENTIFIER_TARGETS.keys())
+def test_identifiers_refuse_every_format_character(
     build: Callable[[str], object], char: str
 ) -> None:
     with pytest.raises(ValidationError, match="must be"):
         build(f"before{char}after")
+
+
+@pytest.mark.parametrize(
+    ("text", "said"),
+    [
+        ("ok\nmore", "the line break U\\+000A at offset 2"),
+        ("ok more\x00", "U\\+0000 at offset 7"),
+        ("\ufeffok", "U\\+FEFF at offset 0"),
+        ("o\u2028k", "U\\+2028 at offset 1"),
+    ],
+)
+def test_a_refused_character_is_named_with_its_offset(text: str, said: str) -> None:
+    with pytest.raises(ValidationError, match=said):
+        a_param(description=text)
 
 
 @pytest.mark.parametrize("build", FREE_TEXT_FIELDS.values(), ids=FREE_TEXT_FIELDS.keys())
@@ -864,7 +920,8 @@ def test_one_line_folds_a_printed_function_onto_one_line() -> None:
         "a\u2028b",
         "a\x9bb",
         "a\ufeffb",
-        *(f"a{char}b" for char in HIDES_FROM_A_READER.values()),
+        *(f"a{char}b" for char in REORDERS_THE_SOURCE.values()),
+        *(f"a{char}b" for char in KEPT_IN_THE_SOURCE.values()),
     ],
 )
 def test_one_line_holds_no_control_character(hostile: str) -> None:

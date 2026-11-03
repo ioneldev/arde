@@ -45,6 +45,9 @@ type moduleProgram struct {
 	modulePath     string
 	program        *ssa.Program
 	sourcePackages []*ssa.Package
+	// canBeCalledThroughAnInterface says which methods of a type made into an interface the walk
+	// takes: see loadedService.canBeCalledThroughAnInterface.
+	canBeCalledThroughAnInterface func(*types.Func) bool
 	// instancesByOrigin lets a walk that starts at a generic function also enter the instances
 	// of it, because the concrete type behind a type parameter is known only in an instance.
 	instancesByOrigin map[*ssa.Function][]*ssa.Function
@@ -100,11 +103,12 @@ func loadModuleProgram(dir, mainPackage string) (moduleProgram, error) {
 	program, ssaPackages := ssautil.Packages(service.packages, ssa.InstantiateGenerics)
 	program.Build()
 	return moduleProgram{
-		modulePath:        service.modulePath,
-		program:           program,
-		sourcePackages:    ssaPackages,
-		instancesByOrigin: instancesByOrigin(program),
-		hashInputs:        map[*ssa.Function]string{},
+		modulePath:                    service.modulePath,
+		program:                       program,
+		sourcePackages:                ssaPackages,
+		canBeCalledThroughAnInterface: service.canBeCalledThroughAnInterface,
+		instancesByOrigin:             instancesByOrigin(program),
+		hashInputs:                    map[*ssa.Function]string{},
 	}, nil
 }
 
@@ -302,9 +306,9 @@ func typesMadeIntoInterfaces(function *ssa.Function) []types.Type {
 	return converted
 }
 
-// methodsOf is every method of a named type of the module, on value and pointer receivers alike,
-// promoted ones included. A type that still has a type parameter gives none, because SSA builds no
-// method for it, and each instance is converted where its type is known.
+// methodsOf is every method of a named type of the module that an interface can call, on value and
+// pointer receivers alike, promoted ones included. A type that still has a type parameter gives
+// none, because SSA builds no method for it, and each instance is converted where its type is known.
 func (module moduleProgram) methodsOf(converted types.Type) []*ssa.Function {
 	named := namedBehind(converted)
 	if named == nil || named.Obj().Pkg() == nil || !module.holdsPackage(named.Obj().Pkg().Path()) {
@@ -312,6 +316,10 @@ func (module moduleProgram) methodsOf(converted types.Type) []*ssa.Function {
 	}
 	methods := []*ssa.Function{}
 	for selection := range module.program.MethodSets.MethodSet(types.NewPointer(named)).Methods() {
+		declared, isFunction := selection.Obj().(*types.Func)
+		if !isFunction || !module.canBeCalledThroughAnInterface(declared) {
+			continue
+		}
 		if method := module.program.MethodValue(selection); method != nil {
 			methods = append(methods, method)
 		}

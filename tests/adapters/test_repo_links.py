@@ -18,6 +18,7 @@ from arde.adapters.repo_links import (
     links_leaving,
     require_no_link_leaves,
 )
+from arde.domain.base import printable_name
 from arde.domain.errors import ArdeError
 from arde.domain.profile import RepoProfile
 from arde.domain.report import ExitCode
@@ -270,6 +271,50 @@ def test_a_link_in_a_folder_that_can_be_listed_but_not_entered_stops_the_gate(
     assert stopped.value.exit_code == ExitCode.BAD_USAGE
 
 
+# The boundary review's 0444 case named d/go.mod, a file, and then asked to fix "that folder".
+@pytest.mark.skipif(os.geteuid() == 0, reason="root enters every folder")
+def test_a_folder_that_cannot_be_entered_is_the_one_the_refusal_names(repo: Path) -> None:
+    listed_only = repo / "d"
+    listed_only.mkdir()
+    (listed_only / "go.mod").write_text("module example.com/d\n", encoding="utf-8")
+    listed_only.chmod(0o444)
+    try:
+        with pytest.raises(RepoNotReadableError) as stopped:
+            require_no_link_leaves(repo)
+    finally:
+        listed_only.chmod(0o755)
+
+    folder = printable_name(os.path.realpath(listed_only))
+    assert "go.mod" not in str(stopped.value)
+    assert f"the folder {folder}" in str(stopped.value)
+    assert (
+        stopped.value.next_action
+        == f"Make the folder {folder} readable, or remove it, then run again."
+    )
+
+
+# The boundary review's race: a file removed between listing its folder and reading what it is.
+def test_a_file_gone_between_listing_and_reading_says_the_repo_changed(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (repo / "gone.go").write_text("package main\n", encoding="utf-8")
+    read_the_entry = os.lstat
+
+    def remove_it_first(path: str, *args: object, **kwargs: object) -> os.stat_result:
+        if os.path.basename(path) == "gone.go":
+            os.remove(path)
+        return read_the_entry(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", remove_it_first)
+
+    with pytest.raises(RepoNotReadableError) as stopped:
+        require_no_link_leaves(repo)
+
+    assert "The repo changed while ARDE read it" in str(stopped.value)
+    assert "gone.go" in str(stopped.value)
+    assert stopped.value.next_action == "Run again when nothing is writing to the repo."
+
+
 def test_a_tree_too_deep_for_one_path_stops_the_gate_because_it_could_hide_a_link(
     repo: Path,
 ) -> None:
@@ -278,7 +323,20 @@ def test_a_tree_too_deep_for_one_path_stops_the_gate_because_it_could_hide_a_lin
     with pytest.raises(RepoNotReadableError) as stopped:
         require_no_link_leaves(repo)
 
-    assert stopped.value.next_action
+    assert stopped.value.next_action == "Move the repo to a shorter path, then run again."
+
+
+# The start of a long path names the folders above the repo, and its end the one that failed.
+def test_a_path_too_long_to_read_is_shown_by_its_end(repo: Path) -> None:
+    a_tree_too_deep_for_one_path(repo)
+
+    with pytest.raises(RepoNotReadableError) as stopped:
+        require_no_link_leaves(repo)
+
+    message = str(stopped.value)
+    assert message.startswith("A path in the repo is too long to read: ...")
+    assert message.endswith("d" * 90 + ".")
+    assert len(message) < 400
 
 
 def test_a_repo_that_is_not_there_stops_the_gate(tmp_path: Path) -> None:
