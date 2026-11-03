@@ -4,7 +4,7 @@ from pathlib import Path
 
 from arde.domain.profile import ExtractionPattern, RepoProfile
 
-SHOP = Path(__file__).resolve().parents[2] / "fixtures" / "shop"
+SHOP = Path(__file__).resolve().parent / "fixtures" / "shop"
 
 ROUTE_PATTERNS = (
     ExtractionPattern(kind="route", call=r"^app\.handle$", args={"path": 0, "handler": 1}),

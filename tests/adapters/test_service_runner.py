@@ -28,6 +28,7 @@ from process_support import (
     wait_until_gone,
     wait_until_group_is_empty,
 )
+from shop_support import SHOP, shop_profile
 
 from arde.adapters import child_process, service_runner
 from arde.adapters.child_env import ALLOWED_VARIABLES
@@ -41,9 +42,7 @@ from arde.application.ports import (
     ServiceStopError,
 )
 from arde.domain.errors import ArdeError
-from arde.domain.profile import RepoProfile
 
-SHOP = Path(__file__).resolve().parents[1] / "fixtures" / "shop"
 PORT_ENV = "SERVICE_PORT"
 # Kept here because the started fixture swaps subprocess.Popen for a function that records.
 REAL_POPEN = subprocess.Popen
@@ -198,8 +197,7 @@ def short_grace(monkeypatch: pytest.MonkeyPatch) -> None:
 def shop_binary(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     repo = tmp_path_factory.mktemp("shop") / "shop"
     shutil.copytree(SHOP, repo)
-    profile = RepoProfile(main_package=".", main_file="main.go", port_env="SHOP_PORT", patterns=())
-    with built_service(repo, profile) as binary:
+    with built_service(repo, shop_profile()) as binary:
         yield binary
 
 

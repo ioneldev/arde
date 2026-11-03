@@ -29,14 +29,6 @@ func Hello() string {
 """
 
 
-def pair(tmp_path: Path, edit: Edit) -> tuple[Path, Path]:
-    old_file, new_file = tmp_path / "old" / edit.file_name, tmp_path / "new" / edit.file_name
-    for path, text in ((old_file, edit.old), (new_file, edit.new)):
-        path.parent.mkdir(exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-    return old_file, new_file
-
-
 def greeting(new: str, name: str = "x.go") -> Edit:
     return Edit("greeting", GREETING, new, name)
 
@@ -45,36 +37,36 @@ def greeting(new: str, name: str = "x.go") -> Edit:
 def test_an_edit_that_may_change_behaviour_is_never_comment_only(
     adapter: GoAdapter, tmp_path: Path, doubtful: Edit
 ) -> None:
-    assert not adapter.is_comment_only(*pair(tmp_path, doubtful))
+    assert not adapter.is_comment_only(*doubtful.written_as_files(tmp_path))
 
 
 @pytest.mark.parametrize("ordinary", ORDINARY_EDITS, ids=lambda edit: edit.name)
 def test_an_edit_of_ordinary_comment_lines_is_comment_only(
     adapter: GoAdapter, tmp_path: Path, ordinary: Edit
 ) -> None:
-    assert adapter.is_comment_only(*pair(tmp_path, ordinary))
+    assert adapter.is_comment_only(*ordinary.written_as_files(tmp_path))
 
 
 @pytest.mark.parametrize("tags", TAG_EDITS, ids=lambda edit: edit.name)
 def test_the_tags_ARDE_adds_are_comment_only_with_the_neighbours_realigned(
     adapter: GoAdapter, tmp_path: Path, tags: Edit
 ) -> None:
-    assert adapter.is_comment_only(*pair(tmp_path, tags))
+    assert adapter.is_comment_only(*tags.written_as_files(tmp_path))
 
 
 @pytest.mark.parametrize("real", DELIBERATELY_REAL_EDITS, ids=lambda edit: edit.name)
 def test_these_stay_real_on_purpose(adapter: GoAdapter, tmp_path: Path, real: Edit) -> None:
-    assert not adapter.is_comment_only(*pair(tmp_path, real))
+    assert not adapter.is_comment_only(*real.written_as_files(tmp_path))
 
 
 def test_a_line_that_starts_with_slashes_inside_a_raw_string_is_real_because_the_trees_differ(
     adapter: GoAdapter, tmp_path: Path
 ) -> None:
-    assert not adapter.is_comment_only(*pair(tmp_path, RAW_STRING_EDIT))
+    assert not adapter.is_comment_only(*RAW_STRING_EDIT.written_as_files(tmp_path))
 
 
 def test_a_changed_line_of_code_is_not_comment_only(adapter: GoAdapter, tmp_path: Path) -> None:
-    files = pair(tmp_path, greeting(GREETING.replace('"hello"', '"hi"')))
+    files = greeting(GREETING.replace('"hello"', '"hi"')).written_as_files(tmp_path)
 
     assert not adapter.is_comment_only(*files)
 
@@ -82,7 +74,7 @@ def test_a_changed_line_of_code_is_not_comment_only(adapter: GoAdapter, tmp_path
 def test_a_new_comment_and_a_reformat_are_comment_only(adapter: GoAdapter, tmp_path: Path) -> None:
     reformatted = GREETING.replace("func Hello() string {", "// Added.\nfunc Hello()   string {")
 
-    assert adapter.is_comment_only(*pair(tmp_path, greeting(reformatted)))
+    assert adapter.is_comment_only(*greeting(reformatted).written_as_files(tmp_path))
 
 
 def test_a_file_that_does_not_parse_is_never_comment_only(
@@ -91,7 +83,7 @@ def test_a_file_that_does_not_parse_is_never_comment_only(
     broken = "package p\n\n// one\nfunc (\n"
 
     assert not adapter.is_comment_only(
-        *pair(tmp_path, Edit("broken", broken, broken.replace("one", "two")))
+        *Edit("broken", broken, broken.replace("one", "two")).written_as_files(tmp_path)
     )
 
 
@@ -127,14 +119,16 @@ def test_a_folder_is_not_comment_only(adapter: GoAdapter, tmp_path: Path) -> Non
 def test_a_file_that_is_not_go_source_is_not_comment_only(
     adapter: GoAdapter, tmp_path: Path, name: str
 ) -> None:
-    files = pair(tmp_path, greeting(GREETING.replace("says hello", "greets"), name))
+    files = greeting(GREETING.replace("says hello", "greets"), name).written_as_files(tmp_path)
 
     assert not adapter.is_comment_only(*files)
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
 def test_a_file_that_cannot_be_read_is_not_comment_only(adapter: GoAdapter, tmp_path: Path) -> None:
-    old_file, new_file = pair(tmp_path, greeting(GREETING.replace("says hello", "greets")))
+    old_file, new_file = greeting(GREETING.replace("says hello", "greets")).written_as_files(
+        tmp_path
+    )
     new_file.chmod(0o000)
     try:
         assert not adapter.is_comment_only(old_file, new_file)
@@ -147,7 +141,9 @@ def test_a_file_that_cannot_be_read_is_not_comment_only(adapter: GoAdapter, tmp_
 def test_a_file_in_a_folder_that_cannot_be_entered_is_not_comment_only(
     adapter: GoAdapter, tmp_path: Path
 ) -> None:
-    old_file, new_file = pair(tmp_path, greeting(GREETING.replace("says hello", "greets")))
+    old_file, new_file = greeting(GREETING.replace("says hello", "greets")).written_as_files(
+        tmp_path
+    )
     folder = new_file.parent
     folder.chmod(0o000)
     try:

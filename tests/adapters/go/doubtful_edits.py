@@ -5,6 +5,7 @@ the program does: the effect is named beside it. Doubt answers False, because a 
 answer costs a fraction of a cent and a wrongly true one ignores a real change.
 """
 
+from pathlib import Path
 from typing import NamedTuple
 
 BOM = "﻿"
@@ -16,6 +17,13 @@ class Edit(NamedTuple):
     new: str
     # go test runs examples from _test.go files only, and the rule treats those files apart.
     file_name: str = "x.go"
+
+    def written_as_files(self, folder: Path) -> tuple[Path, Path]:
+        old_file, new_file = folder / "old" / self.file_name, folder / "new" / self.file_name
+        for path, text in ((old_file, self.old), (new_file, self.new)):
+            path.parent.mkdir(exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        return old_file, new_file
 
 
 _IMPORTS_FMT = 'package p\n\nimport "fmt"\n\n'

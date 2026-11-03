@@ -134,36 +134,28 @@ def test_a_file_compared_with_itself_differs_in_nothing() -> None:
     assert differ(source, source)
 
 
-def written_as_files(tmp_path: Path, edit: Edit) -> tuple[Path, Path]:
-    old, new = tmp_path / "old" / edit.file_name, tmp_path / "new" / edit.file_name
-    for path, text in ((old, edit.old), (new, edit.new)):
-        path.parent.mkdir(exist_ok=True)
-        path.write_text(text, encoding="utf-8")
-    return old, new
-
-
 @pytest.mark.parametrize("doubtful", EVERY_DOUBTFUL_EDIT, ids=lambda edit: edit.name)
 def test_every_edit_that_changed_behaviour_is_answered_as_a_real_change(
     tmp_path: Path, doubtful: Edit
 ) -> None:
-    assert not files_differ_only_in_ordinary_comments(*written_as_files(tmp_path, doubtful))
+    assert not files_differ_only_in_ordinary_comments(*doubtful.written_as_files(tmp_path))
 
 
 @pytest.mark.parametrize("ordinary", ORDINARY_EDITS, ids=lambda edit: edit.name)
 def test_an_edit_of_ordinary_comment_lines_is_comment_only(tmp_path: Path, ordinary: Edit) -> None:
-    assert files_differ_only_in_ordinary_comments(*written_as_files(tmp_path, ordinary))
+    assert files_differ_only_in_ordinary_comments(*ordinary.written_as_files(tmp_path))
 
 
 @pytest.mark.parametrize("tags", TAG_EDITS, ids=lambda edit: edit.name)
 def test_the_tags_ARDE_adds_are_taken_out_and_the_realigned_columns_do_not_count(
     tmp_path: Path, tags: Edit
 ) -> None:
-    assert files_differ_only_in_ordinary_comments(*written_as_files(tmp_path, tags))
+    assert files_differ_only_in_ordinary_comments(*tags.written_as_files(tmp_path))
 
 
 @pytest.mark.parametrize("real", DELIBERATELY_REAL_EDITS, ids=lambda edit: edit.name)
 def test_these_are_real_on_purpose(tmp_path: Path, real: Edit) -> None:
-    assert not files_differ_only_in_ordinary_comments(*written_as_files(tmp_path, real))
+    assert not files_differ_only_in_ordinary_comments(*real.written_as_files(tmp_path))
 
 
 def test_a_line_in_a_raw_string_looks_ordinary_so_the_syntax_tree_must_catch_it() -> None:
