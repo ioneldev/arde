@@ -21,6 +21,7 @@ from arde.adapters.language.go.makefile import make_targets_of
 from arde.adapters.language.go.quotes import quote_content
 from arde.adapters.language.go.renderer import render
 from arde.adapters.language.go.swag import build_swag, run_swag
+from arde.adapters.language.go.versions import tool_versions
 from arde.adapters.repo_links import require_no_link_leaves
 from arde.application.ports import (
     CheckResult,
@@ -51,6 +52,7 @@ def patterns_of(profile: RepoProfile) -> tuple[ExtractionPattern, ...]:
 class GoAdapter(LanguageAdapter):
     # Keyword-only, because the two paths have one type and a swap would pass every type check.
     def __init__(self, goinspect: Path, *, swag: Path) -> None:
+        self._goinspect_binary = goinspect
         self._goinspect = GoinspectClient(goinspect)
         self._swag = swag
 
@@ -160,6 +162,9 @@ class GoAdapter(LanguageAdapter):
 
     def quote_content(self, quote: SourceQuote) -> QuoteContent:
         return quote_content(quote)
+
+    def tool_versions(self) -> dict[str, str]:
+        return tool_versions(goinspect=self._goinspect_binary, swag=self._swag)
 
 
 # The return type is the static proof that GoAdapter satisfies the port: mypy fails here when

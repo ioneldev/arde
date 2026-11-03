@@ -930,3 +930,34 @@ def test_one_line_holds_no_control_character(hostile: str) -> None:
 
 def test_one_line_keeps_the_first_characters() -> None:
     assert one_line("abcdefgh", 3) == "abc"
+
+
+def test_a_fact_is_stale_when_a_declaration_route_or_file_it_links_changed() -> None:
+    from arde.domain.change import ChangeReport, stale_fact_ids
+    from arde.domain.facts import Links, RuleFact, Wiki
+
+    def rule(fact_id: str, links: Links) -> RuleFact:
+        return RuleFact(
+            id=fact_id, topic="business-rules", kind="rule", evidence=(), links=links, statement="s"
+        )
+
+    wiki = Wiki(
+        facts=(
+            rule("by-declaration", Links(declarations=("a.go::func f",))),
+            rule("by-route", Links(routes=("GET /x",))),
+            rule("by-file", Links(files=("README.md",))),
+            rule("untouched", Links(declarations=("a.go::func g",), routes=("GET /y",))),
+        )
+    )
+    changes = ChangeReport(
+        changed_files=("README.md",),
+        changed_declarations=("a.go::func f",),
+        added_inventory=(),
+        removed_inventory=(),
+        changed_routes=("GET /x",),
+        changed_probes=(),
+        responses_changed=False,
+        diff="",
+    )
+
+    assert stale_fact_ids(wiki, changes) == ("by-declaration", "by-file", "by-route")

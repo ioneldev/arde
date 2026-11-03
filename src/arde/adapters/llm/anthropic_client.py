@@ -1,5 +1,6 @@
 """The Anthropic Messages API behind the LLMClient port. The only module that imports the SDK."""
 
+import os
 import re
 import time
 import traceback
@@ -143,6 +144,14 @@ _FAILURES = (
         next_action="Run again, and if it repeats report the error with its request id",
     ),
 )
+
+
+# Read here, because this file and the tracer are the only product code that may hold the plain
+# key. Blank counts as unset, as a line in an env file with no value reads.
+def api_key_from_environment() -> SecretStr | None:
+    """The key the environment holds, masked, or None when it holds none."""
+    key = SecretStr(os.environ.get("ANTHROPIC_API_KEY", ""))
+    return key if key.get_secret_value().strip() else None
 
 
 class AnthropicClient(LLMClient):

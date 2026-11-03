@@ -220,7 +220,7 @@ def write_section(request: SectionRequest, deps: PipelineDeps) -> SectionResult:
     spec = AgentSpec(
         role="docs",
         config=deps.models["docs"],
-        system=_system_prompt(),
+        system=system_prompt(),
         user=_user_prompt(request),
         tools=(),
         submit=SubmitTool(definition=_SUBMIT_SECTION, validate=partial(_judge, request=request)),
@@ -252,7 +252,7 @@ def add_readme_link(repo: Path) -> ReadmeLink:
         content = readme.read_bytes()
         if _README_LINK_TARGET in content:
             return ReadmeLink(added=False, warnings=())
-        readme.write_bytes(_with_readme_link(content))
+        readme.write_bytes(with_readme_link(content))
     except OSError as error:
         raise DocsWriteFailed(error) from error
     return ReadmeLink(added=True, warnings=())
@@ -271,7 +271,8 @@ def _readme_is_a_link(readme: Path) -> str:
 
 
 # The link goes after a blank line, ended as the README's own lines are.
-def _with_readme_link(content: bytes) -> bytes:
+def with_readme_link(content: bytes) -> bytes:
+    """The README's bytes as add_readme_link leaves them, for a later run to compare with."""
     newline = b"\r\n" if b"\r\n" in content else b"\n"
     link = README_LINK.encode("utf-8") + newline
     if not content:
@@ -320,7 +321,7 @@ def _facts_behind(result: SectionResult, wiki: Wiki) -> tuple[str, ...]:
 
 
 @cache
-def _system_prompt() -> str:
+def system_prompt() -> str:
     return (files("arde") / "application" / "prompts" / "docs.md").read_text(encoding="utf-8")
 
 

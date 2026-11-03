@@ -94,7 +94,7 @@ def discover_profile(repo: Path, deps: PipelineDeps) -> DiscoveryOutcome:
     spec = AgentSpec(
         role="discovery",
         config=deps.models["discovery"],
-        system=_system_prompt(deps.adapter),
+        system=system_prompt(deps.adapter),
         user=_USER_PROMPT,
         tools=deps.toolbox.repo_tools(repo),
         submit=SubmitTool(
@@ -116,7 +116,7 @@ def discover_profile(repo: Path, deps: PipelineDeps) -> DiscoveryOutcome:
 
 
 # The same text on every run and for every repo, so the trace can compare runs by its hash.
-def _system_prompt(adapter: LanguageAdapter) -> str:
+def system_prompt(adapter: LanguageAdapter) -> str:
     instructions = files("arde.application").joinpath("prompts", "discovery.md")
     text = instructions.read_text(encoding="utf-8")
     return f"{text.rstrip()}\n\n{adapter.discovery_guidance().strip()}\n"

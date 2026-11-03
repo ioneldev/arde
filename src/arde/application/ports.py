@@ -24,9 +24,10 @@ class Tracer(Protocol):
     """Writes the run's record: structured events for the trace, free text for the debug log.
 
     Event kinds: run_start, step_start, step_end, model_call, model_error, tool_call, correction,
-    agent_end, check_result, repair, warning and run_end, and prompt, the hash of an agent's system
-    prompt. The tracer stamps each event, so callers pass no time. A field named summary may be any
-    length: the tracer cuts it, after redaction.
+    agent_end, check_result, repair, warning and run_end, prompt, the hash of an agent's system
+    prompt, and changes, what a later run found changed since the snapshot. The tracer stamps each
+    event, so callers pass no time. A field named summary may be any length: the tracer cuts it,
+    after redaction.
     """
 
     def event(self, kind: str, **fields: object) -> None: ...
@@ -383,6 +384,10 @@ class LanguageAdapter(Protocol):
         """
         ...
 
+    def tool_versions(self) -> dict[str, str]:
+        """The version of each tool the adapter runs, by name, for the trace to record."""
+        ...
+
 
 class ServiceConfig(Frozen):
     """How to start one service and where to look when it will not start."""
@@ -537,5 +542,47 @@ class RunStore(Protocol):
         """Makes tree the snapshot in one rename, moving it, and only after a run succeeded.
 
         The last snapshot stays whole until that rename, so a failure before it keeps it.
+        """
+        ...
+
+
+# The source. The cli resolves it before anything else, because the workspace, and with it the
+# run's folder and trace, is named after the repo id that resolving finds.
+
+
+class ResolvedSource(Frozen):
+    kind: Literal["url", "local"]
+    # The URL or path the repo came from, with no user name or password, as a trace may show it.
+    origin: str
+    repo_id: str
+    # The folder to copy from: the user's own repo, or the clone in the workspace.
+    root: Path
+    # The commit the tree was taken from. A local tree may hold uncommitted work on top of it.
+    revision: str
+
+
+class ResultCommit(Frozen):
+    """What a run changed in its output copy, to commit on a new branch of the workspace clone."""
+
+    clone: Path
+    output: Path
+    # From the repo root. Each is written as the output holds it, or removed when it holds none.
+    paths: tuple[str, ...]
+    branch: str
+    message: SingleLine
+
+
+class SourceControl(Protocol):
+    def copy_source(self, source: ResolvedSource, dest: Path) -> None:
+        """Copies the repo's files into dest, which must not exist yet, links kept as links.
+
+        Raises an ArdeError when a link in the copy leads out of it.
+        """
+        ...
+
+    def commit_result(self, commit: ResultCommit) -> str:
+        """Commits the paths on a new branch at the clone's current commit, and returns the id.
+
+        Nothing is pushed, and nothing but the clone is written.
         """
         ...
