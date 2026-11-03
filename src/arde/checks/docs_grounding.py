@@ -165,7 +165,7 @@ def _is_command_source(relative: str) -> bool:
         or name.endswith(".dockerfile")
         or name in _CI_FILES
         or relative.startswith(_CI_FOLDERS)
-        # A recipe line is a command a person wrote for others to run, such as go test ./...
+        # A recipe line is a command a person wrote for others to run.
         or name in ("makefile", "gnumakefile")
         or name.endswith(".mk")
     )
