@@ -42,23 +42,29 @@ class RepoNotReadableError(ArdeError):
         )
 
 
-def require_no_link_leaves(repo: Path) -> None:
+def require_no_link_leaves(repo: Path, *, under: str = "") -> None:
     try:
-        links = links_leaving(repo)
+        links = links_leaving(repo, under=under)
     except OSError as error:
         raise RepoNotReadableError(error) from error
     if links:
         raise LinkLeavesRepoError(links)
 
 
-def links_leaving(repo: Path) -> list[str]:
+def links_leaving(repo: Path, *, under: str = "") -> list[str]:
     """The path from the root of every link whose real path is outside the repo's real path.
 
-    .git is walked like any folder: a go.work can name a module inside it.
+    .git is walked like any folder: a go.work can name a module inside it. under names one folder
+    of the repo to walk instead of all of it, and each link there is still judged against the
+    whole repo.
     """
     root = os.path.realpath(repo)
+    top = os.path.join(root, under)
+    # os.walk would follow the top folder if it were a link, and walk whatever it leads to.
+    if under and _is_a_link(top) and not is_inside(os.path.realpath(top), root):
+        return [under]
     found: list[str] = []
-    for folder, subfolders, files in os.walk(root, onerror=_stop_the_walk):
+    for folder, subfolders, files in os.walk(top, onerror=_stop_the_walk):
         for name in (*subfolders, *files):
             path = os.path.join(folder, name)
             if _is_a_link(path) and not is_inside(os.path.realpath(path), root):

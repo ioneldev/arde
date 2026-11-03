@@ -22,7 +22,7 @@ Terms as ARDE uses them.
 
 **Wiki**: The stored facts for one target repo, one YAML file per topic. The docs agent sees only the wiki. This is not the `docs/` folder of this repo, which is the wiki about ARDE itself.
 
-**Workspace**: The folder ARDE keeps for one target repo under `ARDE_HOME`. It holds the profile, the wiki, the snapshot and one folder per run. Deleting it makes the next run a full first run.
+**Workspace**: The folder ARDE keeps for one target repo under `ARDE_HOME`. It holds the profile, the wiki, the snapshot, the clone of a URL source and one folder per run. Deleting it makes the next run a full first run.
 
 **Fingerprint**: A hash of every function a route's handler names, its roots in `Route.roots`, and of everything those reach in the call graph. The roots are the factory, the middleware and the handler alike. It changes when any of them changes, so an edit deep in a helper flags every route that uses it. It also covers the constants the handler expression holds, in `Route.constants_hash`. A route with one root and no constant keeps that root's own hash.
 

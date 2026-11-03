@@ -288,3 +288,52 @@ class ServiceRunner(Protocol):
         out: it is attached to that error as a note.
         """
         ...
+
+
+class RunStore(Protocol):
+    """Where one target repo's state lives between runs, and where each run keeps its copies.
+
+    The profile, wiki and section stores read and write the paths it names. Naming a path creates
+    nothing: the store that writes a file makes its folder.
+    """
+
+    @property
+    def profile_path(self) -> Path: ...
+
+    @property
+    def override_path(self) -> Path: ...
+
+    @property
+    def wiki_dir(self) -> Path: ...
+
+    @property
+    def sections_path(self) -> Path: ...
+
+    @property
+    def manifest_path(self) -> Path: ...
+
+    @property
+    def snapshot_dir(self) -> Path:
+        """The tree as it stood after the last successful run. It exists once has_snapshot is."""
+        ...
+
+    def new_run_dir(self) -> Path:
+        """A new, empty folder for one run: its copies, trace and logs."""
+        ...
+
+    def input_copy(self, run_dir: Path) -> Path:
+        """Where the run's copy of the repo as it was goes. The copy step creates it."""
+        ...
+
+    def output_copy(self, run_dir: Path) -> Path:
+        """Where the run's copy with ARDE's edits goes. The copy step creates it."""
+        ...
+
+    def has_snapshot(self) -> bool: ...
+
+    def save_snapshot(self, tree: Path) -> None:
+        """Makes tree the snapshot in one rename, moving it, and only after a run succeeded.
+
+        The last snapshot stays whole until that rename, so a failure before it keeps it.
+        """
+        ...

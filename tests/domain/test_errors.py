@@ -2,7 +2,7 @@
 
 import pytest
 
-from arde.domain.errors import ArdeError
+from arde.domain.errors import ArdeError, SourceError
 from arde.domain.report import ExitCode
 
 
@@ -35,3 +35,11 @@ def test_a_subclass_is_caught_as_an_arde_error() -> None:
         )
 
     assert caught.value.exit_code is ExitCode.DISCOVERY_NEEDS_INPUT
+
+
+def test_a_source_error_is_bad_usage_and_names_its_next_action() -> None:
+    error = SourceError("No folder at ./nowhere.", next_action="Check the path, then run again.")
+
+    assert isinstance(error, ArdeError)
+    assert error.exit_code is ExitCode.BAD_USAGE
+    assert error.next_action == "Check the path, then run again."
