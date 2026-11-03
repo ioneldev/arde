@@ -12,6 +12,7 @@ from arde.adapters.language.go.goinspect_client import (
     TOO_LONG_TO_PRINT,
     CallMatch,
     Declaration,
+    InterfaceCall,
     PatternName,
     RouteReport,
     RouteSite,
@@ -93,6 +94,11 @@ REGISTRARS_ARE_READ_AT_THEIR_CALLS = (
     "ARDE reads a function that registers routes only at its direct calls, so the routes it "
     "registers through any other use cannot be listed. This repo cannot be documented yet: report "
     f"that. {DO_NOT_NARROW}"
+)
+REGISTRARS_ARE_NOT_READ_THROUGH_AN_INTERFACE = (
+    "ARDE lists a route only where it is registered by a direct call, and docs/limitations.md "
+    "lists a call through an interface among the registrations it cannot read. This repo cannot "
+    f"be documented yet: report that. {DO_NOT_NARROW}"
 )
 A_MUX_IS_READ_AT_ITS_PATH = (
     "ARDE reads a mux handed to a function that registers routes for its callers only when the "
@@ -205,7 +211,23 @@ def _stop_where_a_path_changes(service: RouteReport) -> None:
         problem, next_action = _WHY_A_SITE_IS_UNREAD[site.problem]
         if site.written_at is not None:
             problem += f": a parameter it registers is written at {_place(site.written_at)}"
+        if site.through is not None and site.through.satisfied_by:
+            problem = _through_an_interface(site.through)
         raise RouteNotUnderstoodError(site, problem, next_action=next_action)
+
+
+def _through_an_interface(call: InterfaceCall) -> str:
+    named = [f"`{one_line(name, _SHOWN_LENGTH)}`" for name in call.satisfied_by]
+    behind = f"{named[0]} satisfies" if len(named) == 1 else f"{_listed(named)} satisfy"
+    return (
+        f"this calls `{one_line(call.method, _SHOWN_LENGTH)}` through the interface "
+        f"`{one_line(call.interface, _SHOWN_LENGTH)}`, which {behind}, so a route registered that "
+        "way cannot be read"
+    )
+
+
+def _listed(names: list[str]) -> str:
+    return f"{', '.join(names[:-1])} and {names[-1]}"
 
 
 def _place(place: _Located) -> str:
@@ -247,9 +269,9 @@ _WHY_A_SITE_IS_UNREAD: dict[UnreadProblem, tuple[str, str]] = {
         A_MUX_IS_READ_AT_ITS_PATH,
     ),
     "called through an interface": (
-        "this goes through an interface that a function registering routes satisfies, so which "
-        "function it reaches and what that registers cannot be read",
-        REGISTRARS_ARE_READ_AT_THEIR_CALLS,
+        "this goes through an interface that a type with a function registering routes "
+        "satisfies, so a route registered that way cannot be read",
+        REGISTRARS_ARE_NOT_READ_THROUGH_AN_INTERFACE,
     ),
 }
 

@@ -614,6 +614,7 @@ ROUTES_REPLY = {
             "line": 6,
             "problem": "builds its path",
             "written_at": {"file": "web/router.go", "line": 5},
+            "through": None,
         }
     ],
     "wrapper_calls": [{"kind": "env", "file": "main.go", "line": 7}],
@@ -646,6 +647,7 @@ def test_routes_hand_over_the_patterns_and_the_main_package_and_read_the_reply(
             line=6,
             problem="builds its path",
             written_at=SourcePlace(file="web/router.go", line=5),
+            through=None,
         ),
     )
     assert reply.wrapper_calls == (WrapperCall(kind="env", file="main.go", line=7),)

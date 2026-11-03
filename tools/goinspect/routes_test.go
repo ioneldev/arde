@@ -42,10 +42,17 @@ type wrapperCallOutput struct {
 }
 
 type unreadSiteOutput struct {
-	File      string       `json:"file"`
-	Line      int          `json:"line"`
-	Problem   string       `json:"problem"`
-	WrittenAt *placeOutput `json:"written_at"`
+	File      string         `json:"file"`
+	Line      int            `json:"line"`
+	Problem   string         `json:"problem"`
+	WrittenAt *placeOutput   `json:"written_at"`
+	Through   *throughOutput `json:"through"`
+}
+
+type throughOutput struct {
+	Method      string   `json:"method"`
+	Interface   string   `json:"interface"`
+	SatisfiedBy []string `json:"satisfied_by"`
 }
 
 type routesOutput struct {
@@ -1460,7 +1467,7 @@ func TestRoutesStopsAtAUseOfAFunctionThatRegistersRoutesOtherThanADirectCall(t *
 	for name, test := range cases {
 		source := aRegistrarUsedAs(test.use)
 
-		got := unreadSitesOf(t, source, getOnA)
+		got := withoutTheInterfaces(unreadSitesOf(t, source, getOnA))
 
 		want := []unreadSiteOutput{{File: "main.go", Line: lineHolding(t, source, test.use), Problem: test.problem}}
 		if !reflect.DeepEqual(got, want) {
@@ -1474,11 +1481,62 @@ func TestRoutesStopsAtAUseOfAFunctionThatRegistersRoutesOtherThanADirectCall(t *
 func TestRoutesStopsAtACallThroughAnInterfaceThatAPatternMatchesToo(t *testing.T) {
 	source := aRegistrarUsedAs(`r.get("/items", parcels)`)
 
-	got := unreadSitesOf(t, source, getAnywhere)
+	got := withoutTheInterfaces(unreadSitesOf(t, source, getAnywhere))
 
 	want := []unreadSiteOutput{{File: "main.go", Line: lineHolding(t, source, `r.get("/items"`), Problem: "called through an interface"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+// withoutTheInterfaces leaves the place and the problem of each site, for a test about those alone.
+func withoutTheInterfaces(sites []unreadSiteOutput) []unreadSiteOutput {
+	for index := range sites {
+		sites[index].Through = nil
+	}
+	return sites
+}
+
+// The reviewer's q3a: a Router interface over *http.ServeMux. The stop names the method, the
+// interface and every type behind it, so a person can tell which registration to make direct.
+func TestRoutesNamesTheInterfaceAndTheTypesBehindACallThroughIt(t *testing.T) {
+	source := `package main
+
+import "net/http"
+
+type Router interface {
+	Handle(pattern string, handler http.Handler)
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
+func registerRoutes(r Router) {
+	r.HandleFunc("GET /items", parcels)
+}
+
+func main() {
+	registerRoutes(http.NewServeMux())
+}
+` + handlerFuncs
+
+	got := unreadSitesOf(t, source, noPatterns)
+
+	want := []unreadSiteOutput{{
+		File: "main.go", Line: lineHolding(t, source, "r.HandleFunc"), Problem: "called through an interface",
+		Through: &throughOutput{Method: "HandleFunc", Interface: "main.Router", SatisfiedBy: []string{"*http.ServeMux"}},
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestRoutesNamesEveryTypeOfTheServiceBehindACallThroughAnInterface(t *testing.T) {
+	source := aRegistrarUsedAs(`r.get("/items", parcels)`)
+
+	got := unreadSitesOf(t, source, getOnA)
+
+	want := &throughOutput{Method: "get", Interface: "main.registrar", SatisfiedBy: []string{"*main.app", "*main.outer", "main.outer"}}
+	if len(got) != 1 || !reflect.DeepEqual(got[0].Through, want) {
+		t.Fatalf("got %+v, want one site through %+v", got, want)
 	}
 }
 

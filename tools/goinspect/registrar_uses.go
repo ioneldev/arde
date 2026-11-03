@@ -74,9 +74,10 @@ func (known registrars) usesOutOfSightIn(service loadedService) []unreadSite {
 				if !isFunction {
 					return true
 				}
-				problem := known.problemOfAUse(function, called[identifier])
-				if place, isInTheRepo := service.placeOf(identifier.Pos()); problem != "" && isInTheRepo {
-					found = append(found, unreadSite{sourcePlace: place, Problem: problem})
+				use, isOutOfSight := known.useOutOfSight(function, called[identifier])
+				if place, isInTheRepo := service.placeOf(identifier.Pos()); isOutOfSight && isInTheRepo {
+					use.sourcePlace = place
+					found = append(found, use)
 				}
 				return true
 			})
@@ -85,14 +86,17 @@ func (known registrars) usesOutOfSightIn(service loadedService) []unreadSite {
 	return found
 }
 
-func (known registrars) problemOfAUse(function *types.Func, isCalledDirectly bool) string {
-	switch {
-	case isInterfaceMethod(function) && known.names[function.Name()] && known.standBehind(function):
-		return calledThroughAnInterface
-	case known.hold(function) && !isCalledDirectly:
-		return usedAsAValue
+// useOutOfSight is the unread site a use of the function makes, still without its place.
+func (known registrars) useOutOfSight(function *types.Func, isCalledDirectly bool) (unreadSite, bool) {
+	if isInterfaceMethod(function) && known.names[function.Name()] {
+		if behind := known.carriersBehind(function); len(behind) > 0 {
+			return unreadSite{Problem: calledThroughAnInterface, Through: throughTheInterfaceOf(function, behind)}, true
+		}
 	}
-	return ""
+	if known.hold(function) && !isCalledDirectly {
+		return unreadSite{Problem: usedAsAValue}, true
+	}
+	return unreadSite{}, false
 }
 
 func (known registrars) hold(function *types.Func) bool {
@@ -100,16 +104,46 @@ func (known registrars) hold(function *types.Func) bool {
 	return known.isRouteWrapper(origin) || slices.Contains(registrationFunctions, origin.FullName())
 }
 
-// standBehind is true when a carrier satisfies the interface that declares the method and answers
-// its name with a registrar, its own or one it embeds. A generic type is not compared whole, because
-// what it satisfies depends on its type arguments, so its method's name decides alone.
-func (known registrars) standBehind(interfaceMethod *types.Func) bool {
+// carriersBehind are the carriers that satisfy the interface that declares the method and answer
+// its name with a registrar, their own or one they embed. A generic type is not compared whole,
+// because what it satisfies depends on its type arguments, so its method's name decides alone.
+func (known registrars) carriersBehind(interfaceMethod *types.Func) []types.Type {
 	declaring, isInterface := interfaceMethod.Signature().Recv().Type().Underlying().(*types.Interface)
-	return isInterface && slices.ContainsFunc(known.carriers, func(carrier types.Type) bool {
+	if !isInterface {
+		return nil
+	}
+	behind := []types.Type{}
+	for _, carrier := range known.carriers {
 		method, _, _ := known.lookUp(carrier, false, interfaceMethod.Pkg(), interfaceMethod.Name())
 		function, isFunction := method.(*types.Func)
-		return isFunction && known.hold(function) && (isGeneric(carrier) || types.Implements(carrier, declaring))
-	})
+		if isFunction && known.hold(function) && (isGeneric(carrier) || types.Implements(carrier, declaring)) {
+			behind = append(behind, carrier)
+		}
+	}
+	return behind
+}
+
+// throughAnInterface names a call through an interface that a registrar's type satisfies: the
+// method called, the interface and each type behind it, with packages named as a person reads
+// them, so the stop says which registration to make direct.
+type throughAnInterface struct {
+	Method      string   `json:"method"`
+	Interface   string   `json:"interface"`
+	SatisfiedBy []string `json:"satisfied_by"`
+}
+
+func throughTheInterfaceOf(interfaceMethod *types.Func, behind []types.Type) *throughAnInterface {
+	byPackageName := func(named *types.Package) string { return named.Name() }
+	satisfiedBy := []string{}
+	for _, carrier := range behind {
+		satisfiedBy = append(satisfiedBy, types.TypeString(carrier, byPackageName))
+	}
+	slices.Sort(satisfiedBy)
+	return &throughAnInterface{
+		Method:      interfaceMethod.Name(),
+		Interface:   types.TypeString(interfaceMethod.Signature().Recv().Type(), byPackageName),
+		SatisfiedBy: slices.Compact(satisfiedBy),
+	}
 }
 
 func isGeneric(carrier types.Type) bool {

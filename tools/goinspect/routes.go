@@ -88,11 +88,13 @@ type wrapperCall struct {
 }
 
 // unreadSite is a call whose route cannot be read, and the problem that says why. WrittenAt is
-// where a wrapper writes a parameter its site registers, when that is why.
+// where a wrapper writes a parameter its site registers, and Through the interface a call goes
+// through, when that is why.
 type unreadSite struct {
 	sourcePlace
-	Problem   string       `json:"problem"`
-	WrittenAt *sourcePlace `json:"written_at"`
+	Problem   string              `json:"problem"`
+	WrittenAt *sourcePlace        `json:"written_at"`
+	Through   *throughAnInterface `json:"through"`
 }
 
 type routeReport struct {
