@@ -1,6 +1,6 @@
 # ARDE design
 
-ARDE (Agentic Repo Docs Engine) documents a Go `net/http` service. It adds swag annotations, generates `swagger.json` and `swagger.yaml` with swag, writes project docs, proves it changed no behaviour, and traces every step. One command: `uv run arde --repo <url or path>`.
+ARDE (Agentic Repo Docs Engine) documents a Go `net/http` service. It adds swag annotations, generates `swagger.json` and `swagger.yaml` with swag, writes project docs, proves it changed no behaviour, and traces every step. One command, in a container that pins every tool: `docker compose run --rm arde --repo <url> --branch <b>`, or `make run REPO=<url> BRANCH=<b>`. `make extract` copies a run's changed files, trace and a patch out of the volume.
 
 ## Flow
 
@@ -62,7 +62,7 @@ Measured on `catalog-poc` (Opus 5.5, prompt caching): a first run with the judge
 ## Known limitations
 
 - Go `net/http` only. Routes are read statically: a wrapper that builds its path from more than its parameters, a route table looped at startup, or a router behind an interface stops the run with a named site rather than guessing.
-- The service's own code runs on the machine during checks, as `make test` would. Repos must be trusted.
+- The repo's build, tests and service run in the container, away from the host but next to the key, which they can read through `/proc`. Repos must be trusted.
 - A rule with no HTTP effect is checked only by its code quote, so a wrong reading of the code can reach the docs.
 - Full list: `docs/limitations.md`.
 
