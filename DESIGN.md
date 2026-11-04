@@ -50,8 +50,8 @@ A finding goes to its owner (Explore, then Docs; Docs; or code, which stops the 
 ## Known limitations, and one more week
 
 - Go `net/http` only; routes are read statically, and an odd shape stops the run at its line.
-- GET and HEAD only: routes that change data get no success reply, request bodies are not read, and a service that needs a database is started without one.
+- Routes of every method are documented, but ARDE sends only GET and HEAD, so it never changes data: a POST, PUT or DELETE route gets its params and error replies but no success reply, and request bodies are not read.
 - The judge has two real runs and no measured catch rate; a rule with no HTTP effect is checked only by its quote; SDK retries are not in the trace.
-- The repo's code runs in the container, next to the key. Full list: [docs/limitations.md](docs/limitations.md).
+- The repo's code runs in the container, next to the key, and a service that needs a database runs without one. Full list: [docs/limitations.md](docs/limitations.md).
 
 **One more week:** re-run on each merge request against the target branch's snapshot, posting a review; for a 500k-line monorepo, a profile and inventory per service, and Explore scoped to what a change touches; measure the judge on planted errors, and trace every retry; run the repo's code as a separate user; read request bodies.
