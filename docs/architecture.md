@@ -40,7 +40,7 @@ A later run differs in three places. The saved profile is checked again by build
 
 A later run's judge must try only the routes, params and error codes that the facts that changed or came link, and it does not run when there are none, because the last good run's judge passed those pages.
 
-Not built yet: the classifier, the stops for a run with no changes or with only comment changes (Explore and the checks run anyway), write-back to a local repo and the container.
+Not built yet: the classifier, the stops for a run with no changes or with only comment changes (Explore and the checks run anyway), and write-back to a local repo.
 
 A run stops on any of these:
 

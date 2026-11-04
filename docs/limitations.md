@@ -199,7 +199,7 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 
 ## The judge
 
-- **No real model has run it.** The API account's limit was reached when it was built, so every test scripts the model's replies, and there has been no `make eval` run. Its catch rate, how often a re-test clears real noise, and what it costs on a real service are unknown.
+- **Two real runs, both on `catalog-poc`, and no measured catch rate.** The deliverable run's judge predicted all 20 replies right, for $0.29. The container run's judge made one mismatch, a leading `+` in `qty`, and a fresh re-test cleared it as noise although the docs did mislead there; its clarity note named the sentence. The tests script the model's replies, and no eval asserts what the judge finds. How often it catches a wrong page, how often a re-test clears a real gap, and what it costs on a larger service are unknown.
 - It cannot test rules that have no HTTP effect. On a later run it must try only the routes, params and error codes that the changed facts link, so a changed rule fact that links only declarations is not judged, and a run that changed no such fact runs no judge.
 - An arithmetic slip looks like a mismatch, and a lucky guess passes. A prediction counts as one only for the status and the fields the judge chose to predict, so a judge that predicts little proves little.
 - The prompt asks the judge to predict what the docs state even after a reply has shown otherwise. A model that learns from the replies instead hides a gap in the docs, and nothing in code can tell.
