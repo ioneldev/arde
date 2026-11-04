@@ -148,6 +148,7 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 ## Checks
 
 - **The allow-list counts lines, it does not place them.** A line that only moved is not seen. The code comparison sees moved code, but a directive moved, for example below the package clause, is seen by neither.
+- **On a checkout with CRLF line endings, the formatting check tests nothing.** `gofmt -l` lists every Go file with CRLF line endings, so on such a checkout, as `core.autocrlf=true` makes, every Go file is flagged before the run and none can be newly flagged after it. Measured on such a checkout of `catalog-poc`: 10 of 10 Go files flagged in both copies. The renderer keeps a CRLF file CRLF throughout, and the behaviour check still runs. The fix is to ask gofmt about each file's LF form, as the renderer already does.
 - **The edit checks read Go files and module files only.** A changed embedded file, C or assembly source is not seen. ARDE writes none, except the spec, if a service embeds its docs folder.
 - **The tag rule reads the first raw string on a line.** ARDE's pairs added to a raw string in code pass the allow-list, and the code comparison catches them.
 - **Replies must match in status, content type and body.** A service whose reply holds the time or a random id fails Behaviour on every run.
@@ -189,6 +190,7 @@ What ARDE does not do, and what has not been tested. Most of it comes from the [
 
 - A fork has a different URL, so it gets a new workspace and a full first run. The spellings of one remote share a workspace: over HTTPS or SSH, with or without a user, a password, `.git` or a trailing slash, and a local clone shares the workspace of its `origin`. A local repo with no `origin` gets a workspace per folder path, so moving it means a full first run.
 - A second branch in the same workspace counts as a change from the last successful run.
+- **Line endings count as a change.** A checkout made with `core.autocrlf=true` holds CRLF where the remote holds LF. So a local run after a URL run of the same repo, or the reverse, sees changed files where nothing changed, and Explore re-checks the facts linked to them. Measured on `catalog-poc`: 16 of 16 files differed by carriage returns alone, and the 6 that are not Go files counted as changed, as no Go declaration did. 2 facts went stale and Docs rewrote 4 pages, for $0.76 and 93 s. Use one kind of source for a repo, or clone with `git clone -c core.autocrlf=false`.
 - Each URL run clones afresh into the workspace. The workspace keeps that clone and the one before it, and removes older ones. The snapshot keeps the one before it on disk too, so a workspace holds up to two copies of each. Nothing removes the folders under `runs/`.
 - The wiki is not exported into the target repo. A later `--export-wiki` flag could write a readable one-way copy.
 - A re-run always runs Explore, even when nothing is stale. A request that now gets another answer is not detected before Explore runs.
