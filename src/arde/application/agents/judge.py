@@ -87,6 +87,8 @@ class JudgeResult(Frozen):
     confirmed: tuple[Mismatch, ...]
     # The mismatches a fresh re-test cleared, which the trace keeps.
     noise: tuple[Mismatch, ...]
+    # What the judge found unclear. They never block, but the report shows them.
+    clarity_notes: tuple[str, ...] = ()
 
 
 class RetestRequest(Frozen):
@@ -155,6 +157,7 @@ def run_judge(request: JudgeRequest, deps: PipelineDeps) -> JudgeResult:
         findings=tuple(_finding(mismatch) for mismatch in confirmed),
         confirmed=tuple(confirmed),
         noise=tuple(noise),
+        clarity_notes=tuple(session.clarity_notes),
     )
 
 
@@ -296,6 +299,7 @@ class _Session:
     tracer: Tracer
     replies: list[ProbeRecord] = field(default_factory=list)
     mismatches: list[Mismatch] = field(default_factory=list)
+    clarity_notes: list[str] = field(default_factory=list)
 
     # The prediction goes to the trace before the request goes out, so the record proves it was
     # made without the reply.
@@ -319,6 +323,7 @@ class _Session:
     def note_clarity(self, tool_input: dict[str, object]) -> ToolOutcome:
         note = _ClarityNote.model_validate(tool_input)
         self.tracer.event("clarity", role=ROLE, summary=note.note)
+        self.clarity_notes.append(note.note)
         return ToolOutcome(content="Noted. A note on clarity never changes the outcome of the run.")
 
     def finish(self, tool_input: dict[str, object]) -> Accepted[tuple[Mismatch, ...]] | Rejected:

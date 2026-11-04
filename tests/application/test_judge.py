@@ -381,7 +381,7 @@ def test_clarity_notes_never_block(tmp_path: Path) -> None:
 
     result = judging.judge(tmp_path)
 
-    assert result == JudgeResult(findings=(), confirmed=(), noise=())
+    assert result == JudgeResult(findings=(), confirmed=(), noise=(), clarity_notes=(note,))
     assert judging.tracer.events_of("clarity") == [{"role": "judge", "summary": note}]
 
 

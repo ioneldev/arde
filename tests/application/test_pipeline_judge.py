@@ -252,6 +252,22 @@ def test_the_judge_does_not_run_while_a_code_check_finds_something(tmp_path: Pat
     assert "judge" not in steps(rig)
 
 
+# Measured on a real run: a judge's note named a sentence in the docs that misleads, while the
+# run passed. A note never blocks, but a reader of the report must see it.
+def test_a_clarity_note_reaches_the_reports_warnings(tmp_path: Path) -> None:
+    note = "The docs say a leading + is accepted, but in a query + decodes to a space."
+    judge = [
+        calling(a_prediction(), tool_call("note_clarity", note=note)),
+        calling(tool_call("finish")),
+    ]
+    rig = Rig(tmp_path=tmp_path, script=[*a_first_run_up_to_the_judge(), *judge], kind="url")
+
+    report = run(rig)
+
+    assert (report.status, report.exit_code) == ("success", ExitCode.OK)
+    assert f"The blind judge noted: {note}" in report.warnings
+
+
 def test_skip_judge_warns_and_commits(tmp_path: Path) -> None:
     rig = Rig(tmp_path=tmp_path, script=a_first_run_up_to_the_judge(), kind="url")
 

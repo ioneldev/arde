@@ -679,6 +679,7 @@ class _Verification:
                 JudgeRequest(docs=docs, service=service, required=required), self.run.shared
             )
             self.run.tracer.event("check_result", check="judge", findings=len(judged.findings))
+        self.run.warn(f"The blind judge noted: {note}" for note in judged.clarity_notes)
         self.judged_wrong = tuple(mismatch.prediction.request for mismatch in judged.confirmed)
         return list(judged.findings)
 
