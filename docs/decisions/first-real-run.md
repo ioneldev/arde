@@ -19,7 +19,9 @@ The plan's Task 17 Step 5: run ARDE for real on `https://github.com/mihai-iorga-
 | Stopped | `849ee00` | Stopped at Explore, exit 1 | $0.64 | 149 s | The Anthropic account reached its usage limit. ARDE's next action blamed the models file; `849ee00` now names the limit and where to raise it. |
 | Deliverable, with the judge | `092c296` | Success from a fresh workspace, committed `81a8e59` | $2.34 | 485 s | The API reference by endpoint, and the blind judge's first real run: 20 predictions from the docs alone, all right, in 6 calls for $0.29. One clarity note: the `invalid_currency` message is on no page. Its commit is now the branch `catalog-poc-docs`, and its trace is in `examples/first-run/`. |
 
-Total spent: $12.27.
+| Container | `2491caa` | Success with the one Docker command, from a fresh volume, committed `03e4561` | $2.47 | 479 s | The first real run on Linux, cloning over HTTPS inside the container. The judge's first real mismatch: these docs call a leading `+` accepted for `qty`, a fresh re-test cleared it as noise, and the judge's clarity note named the misleading sentence. `22e65b3` now puts clarity notes in the report's warnings. Kept in `examples/container-run/`. |
+
+Total spent: $14.74.
 
 ## Cost and turns per role (run 3, a full first run)
 

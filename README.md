@@ -36,6 +36,7 @@ Run it again after changing the service: it reuses the saved profile and wiki, r
 
 - The annotated code, spec and docs, as one commit on top of `catalog-poc`: branch `catalog-poc-docs`.
 - Its trace and report: [examples/first-run/](examples/first-run/README.md).
+- The same command run in Docker, with the judge's first mismatch: [examples/container-run/](examples/container-run/README.md).
 - What it cost and found: [docs/decisions/first-real-run.md](docs/decisions/first-real-run.md).
 
 ## Read next
