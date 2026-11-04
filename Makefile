@@ -65,9 +65,15 @@ runs:
 
 # Into runs/<run id>/: the report, the trace, the service logs, the changed files under changed/
 # and changes.patch. Written to a file first, so a refused export leaves no half archive behind.
+# The apply command names the patch by its full path, because git -C reads a relative one from
+# inside the repo it moves to.
 extract:
 	@$(PREFLIGHT) docker
 	@mkdir -p $(EXTRACTED)
 	@$(ARDE_RUNS) export $(RUN) > $(EXTRACTED)/.export.tar || { rm -f $(EXTRACTED)/.export.tar; exit 1; }
-	@tar -xf $(EXTRACTED)/.export.tar -C $(EXTRACTED) && rm $(EXTRACTED)/.export.tar
-	@echo "Extracted into $(EXTRACTED)/."
+	@run_id=$$(tar -tf $(EXTRACTED)/.export.tar | head -n 1 | cut -d / -f 1) && \
+	tar -xf $(EXTRACTED)/.export.tar -C $(EXTRACTED) && rm $(EXTRACTED)/.export.tar && \
+	echo "Extracted into $(CURDIR)/$(EXTRACTED)/$$run_id/" && \
+	if [ -f "$(EXTRACTED)/$$run_id/changes.patch" ]; then \
+		echo "To patch a repo with it: git -C <repo> apply \"$(CURDIR)/$(EXTRACTED)/$$run_id/changes.patch\""; \
+	fi

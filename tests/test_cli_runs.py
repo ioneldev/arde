@@ -78,8 +78,10 @@ def test_export_writes_the_tar_to_stdout_and_says_what_it_holds(tmp_path: Path) 
     tar_out.seek(0)
     with tarfile.open(fileobj=tar_out, mode="r|") as tar:
         assert f"{RUN_ID}/changes.patch" in [member.name for member in tar]
-    assert f"arde-runs: exported run {RUN_ID}: 2 changed files under changed/, changes.patch" in err
-    assert f"git apply <folder>/{RUN_ID}/changes.patch" in err
+    assert err == (
+        f"arde-runs: exported run {RUN_ID}: 2 changed files under changed/, changes.patch, the "
+        "report, the trace and the service logs.\n"
+    )
 
 
 def test_export_of_a_run_with_no_report_says_it_has_none(tmp_path: Path) -> None:

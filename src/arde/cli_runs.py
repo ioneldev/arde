@@ -135,11 +135,6 @@ def _what_was_exported(exported: Exported) -> str:
     ]
     if exported.left_out:
         lines.append(f"  Left out, as a link or not a file: {', '.join(exported.left_out)}.")
-    if exported.patched:
-        lines.append(
-            f"  To apply the changes to a clone of the repo: git apply <folder>/{exported.run_id}/"
-            f"{PATCH_FILE}"
-        )
     return "\n".join(lines)
 
 

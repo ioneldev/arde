@@ -4,59 +4,76 @@ ARDE (Agentic Repo Docs Engine) documents a Go `net/http` service without manual
 
 ## Run it
 
-You need Docker with Compose, an Anthropic API key and the network. The image holds everything else, pinned: Go 1.27.1, Python 3.12, uv, git, and `goinspect` and swag v2.0.0-rc6 built from `tools/`.
+You need Docker with Compose, `make`, an Anthropic API key and the network. The image holds everything else, pinned: Go 1.27.1, Python 3.12, uv, git, and `goinspect` and swag v2.0.0-rc6 built from `tools/`.
 
 ```sh
-cp .env.example .env          # then put your key in it
-docker compose build
-docker compose run --rm arde --repo https://github.com/mihai-iorga-emag/catalog-poc --branch main
-```
-
-That is the one command. It clones a fresh copy into ARDE's workspace, never touches the source, and commits the result on a new branch in the workspace clone. The workspace lives in the `arde-home` volume, so the next run remembers the profile and the wiki.
-
-### With make
-
-`make` wraps the same commands. Each target first checks what it needs, and names the fix for anything missing, before Docker starts: the `docker` command, the Compose plugin, a running daemon and `.env`, and for `make run` also that `.env` sets `ANTHROPIC_API_KEY`. That check asks only whether the key is set: it never reads the key out, and Compose alone hands it to the container.
-
-```sh
-make preflight  # check all of that, and change nothing
-make image      # docker compose build; again after any change to ARDE
+cp .env.example .env    # then put your key in it
+make image
 make run REPO=https://github.com/mihai-iorga-emag/catalog-poc BRANCH=main
-make runs       # every run in the volume: source, status, cost, time and branch
-make extract    # the latest run, into runs/<run id>/
 ```
 
-`make run` alone documents the local repo at `REPO_PATH` in `.env`, and `make run REPO=<folder>` documents that folder. `make extract RUN=<id>` takes another run, and the start of its id is enough. `ARGS` passes more options, as in `make run ARGS=--skip-judge`.
+That is the one command. It clones a fresh copy into ARDE's workspace, never touches the source, runs every step in the container, and commits the result on a new branch in the workspace clone. The workspace lives in the `arde-home` volume, so the next run remembers the profile and the wiki.
 
-### Getting the results out
+| Command | What it does |
+|---|---|
+| `make preflight` | Checks the `docker` command, the Compose plugin, a running daemon, `.env` and the key, and changes nothing. |
+| `make image` | Builds the image. Run it again after any change to ARDE. |
+| `make run REPO=<url> BRANCH=<branch>` | Clones a remote repo and documents it. |
+| `make run REPO=<folder>` | Documents a repo on your machine. It is mounted read-only and copied, uncommitted work included, and nothing is written back. |
+| `make run` | Documents the repo at `REPO_PATH` in `.env`. |
+| `make runs` | Lists the runs in the volume, with each one's source, status, cost, time and branch. |
+| `make extract` | Copies the latest run out of the volume into `runs/<run id>/`. `RUN=<id>` takes another run, and the start of its id is enough. |
 
-A run's results stay in the `arde-home` volume, where the host cannot read them. `make extract` copies one out, into `runs/<run id>/`:
+Every target first checks what it needs, and names the fix for anything missing, before Docker starts. For `make run` that includes `.env` setting `ANTHROPIC_API_KEY`: the check asks only whether the key is set, never reads it out, and Compose alone hands it to the container.
 
-- `report.json`, `trace/trace.jsonl`, `trace/debug.log` and the service logs;
-- the files the run changed, under `changed/`, as its output copy has them;
-- `changes.patch`, which turns the run's input into its output. To put the changes into a clone of the repo, at the revision the run documented and with the same line endings, run `git -C <clone> apply runs/<run id>/changes.patch`.
+`ARGS` passes options to ARDE, as in `make run REPO=<folder> ARGS=--skip-judge`: `--json` prints only the run report, `--max-usd N` caps the run's cost (default 10), and `--skip-judge` skips the blind judge, and the report warns that it did not run. Exit codes: 0 success, 1 a check failed, 2 bad input, 3 the repo needs a profile fix, 4 the cost cap was hit. Every error names the next action.
 
-Listing and extracting run `arde-runs` in the container, with the key left out. To take a URL run's branch itself home, bundle it and fetch it into a clone of the documented repo:
-
-```sh
-docker compose run --rm --entrypoint git arde -C <workspace clone> bundle create - <branch> > result.bundle
-git fetch result.bundle <branch>:<branch>
-```
-
-### A repo on your machine
-
-Set `REPO_PATH` in `.env` and run `make run`, or `docker compose run --rm arde`. The repo is mounted read-only and copied, uncommitted work included, and nothing is written back: the result is the run's output copy, which `make extract` brings out. The repo's build, tests and service run inside the container, next to the key, so run only repos you trust ([limitations](docs/limitations.md)).
+The repo's build, tests and service run inside the container, next to the key, so run only repos you trust ([limitations](docs/limitations.md)). Run ARDE again after changing the service: it reuses the saved profile and wiki, re-checks only the facts linked to changed code, and rewrites only the sections whose facts changed.
 
 | Variable in `.env` | Needed | What |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | yes | The Claude API key. It reaches the container at run time and is never in the image or in a file ARDE makes. |
-| `REPO_PATH` | no | The local repo `make run` and `docker compose run --rm arde` document. |
+| `REPO_PATH` | no | The repo `make run` documents when no `REPO` is given. |
 | `ARDE_UID`, `ARDE_GID` | no | The user the container runs as, default 1000. On a Linux host, your `id -u` and `id -g`, so ARDE can read files only you can read. |
-| `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL` | no | The author of the result's commit. ARDE stays its committer. |
+| `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL` | no | The author of a URL run's commit in the workspace clone. ARDE stays its committer. |
 
-Options: `--json` prints only the run report on stdout, `--max-usd N` caps the run's cost (default 10), and `--skip-judge` skips the blind judge, and the report warns that it did not run. Exit codes: 0 success, 1 a check failed, 2 bad input, 3 the repo needs a profile fix, 4 the cost cap was hit. Every error names the next action.
+## Patch your repo with a run's changes
 
-Run it again after changing the service: it reuses the saved profile and wiki, re-checks only the facts linked to changed code, and rewrites only the sections whose facts changed.
+A run never writes to your repo: its results stay in the `arde-home` volume. `make extract` brings a run out, and `git apply` puts its changes into your repo. Run these from ARDE's folder.
+
+1. **Run ARDE, then extract the run.** The extract prints the run's id and where it put it.
+
+   ```sh
+   make run REPO=~/code/my-service
+   make extract
+   ```
+
+   `runs/<run id>/` now holds `report.json`, `trace/trace.jsonl`, `trace/debug.log`, the service logs, each file the run changed, whole, under `changed/`, and `changes.patch`.
+
+2. **Read what it changed.**
+
+   ```sh
+   git apply --stat runs/<run id>/changes.patch    # each file, with the lines added and removed
+   less runs/<run id>/changes.patch
+   ```
+
+   Read `report.json` too: its `status`, its `warnings`, and its `revision`, the commit the run documented.
+
+3. **Check that the patch applies, then apply it.** Give the patch as a full path, because `git -C` moves into your repo before it reads the path.
+
+   ```sh
+   git -C ~/code/my-service apply --check "$PWD/runs/<run id>/changes.patch"
+   git -C ~/code/my-service apply "$PWD/runs/<run id>/changes.patch"
+   ```
+
+4. **Review, test and commit it, as any other change.**
+
+   ```sh
+   git -C ~/code/my-service status    # the changed files, and the new docs/
+   git -C ~/code/my-service diff
+   ```
+
+The patch fits the repo as the run read it: at its `revision`, with the uncommitted work it had then, and with the same line endings. A run on a CRLF checkout makes a CRLF patch, which stops applying once git rewrites those files as LF; `git -C <repo> ls-files --eol` shows what the files hold now, `w/crlf` or `w/lf`. If `--check` refuses the patch, the repo has changed since the run, so run ARDE again and extract the new run. For a URL run, apply it to a clone checked out at that revision: `git clone <url> my-service`, then `git -C my-service checkout <revision>`.
 
 ## What one run produced
 
