@@ -44,7 +44,8 @@ Then read the printed run folder's `report.json`, and look at the commit with th
 ## Decisions taken without you
 
 1. **Finish today (R134).** Built: Phases 2's tasks, Task 18, Task 19 with Task 20's core, Task 21 with one round, and the deliverables. Moved to DESIGN.md's "one more week": the blind judge, write-back to a local repo, the skip rule and classifier of Phase 4, and the container. A re-run still works incrementally, because the fingerprints and declaration hashes from Phase 1 feed the stale rule.
-2. **The container is not built.** You asked for one earlier, so this is yours to decide. The README's one command is `uv run`.
+2. **The container was cut, then built (R134, R140).** It was cut to finish in one day, and built the next night when you asked why. `docker compose run --rm arde --repo <url>` is the one command, and it was the first run of ARDE on Linux.
+11. **The blind judge was added (R139).** At your request, as a gate after the 7 code checks. Its first real run predicted 20 replies from the docs alone, all right, for $0.29.
 3. **Review policy (R133).** One review pass and one fix round per phase. Phases 2 and 3 got one scoped review, whose three serious findings were fixed (R138).
 4. **Prompt injection (R135).** Your request, built as four layers: prompts that treat repo text as data and report it, evidence that must hold code from the service's build, docs grounding for URLs and commands, and a hostile fixture with a real-model eval.
 5. **Parser hardening stopped at a heuristic (R136).** The docs grounding check reads Markdown by hand. Further gaps the automated security review found are written in `docs/limitations.md` instead of being chased.

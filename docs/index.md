@@ -29,7 +29,7 @@ Each file gives the decision, why, and what it costs.
 
 What each phase built, why, and how to test it.
 
-- [Every ruling](decisions/rulings.md): all 138 decisions taken while building, each with why and its cost if wrong
+- [Every ruling](decisions/rulings.md): all 140 decisions taken while building, each with why and its cost if wrong
 - [Phase 0 walkthrough](decisions/phase-0-walkthrough.md)
 - [Phase 1 walkthrough](decisions/phase-1-walkthrough.md)
 - [Phase 2 and 3 walkthrough](decisions/phase-2-walkthrough.md)
