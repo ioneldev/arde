@@ -16,9 +16,10 @@ That is the one command. It clones a fresh copy into ARDE's workspace, never tou
 
 ### With make
 
-`make` wraps the same commands, and reads nothing from `.env` itself:
+`make` wraps the same commands. Each target first checks what it needs, and names the fix for anything missing, before Docker starts: the `docker` command, the Compose plugin, a running daemon and `.env`, and for `make run` also that `.env` sets `ANTHROPIC_API_KEY`. That check asks only whether the key is set: it never reads the key out, and Compose alone hands it to the container.
 
 ```sh
+make preflight  # check all of that, and change nothing
 make image      # docker compose build; again after any change to ARDE
 make run REPO=https://github.com/mihai-iorga-emag/catalog-poc BRANCH=main
 make runs       # every run in the volume: source, status, cost, time and branch

@@ -1,4 +1,4 @@
-.PHONY: check integration eval image run runs extract
+.PHONY: check integration eval preflight image run runs extract
 
 check:
 	uv run ruff check .
@@ -19,7 +19,9 @@ integration:
 eval:
 	uv run --env-file .env pytest -m eval -q -rP
 
-# The Docker path. Compose reads .env, for the key and REPO_PATH, and these targets never do.
+# The Docker path. Compose reads .env, for the key and REPO_PATH. Each target first checks what it
+# needs, and the check only asks whether .env sets the key: it never reads the key out.
+#   make preflight                    check Docker, Compose, the daemon, .env and the key
 #   make image                        build the image, after any change to ARDE
 #   make run                          document the local repo at REPO_PATH in .env
 #   make run REPO=<folder>            document that local folder instead
@@ -33,12 +35,19 @@ ARDE_RUNS = $(COMPOSE_RUN) -T -e ANTHROPIC_API_KEY= --entrypoint arde-runs arde
 EXTRACTED = runs
 # zsh leaves the ~ in REPO=~/x as typed, so make expands it.
 REPO_GIVEN = $(patsubst ~%,$(HOME)%,$(REPO))
+PREFLIGHT = sh scripts/preflight.sh
+
+preflight:
+	@$(PREFLIGHT) docker key
+	@echo "preflight: Docker, Compose, the daemon, .env and the API key are ready."
 
 image:
+	@$(PREFLIGHT) docker
 	docker compose build
 
 # A command after the service name replaces the image's default, so a local run names /repo.
 run:
+	@$(PREFLIGHT) docker key
 ifeq ($(strip $(REPO)),)
 	$(COMPOSE_RUN) arde --repo /repo $(ARGS)
 else
@@ -51,11 +60,13 @@ else
 endif
 
 runs:
+	@$(PREFLIGHT) docker
 	@$(ARDE_RUNS) list
 
 # Into runs/<run id>/: the report, the trace, the service logs, the changed files under changed/
 # and changes.patch. Written to a file first, so a refused export leaves no half archive behind.
 extract:
+	@$(PREFLIGHT) docker
 	@mkdir -p $(EXTRACTED)
 	@$(ARDE_RUNS) export $(RUN) > $(EXTRACTED)/.export.tar || { rm -f $(EXTRACTED)/.export.tar; exit 1; }
 	@tar -xf $(EXTRACTED)/.export.tar -C $(EXTRACTED) && rm $(EXTRACTED)/.export.tar
