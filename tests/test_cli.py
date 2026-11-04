@@ -361,10 +361,10 @@ def test_the_signals_become_interrupts_only_while_arde_runs() -> None:
     assert signal.getsignal(signal.SIGTERM) == before
 
 
-def test_the_entry_point_is_arde_cli_main() -> None:
+def test_the_entry_points_are_arde_and_arde_runs() -> None:
     import tomllib
 
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     scripts = tomllib.loads(pyproject.read_text())["project"]["scripts"]
-    assert scripts == {"arde": "arde.cli:main"}
+    assert scripts == {"arde": "arde.cli:main", "arde-runs": "arde.cli_runs:main"}
     assert os.access(pyproject, os.R_OK)

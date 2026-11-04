@@ -1,4 +1,4 @@
-.PHONY: check integration eval
+.PHONY: check integration eval image run runs extract
 
 check:
 	uv run ruff check .
@@ -18,3 +18,45 @@ integration:
 # -rP prints what passing tests printed, the spend and the trace folder, through the key guard.
 eval:
 	uv run --env-file .env pytest -m eval -q -rP
+
+# The Docker path. Compose reads .env, for the key and REPO_PATH, and these targets never do.
+#   make image                        build the image, after any change to ARDE
+#   make run                          document the local repo at REPO_PATH in .env
+#   make run REPO=<folder>            document that local folder instead
+#   make run REPO=<url> [BRANCH=b]    clone a remote repo and document it
+#   make runs                         list the runs in the arde-home volume
+#   make extract [RUN=<id>]           copy a run out of the volume, the latest by default
+# ARGS passes more options to arde, as in ARGS="--skip-judge --max-usd 3".
+COMPOSE_RUN = docker compose run --rm
+# Listing and exporting need no key, so it is blanked, and a tar on stdout needs no terminal.
+ARDE_RUNS = $(COMPOSE_RUN) -T -e ANTHROPIC_API_KEY= --entrypoint arde-runs arde
+EXTRACTED = runs
+# zsh leaves the ~ in REPO=~/x as typed, so make expands it.
+REPO_GIVEN = $(patsubst ~%,$(HOME)%,$(REPO))
+
+image:
+	docker compose build
+
+# A command after the service name replaces the image's default, so a local run names /repo.
+run:
+ifeq ($(strip $(REPO)),)
+	$(COMPOSE_RUN) arde --repo /repo $(ARGS)
+else
+	@if [ -d "$(REPO_GIVEN)" ]; then \
+		echo "Documenting the local repo $(abspath $(REPO_GIVEN))"; \
+		REPO_PATH="$(abspath $(REPO_GIVEN))" $(COMPOSE_RUN) arde --repo /repo $(ARGS); \
+	else \
+		$(COMPOSE_RUN) arde --repo "$(REPO)" $(if $(BRANCH),--branch "$(BRANCH)") $(ARGS); \
+	fi
+endif
+
+runs:
+	@$(ARDE_RUNS) list
+
+# Into runs/<run id>/: the report, the trace, the service logs, the changed files under changed/
+# and changes.patch. Written to a file first, so a refused export leaves no half archive behind.
+extract:
+	@mkdir -p $(EXTRACTED)
+	@$(ARDE_RUNS) export $(RUN) > $(EXTRACTED)/.export.tar || { rm -f $(EXTRACTED)/.export.tar; exit 1; }
+	@tar -xf $(EXTRACTED)/.export.tar -C $(EXTRACTED) && rm $(EXTRACTED)/.export.tar
+	@echo "Extracted into $(EXTRACTED)/."

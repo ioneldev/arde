@@ -21,6 +21,18 @@ git fetch result.bundle <branch>:<branch>
 
 To document a repo on your machine, set `REPO_PATH` in `.env` and run `docker compose run --rm arde`. The repo is mounted read-only and copied, uncommitted work included, and nothing is written back. The repo's build, tests and service run inside the container, next to the key, so run only repos you trust ([limitations](docs/limitations.md)).
 
+The same with `make`, which wraps these commands and reads nothing from `.env` itself:
+
+| Command | What it does |
+|---|---|
+| `make image` | `docker compose build`. Run it again after any change to ARDE. |
+| `make run REPO=<url> BRANCH=<branch>` | Clones a remote repo and documents it. |
+| `make run`, or `make run REPO=<folder>` | Documents the local repo at `REPO_PATH`, or that folder. |
+| `make runs` | Lists the runs in the `arde-home` volume, with each one's source, status, cost, time and branch. |
+| `make extract`, or `make extract RUN=<id>` | Copies the latest run, or the run whose id starts with `RUN`, out of the volume into `runs/<run id>/`. |
+
+`ARGS` passes more options, as in `make run ARGS=--skip-judge`. An extracted run holds `report.json`, `trace/trace.jsonl`, `trace/debug.log`, the service logs, the files the run changed under `changed/`, as its output copy has them, and `changes.patch`. To put the changes into a clone of the repo, at the revision the run documented and with the same line endings, run `git -C <clone> apply <path>/runs/<run id>/changes.patch`. Listing and extracting run `arde-runs` in the container, with the key left out.
+
 | Variable in `.env` | Needed | What |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | yes | The Claude API key. It reaches the container at run time and is never in the image or in a file ARDE makes. |

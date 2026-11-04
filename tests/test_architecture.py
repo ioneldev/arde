@@ -27,9 +27,11 @@ TARGET_REPO_WORDS = ("catalog", "envOr", "writeError", "fxRates")
 NOT_PRODUCT_FOLDERS = ("testdata", "__pycache__")
 BUILT_HELPER = Path("tools/goinspect/goinspect")
 
-DOMAIN_MAY_NOT_IMPORT = ("arde.adapters", "arde.application", "arde.cli")
-APPLICATION_MAY_NOT_IMPORT = ("arde.adapters", "arde.cli")
-CHECKS_MAY_NOT_IMPORT = ("arde.adapters", "arde.cli")
+# Each command line is a module of its own: arde runs the pipeline, arde-runs reads its runs.
+COMMAND_LINES = ("arde.cli", "arde.cli_runs")
+DOMAIN_MAY_NOT_IMPORT = ("arde.adapters", "arde.application", *COMMAND_LINES)
+APPLICATION_MAY_NOT_IMPORT = ("arde.adapters", *COMMAND_LINES)
+CHECKS_MAY_NOT_IMPORT = ("arde.adapters", *COMMAND_LINES)
 
 GO_ADAPTER = Path("arde") / "adapters" / "language" / "go"
 GO_COMMANDS = ("build", "vet", "test", "list")
